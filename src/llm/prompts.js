@@ -146,4 +146,40 @@ Reply with the translated Markdown only, no preface and no closing remarks.
   ];
 }
 
-module.exports = { translateMessages, translateSummaryMessages, speakerNamesMessages, SUMMARY_SYSTEM, CHAT_SYSTEM, UNTRUSTED, neutralizeTags, chatMessages, formatTranscript, chunkText, summaryMessages, partialMessages, titleMessages, meetingHeader };
+// The live assistant (src/assistant): help with the question somebody on the call just asked. Grounded in the user's own material
+// (<context> holds the briefing excerpts, what was just said, earlier answers); [GAP] marks a sentence the material does not support.
+function assistantSystem({ mode, language, words }) {
+  const style = mode === 'interview'
+    ? `You write what the user can say aloud, in the first person, to answer the question they were just asked in a live conversation.
+- Speak naturally, at most ${words} words. No headings, no lists, no stage directions.
+- For a coding or design question, give a short spoken explanation, then the key steps.`
+    : `You help the user during a live meeting with the question somebody just asked.
+- Give 2 to 4 short bullet points, each starting with "- ", that the user can glance at while talking: the answer, the facts or figures that support it, or a suggested reply. At most ${words} words in all.`;
+  return `${style}
+- Use only facts found in <context> (the user's own briefing material and the conversation). Never invent experience, employers, numbers, dates or decisions.
+- If the material does not cover the question, still help with an honest bridging answer, and start that sentence or bullet with [GAP].
+- ${language ? `Reply in ${languageName(language)}.` : 'Reply in the language of the question.'}
+- ${UNTRUSTED}`;
+}
+
+function assistantMessages({ mode = 'meeting', question, context = '', language = '', words = 90, variation = 0 }) {
+  const again = variation ? `\n\nGive a different angle and a different example than before (variation ${variation}).` : '';
+  return [
+    { role: 'system', content: assistantSystem({ mode, language, words }) },
+    { role: 'user', content: `<context>\n${neutralizeTags(context) || '(nothing yet)'}\n</context>\n\nThe question just asked:\n<transcript>\n${neutralizeTags(question)}\n</transcript>${again}` },
+  ];
+}
+
+// An ad-hoc question from the user about the call in progress (not something said on it).
+function liveAskMessages({ question, context, language = '' }) {
+  return [
+    { role: 'system', content: `You help the user during a live meeting. They ask you something about the conversation so far, or about their own material.
+- Answer from <context> only (the user's briefing material, what was said, the help given so far). If it is not there, say so plainly.
+- Be brief: a few sentences or short bullet points. Say who said what (Me / Them) when it matters.
+- ${language ? `Reply in ${languageName(language)}.` : "Reply in the language of the user's question."}
+- ${UNTRUSTED}` },
+    { role: 'user', content: `<context>\n${neutralizeTags(context) || '(nothing yet)'}\n</context>\n\n${question}` },
+  ];
+}
+
+module.exports = { assistantMessages, liveAskMessages, translateMessages, translateSummaryMessages, speakerNamesMessages, SUMMARY_SYSTEM, CHAT_SYSTEM, UNTRUSTED, neutralizeTags, chatMessages, formatTranscript, chunkText, summaryMessages, partialMessages, titleMessages, meetingHeader };
