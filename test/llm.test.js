@@ -103,8 +103,8 @@ test('note chat: keeps history, includes the transcript, and picks relevant exce
   settings.update({ llm: { contextChars: 2000 } });
   const r1 = await ai.chat(n.id, 'When is the PostgreSQL migration?');
   assert.equal(r1.answer, 'answer 2');
-  assert.match(srv.requests[0].messages[0].content, /PostgreSQL happens in March/);
-  assert.ok(srv.requests[0].messages[0].content.length < 6000);
+  assert.match(srv.requests[0].messages.at(-1).content, /PostgreSQL happens in March/);
+  assert.ok(srv.requests[0].messages.at(-1).content.length < 6000);
   const r2 = await ai.chat(n.id, 'And who owns it?');
   assert.equal(r2.answer, 'answer 4', 'system + 2 history + question');
   assert.equal(notes.chatHistory(n.id).length, 4);
@@ -119,7 +119,7 @@ test('global chat retrieves matching meetings and reports sources', async (t) =>
   notes.create({ title: 'Unrelated', body: 'lunch plans' });
   const r = await ai.chat(null, 'what did we say about the recruiter budget?');
   assert.deepEqual(r.sources.map((s) => s.id), [a.id]);
-  assert.match(srv.requests[0].messages[0].content, /### Hiring sync/);
+  assert.match(srv.requests[0].messages.at(-1).content, /### Hiring sync/);
   assert.equal(notes.chatHistory(null).length, 2);
   assert.equal(notes.chatHistory(a.id).length, 0, 'global chat is separate from note chat');
 });

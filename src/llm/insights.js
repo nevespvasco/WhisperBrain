@@ -1,7 +1,7 @@
 'use strict';
 // Structured insights for one meeting: overview, key points, decisions, action items, next steps, topics and
 // glossary terms. The model is asked for JSON; parsing is tolerant, and there is an offline fallback.
-const { meetingHeader } = require('./prompts');
+const { meetingHeader, neutralizeTags, UNTRUSTED } = require('./prompts');
 
 const INSIGHTS_SYSTEM = `You analyse a meeting and return ONLY a JSON object, no prose, no code fences.
 Schema:
@@ -19,7 +19,9 @@ Rules:
 - 2-4 keyPoints groups, at most 6 topics, at most 8 glossary terms (only terms a newcomer would not know).
 - Topics are subjects, not people. When a subject matches one of the EXISTING TOPICS, reuse that exact name so meetings connect.
 - Glossary: when a term is in EXISTING TERMS, reuse its spelling; define it only from context.
-- Write values in the language the meeting was held in.`;
+- Write values in the language the meeting was held in.
+- Action items are copied into other tools: plain text only, no links and no markup.
+- ${UNTRUSTED}`;
 
 function insightsMessages({ note, transcript, existingTopics = [], existingTerms = [], userName = '' }) {
   const user = [
@@ -28,9 +30,9 @@ function insightsMessages({ note, transcript, existingTopics = [], existingTerms
     existingTopics.length ? `EXISTING TOPICS: ${existingTopics.slice(0, 80).join('; ')}` : '',
     existingTerms.length ? `EXISTING TERMS: ${existingTerms.slice(0, 80).join('; ')}` : '',
     '',
-    note.summary ? `<enhanced_notes>\n${note.summary}\n</enhanced_notes>` : '',
-    `<user_notes>\n${note.body.trim() || '(none)'}\n</user_notes>`,
-    `<transcript>\n${transcript || '(no transcript)'}\n</transcript>`,
+    note.summary ? `<enhanced_notes>\n${neutralizeTags(note.summary)}\n</enhanced_notes>` : '',
+    `<user_notes>\n${neutralizeTags(note.body.trim() || '(none)')}\n</user_notes>`,
+    `<transcript>\n${neutralizeTags(transcript || '(no transcript)')}\n</transcript>`,
   ].filter(Boolean).join('\n');
   return [{ role: 'system', content: INSIGHTS_SYSTEM }, { role: 'user', content: user }];
 }
@@ -55,6 +57,15 @@ function extractJson(text) {
 }
 
 const str = (v, n = 400) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
+// Action items leave the app (Notion, Linear, webhooks), so what a model wrote, possibly steered by the transcript, is
+// reduced to plain words first: no markup, no links (they could carry data out or lure a click), bounded length.
+const URL_LIKE = /\b(?:[a-z][a-z0-9+.-]*:\/\/|javascript:|data:|vbscript:|www\.)[^\s)>\]]*/gi;
+function plain(v, n = 300) {
+  if (typeof v !== 'string') return '';
+  const t = v.replace(/<[^>]*>/g, ' ').replace(URL_LIKE, ' ').replace(/!?\[([^\]]*)\]\(\s*\)/g, '$1').replace(/[*`~]+/g, '').replace(/^[\s#>]+/, '')
+    .replace(/\s+/g, ' ').trim().slice(0, n).trim();
+  return /[\p{L}\p{N}]/u.test(t) ? t : '';
+}
 const arr = (v) => (Array.isArray(v) ? v : []);
 
 function sanitize(raw) {
@@ -63,7 +74,7 @@ function sanitize(raw) {
     overview: str(raw.overview, 1200),
     keyPoints: arr(raw.keyPoints).map((k) => ({ title: str(k?.title, 80), bullets: arr(k?.bullets).map((b) => str(b)).filter(Boolean).slice(0, 8) })).filter((k) => k.title || k.bullets.length).slice(0, 6),
     decisions: arr(raw.decisions).map((d) => str(d)).filter(Boolean).slice(0, 12),
-    actionItems: arr(raw.actionItems).map((a) => (typeof a === 'string' ? { text: str(a), owner: '', due: '' } : { text: str(a?.text), owner: str(a?.owner, 80), due: /^\d{4}-\d{2}-\d{2}$/.test(a?.due || '') ? a.due : '' })).filter((a) => a.text).slice(0, 25),
+    actionItems: arr(raw.actionItems).map((a) => (typeof a === 'string' ? { text: plain(a), owner: '', due: '' } : { text: plain(a?.text), owner: plain(a?.owner, 80), due: /^\d{4}-\d{2}-\d{2}$/.test(a?.due || '') ? a.due : '' })).filter((a) => a.text).slice(0, 25),
     nextSteps: arr(raw.nextSteps).map((d) => str(d)).filter(Boolean).slice(0, 12),
     topics: arr(raw.topics).map((t) => (typeof t === 'string' ? { name: str(t, 80), summary: '', weight: 1 } : { name: str(t?.name, 80), summary: str(t?.summary, 600), weight: Math.max(0.1, Math.min(1, Number(t?.weight) || 0.7)) })).filter((t) => t.name).slice(0, 8),
     glossary: arr(raw.glossary).map((g) => ({ term: str(g?.term, 80), definition: str(g?.definition, 600) })).filter((g) => g.term && g.definition).slice(0, 12),
@@ -104,7 +115,7 @@ function localInsights(note) {
   return {
     overview: first.replace(/\*\*/g, '').trim().slice(0, 1200),
     keyPoints: sections.filter((s) => s.bullets.length && !/action|decis|ação|ações|next|seguinte/i.test(s.title)).slice(0, 4),
-    decisions, actionItems: parseChecklist(md).map(({ done, ...a }) => a), nextSteps: [], topics: [], glossary: [], local: true,
+    decisions, actionItems: parseChecklist(md).map(({ done, ...a }) => ({ ...a, text: plain(a.text), owner: plain(a.owner, 80) })).filter((a) => a.text), nextSteps: [], topics: [], glossary: [], local: true,
   };
 }
 

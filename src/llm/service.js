@@ -113,11 +113,7 @@ class AiService {
     if (!q) throw new Error('Empty question');
     const { context, sources } = noteId ? this.noteContext(noteId, q) : this.globalContext(q);
     const history = this.notes.chatHistory(noteId).slice(-HISTORY_TURNS * 2);
-    const messages = [
-      { role: 'system', content: `${prompts.CHAT_SYSTEM}\n\n<context>\n${context}\n</context>` },
-      ...history.map((m) => ({ role: m.role, content: m.content })),
-      { role: 'user', content: q },
-    ];
+    const messages = prompts.chatMessages({ history, question: q, context });
     let answer = '';
     for await (const d of this.llm.stream(messages, { signal })) { answer += d; onDelta?.(d); }
     answer = answer.trim();
