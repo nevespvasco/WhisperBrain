@@ -149,6 +149,12 @@ function createRoutes(app) {
     return { segments: saved.length, durationMs: Math.round((pcm.length / 2 / 16000) * 1000), model: model.id };
   });
 
+  // search by words and by meaning together (opt-in, see src/search/semantic.js); without the index it is the word search
+  add('GET', '/api/search/semantic', async ({ query }) => {
+    const rows = await app.semantic.hybrid(query.q || '', { limit: Number(query.limit) || 20 });
+    return { available: app.semantic.available, reason: app.semantic.reason, results: rows.map((r) => ({ ...r.note, snippet: r.snippet, via: r.via })) };
+  });
+
   // advanced search
   add('GET', '/api/search', async ({ query }) => app.notes.advancedSearch({
     q: query.q || '', scope: query.scope || 'all', folderId: query.space || undefined, from: query.from, to: query.to,

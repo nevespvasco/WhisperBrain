@@ -16,6 +16,7 @@ asarUnpack:
   - "**/node_modules/sherpa-onnx-*/**"
   # Discord calls are end-to-end encrypted (DAVE); the bot decrypts them with a native module
   - "**/node_modules/@snazzah/davey-*/**"
+  - "**/node_modules/sqlite-vec-*/**"   # the native extension must be a real file on disk to be loaded
 extraResources:
   - from: resources
     to: resources

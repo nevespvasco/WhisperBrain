@@ -41,5 +41,8 @@
     "electron-builder": "26.18.0"
   },
   "homepage": "https://github.com/nevespvasco/WhisperBrain",
-  "desktopName": "whisperbrain.desktop"
+  "desktopName": "whisperbrain.desktop",
+  "optionalDependencies": {
+    "sqlite-vec": "^0.1.9"
+  }
 }

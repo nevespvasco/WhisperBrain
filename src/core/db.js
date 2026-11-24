@@ -268,11 +268,24 @@ const MIGRATIONS = [
   ALTER TABLE note_speakers ADD COLUMN name_source TEXT NOT NULL DEFAULT '';
   ALTER TABLE note_speakers ADD COLUMN name_confidence REAL;
   `,
+  // v11: search by meaning (src/search/semantic.js): a meeting's transcript cut into chunks, kept with where they are. The vectors
+  // live in a sqlite-vec table (semantic_vec) made by the program when the extension is there, since a virtual table needs it.
+  `
+  CREATE TABLE semantic_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX semantic_chunks_note ON semantic_chunks(note_id);
+  `,
 ];
 
-function open(file) {
+// allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
+function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
+  const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : undefined);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   migrate(db);
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }

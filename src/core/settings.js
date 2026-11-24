@@ -55,6 +55,7 @@ const DEFAULTS = {
   autoRecord: 'ask',            // when a meeting is detected: off | ask | always
   autoStop: true,               // stop an auto-started recording when the meeting app releases the microphone
   captureCalendar: 'off',       // start recording when a calendar meeting starts: off | selected | all
+  semanticSearch: false,        // also search by meaning (a spike, off by default: indexes the transcripts, needs the optional sqlite-vec; see src/search/semantic.js)
   voiceprints: true,            // voice prints at all: saving a voice and recognising saved ones (an organisation can switch it off, see policy.js)
   retentionDays: 0,             // delete meetings older than this many days (0 = keep them; set by an organisation, see policy.js)
   perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux, macOS 14.2+, Windows with the helper); off = everything the computer plays

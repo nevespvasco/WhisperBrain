@@ -29,18 +29,20 @@ const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { loadPolicy } = require('../core/policy');
+const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 
 function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy() } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
-  const conn = db.open(path.join(dataDir, 'whisperbrain.sqlite'));
+  const conn = db.open(path.join(dataDir, 'whisperbrain.sqlite'), { allowExtension: true });   // only so that sqlite-vec can be loaded once, on purpose
   const notes = new Notes(conn, bus);
   const settings = new Settings(conn, bus, secretBox, policy);
   const templates = new Templates(conn);
   const speakers = new Speakers(conn, bus);
   const evidence = new Evidence(conn);
   speakers.enabled = () => settings.get('voiceprints');
+  const semantic = new SemanticIndex({ db: conn, notes, embedder: new HashEmbedder() });
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
@@ -113,6 +115,13 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day
   const sweep = () => { try { account.applyRetention({ days: settings.get('retentionDays') }); } catch (e) { bus.publish('account.error', { message: `retention: ${e.message}` }); } };
   ready.then(sweep).catch(() => {});
+  // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
+  const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
+  ready.then(wantSemantic).catch(() => {});
+  bus.subscribe((e) => {
+    if (e.type === 'settings' && e.data.keys.includes('semanticSearch')) wantSemantic();
+    if (e.type === 'note.insights' && semantic.available && settings.get('semanticSearch')) semantic.indexNote(e.data.id).catch(() => {});
+  });
   const retentionTimer = detect ? setInterval(sweep, 86400000) : null;
   retentionTimer?.unref();
   if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }).catch(() => {});
@@ -120,7 +129,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   return Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
