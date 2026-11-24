@@ -205,7 +205,83 @@ export function menu(anchor, items, { align = 'start' } = {}) {
 }
 document.addEventListener('mousedown', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
 window.addEventListener('resize', closeMenu);
-document.addEventListener('scroll', closeMenu, true);
+document.addEventListener('scroll', (e) => { if (!openMenu?.contains(e.target)) closeMenu(); }, true);
+
+// A list to pick one value from: people, languages, any <select>. A search box appears once the list is long (20 people
+// on a call), the current value is ticked, and with `custom` whatever is typed can be used as is.
+// items: [{ value, label, hint, avatar, header }]. Resolves with the chosen value, or undefined when dismissed.
+export function pickFrom(anchor, items, { current, placeholder, custom, search = items.length > 8, width } = {}) {
+  closeMenu();
+  return new Promise((resolve) => {
+    const m = document.createElement('div');
+    m.className = 'menu picker';
+    m.setAttribute('role', 'dialog');
+    const r = anchor.getBoundingClientRect();
+    m.style.minWidth = `${Math.max(width || 0, r.width, 220)}px`;
+    m.innerHTML = `${search || custom ? `<div class="pk-search">${icon('search', 'sm')}<input type="search" autocomplete="off" placeholder="${esc(placeholder || t('Search…'))}" aria-label="${esc(placeholder || t('Search…'))}"></div>` : ''}<div class="pk-list" role="listbox"></div>`;
+    const list = m.querySelector('.pk-list'), input = m.querySelector('input');
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; if (openMenu === m) { closeMenu(); anchor.focus?.(); } else m.remove(); resolve(v); };
+    const draw = () => {
+      const q = (input?.value || '').trim().toLowerCase();
+      const shown = items.filter((it) => it.header ? !q : !q || `${it.label} ${it.hint || ''}`.toLowerCase().includes(q));
+      const exact = items.some((it) => !it.header && String(it.value).toLowerCase() === q);
+      list.innerHTML = shown.map((it) => it.header ? `<div class="mh">${esc(it.header)}</div>` : `<button type="button" role="option" class="${String(it.value) === String(current ?? '') ? 'sel' : ''}" aria-selected="${String(it.value) === String(current ?? '')}" data-v="${esc(it.value)}" ${it.disabled ? 'disabled' : ''}>${it.avatar ? avatar(it.avatar, { cls: 'xs' }) : ''}<span class="grow ellipsis">${esc(it.label)}</span>${it.hint ? `<span class="xsmall faint">${esc(it.hint)}</span>` : ''}</button>`).join('')
+        + (custom && q && !exact ? `<button type="button" role="option" class="pk-custom" data-v="${esc(input.value.trim())}">${icon('plus', 'sm')}<span class="grow ellipsis">${esc(custom.replace('{name}', input.value.trim()))}</span></button>` : '')
+        || `<div class="pk-none xsmall faint">${t('No matches')}</div>`;
+    };
+    draw();
+    document.body.append(m);
+    const place = () => {
+      const mw = m.offsetWidth, mh = m.offsetHeight;
+      const left = Math.max(8, Math.min(r.left, innerWidth - mw - 8));
+      let top = r.bottom + 6;
+      if (top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+      m.style.left = `${left}px`; m.style.top = `${top}px`;
+    };
+    place();
+    const opts = () => [...list.querySelectorAll('button:not(:disabled)')];
+    input?.addEventListener('input', () => { draw(); opts()[0]?.classList.add('kb'); });
+    m.addEventListener('click', (e) => { const b = e.target.closest('[data-v]'); if (b) finish(b.dataset.v); });
+    m.addEventListener('keydown', (e) => {
+      const bs = opts(), i = bs.indexOf(document.activeElement);
+      if (e.key === 'ArrowDown') { e.preventDefault(); bs[(i + 1) % bs.length]?.focus(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); if (i <= 0 && input) input.focus(); else bs[(i - 1 + bs.length) % bs.length]?.focus(); }
+      else if (e.key === 'Enter' && e.target === input) { e.preventDefault(); const b = list.querySelector('.kb') || bs[0]; if (b) finish(b.dataset.v); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(undefined); }
+      else if (e.key === 'Tab') finish(undefined);
+    });
+    openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+    const obs = new MutationObserver(() => { if (!m.isConnected) { obs.disconnect(); finish(undefined); } });
+    obs.observe(document.body, { childList: true });
+    setTimeout(() => (input || list.querySelector('.sel') || opts()[0])?.focus(), 0);
+    list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
+  });
+}
+
+// Every <select> opens the app's own list instead of the system one (which ignores the theme): same value, same
+// change event, so the code that reads them is untouched. data-native keeps the system list where it matters.
+const selectItems = (sel) => {
+  const out = [];
+  for (const el of sel.children) {
+    if (el.tagName === 'OPTGROUP') { out.push({ header: el.label }); for (const o of el.children) out.push({ value: o.value, label: o.textContent, disabled: o.disabled }); }
+    else if (el.tagName === 'OPTION' && !el.hidden) out.push({ value: el.value, label: el.textContent, disabled: el.disabled });
+  }
+  return out;
+};
+async function openSelect(sel) {
+  if (sel.dataset.open) return;
+  sel.dataset.open = '1';
+  const v = await pickFrom(sel, selectItems(sel), { current: sel.value, search: sel.options.length > 10 });
+  delete sel.dataset.open;
+  if (v === undefined || v === sel.value) return;
+  sel.value = v;
+  sel.dispatchEvent(new Event('input', { bubbles: true }));
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+}
+const ownSelect = (el) => el?.tagName === 'SELECT' && !el.multiple && !el.disabled && el.size <= 1 && !el.closest('[data-native]');
+document.addEventListener('mousedown', (e) => { if (e.button === 0 && ownSelect(e.target)) { e.preventDefault(); e.stopPropagation(); e.target.focus(); if (openAnchor === e.target) closeMenu(); else openSelect(e.target); } }, true);
+document.addEventListener('keydown', (e) => { if (ownSelect(e.target) && (e.key === ' ' || e.key === 'Enter' || (e.altKey && e.key === 'ArrowDown'))) { e.preventDefault(); openSelect(e.target); } }, true);
 
 // ---------- small components ----------
 export const empty = (ic, title, text = '', action = '') => `<div class="empty">${icon(ic)}<h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${action}</div>`;

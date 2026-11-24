@@ -1,6 +1,6 @@
 // One meeting: summary (overview, key points, decisions, action items), transcript (who said what), notes,
 // snippets and chat; the side column has speaker analytics, topics, glossary terms, links and related meetings.
-import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
@@ -200,50 +200,69 @@ function summaryTab(body) {
 const section = (k, title, ic, html, extra = '') => `<details class="section-card" open data-sec="${k}"><summary>${icon(ic)}${t(title)} ${extra}${icon('chevdown', 'sm chev')}</summary><div class="sb">${html}</div></details>`;
 const streamingHtml = () => `<div class="typing">${renderMarkdown(S.streaming.text) || `<span class="muted">${S.streaming.stage || t('Writing…')}</span>`}</div>`;
 
+// Action items read as a list; one at a time is opened for editing with the pencil (text, owner, due date), so a stray
+// click never changes a task. Due dates start today: a task is never due in the past.
+const todayIso = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
+function dueText(due) {
+  const today = todayIso(), tomorrow = new Date(Date.parse(today) + 864e5).toISOString().slice(0, 10);
+  if (due === today) return t('Today');
+  if (due === tomorrow) return t('Tomorrow');
+  const d = new Date(`${due}T12:00:00`);
+  return fmtDate(d.getTime(), { day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
+}
+// One calendar: the chip is the button, the date field inside it is only there to open the system date picker
+const dueChip = (id, due) => `<span class="chip act-due${due ? ' on' : ''}" title="${t('Due date')}">${icon('calendar', 'sm')}<span class="dl">${due ? esc(dueText(due)) : t('Due date')}</span><input type="date" id="${id}" min="${todayIso()}" value="${esc(due || '')}" aria-label="${t('Due date')}" tabindex="-1">${due ? `<button type="button" class="x" data-act="due-clear" aria-label="${t('No due date')}">${icon('x', 'sm')}</button>` : ''}</span>`;
+const ownerChip = (act, owner) => `<button type="button" class="chip${owner ? ' on' : ''}" data-act="${act}" aria-haspopup="listbox">${owner ? avatar(owner, { cls: 'xs' }) : icon('user', 'sm')}<span class="ellipsis">${owner ? esc(owner) : t('Unassigned')}</span>${icon('chevdown', 'sm')}</button>`;
+
 function actionsHtml() {
-  const rows = N.actions.map((a) => `<div class="act-row ${a.done ? 'done' : ''}" data-aid="${a.id}">
+  const today = todayIso();
+  const rows = N.actions.map((a) => {
+    if (N.editAction === a.id) return `<div class="act-row editing" data-aid="${a.id}">
+      <input type="checkbox" class="cbx" ${a.done ? 'checked' : ''} aria-label="${t('Done')}">
+      <div class="txt"><input class="act-text" value="${esc(a.text)}" aria-label="${t('Action item')}" autocomplete="off">
+        <div class="act-add-bar">${ownerChip('a-owner', N.editOwner)}${dueChip('a-edit-due', N.editDue)}<span class="spacer"></span>
+          <button type="button" class="btn sm ghost" data-act="a-cancel">${t('Cancel')}</button><button type="button" class="btn sm primary" data-act="a-save">${icon('check', 'sm')} ${t('Save')}</button></div></div></div>`;
+    const late = a.due && a.due < today && !a.done;
+    return `<div class="act-row ${a.done ? 'done' : ''}" data-aid="${a.id}">
     <input type="checkbox" class="cbx" ${a.done ? 'checked' : ''} aria-label="${t('Done')}">
-    <div class="txt"><div class="t" contenteditable="true" spellcheck="true" data-field="text">${esc(a.text)}</div>
-      <div class="meta"><button class="linkish" data-act="a-owner">${icon('user', 'sm')} ${a.owner ? esc(a.owner) : `<span class="faint">${t('Unassigned')}</span>`}</button>
-      <label class="row" style="gap:4px;cursor:pointer">${icon('calendar', 'sm')}<input type="date" required value="${esc(a.due)}" data-field="due" title="${t('Due date')}" style="height:22px;padding:0 4px;border:0;background:transparent;width:auto;font-size:12px;color:inherit"></label>
+    <div class="txt"><div class="t">${esc(a.text)}</div>
+      <div class="meta"><span class="row" style="gap:5px">${a.owner ? `${avatar(a.owner, { cls: 'xs' })} ${esc(a.owner)}` : `${icon('user', 'sm')} <span class="faint">${t('Unassigned')}</span>`}</span>
+      ${a.due ? `<span class="row${late ? ' late' : ''}" style="gap:4px" title="${esc(a.due)}">${icon('calendar', 'sm')} ${late ? `${t('Overdue')} · ` : ''}${esc(dueText(a.due))}</span>` : ''}
       ${a.extUrl ? `<a href="${esc(a.extUrl)}" target="_blank" rel="noopener noreferrer" class="badge accent">${icon('link', 'sm')} ${esc(a.extId || 'Linear')}</a>` : ''}</div></div>
-    <div class="tools">${!a.extUrl && S.integrations?.linear?.configured ? `<button class="btn ghost icon xs" data-act="a-linear" title="${t('Create a Linear issue')}">${icon('checksq', 'sm')}</button>` : ''}<button class="btn ghost icon xs" data-act="a-del" title="${t('Delete')}">${icon('trash', 'sm')}</button></div></div>`).join('');
-  return `<div id="actlist">${rows || `<div class="muted small" style="padding:4px 0 8px">${t('No action items yet. Enhancing or analysing the meeting finds them; you can also add your own.')}</div>`}</div>
+    <div class="tools"><button class="btn ghost icon xs" data-act="a-edit" title="${t('Edit')}" aria-label="${t('Edit')}">${icon('edit', 'sm')}</button>${!a.extUrl && S.integrations?.linear?.configured ? `<button class="btn ghost icon xs" data-act="a-linear" title="${t('Create a Linear issue')}">${icon('checksq', 'sm')}</button>` : ''}<button class="btn ghost icon xs" data-act="a-del" title="${t('Delete')}" aria-label="${t('Delete')}">${icon('trash', 'sm')}</button></div></div>`;
+  }).join('');
+  return `<div id="actlist" class="act-list">${rows || `<div class="muted small" style="padding:4px 0 8px">${t('No action items yet. Enhancing or analysing the meeting finds them; you can also add your own.')}</div>`}</div>
     ${addActionHtml()}`;
 }
 // Adding one by hand: the task, then who owns it and when it is due, all visible before it is created. Nothing is assigned
 // unless chosen ("Unassigned" is said plainly); the owner picked stays for the next task, so several can go to one person.
 function addActionHtml() {
-  const ow = N.addOwner || '';
-  const chips = actionPeople().map(({ value, label }) => `<button type="button" class="chip${value === ow ? ' on' : ''}" data-aowner="${esc(value)}">${esc(label)}</button>`).join('');
   return `<form class="act-add mt-s" id="a-add">
       <input id="a-new" autocomplete="off" placeholder="${t('What needs to be done?')}" aria-label="${t('New action item')}" title="${t('Add an action item… (use @name for the owner)')}">
-      <div class="act-add-bar">
-        <button type="button" class="chip${ow ? ' on' : ''}" data-act="a-pick" aria-expanded="false" aria-controls="a-people">${icon('user', 'sm')}<span class="ellipsis">${ow ? esc(ow) : t('Unassigned')}</span>${icon('chevdown', 'sm')}</button>
-        <label class="chip act-due" title="${t('Due date')}">${icon('calendar', 'sm')}<input type="date" id="a-due" aria-label="${t('Due date')}"></label>
-        <span class="spacer"></span>
+      <div class="act-add-bar">${ownerChip('a-pick', N.addOwner || '')}${dueChip('a-due', N.addDue || '')}<span class="spacer"></span>
         <button class="btn sm primary" id="a-submit" disabled>${icon('plus', 'sm')} ${t('Add')}</button>
       </div>
-      <div class="chips act-people" id="a-people" hidden>${chips}<button type="button" class="chip${ow ? '' : ' on'}" data-aowner="">${t('Unassigned')}</button><input id="a-other" autocomplete="off" placeholder="${t('Someone else…')}" aria-label="${t('Someone else…')}"></div>
     </form>`;
 }
-// Who can own a task here: me, everyone who spoke, everyone invited (each once)
+// Who can own a task here: me, everyone who spoke, everyone invited (each once), as a searchable list
 function actionPeople() {
   const me = S.settings?.userName || '';
   const out = new Map();
-  if (me) out.set(me.toLowerCase(), { value: me, label: `${me} (${t('Me')})` });
+  if (me) out.set(me.toLowerCase(), { value: me, label: me, hint: t('Me'), avatar: me });
+  const spoke = new Set(N.analytics.speakers.map((s) => String(s.label || '').trim().toLowerCase()));
   for (const name of [...N.analytics.speakers.map((s) => s.label), ...(N.note.attendees || []).map((x) => x.name)]) {
     const v = String(name || '').trim();
-    if (v && !out.has(v.toLowerCase())) out.set(v.toLowerCase(), { value: v, label: v });
+    if (v && !out.has(v.toLowerCase())) out.set(v.toLowerCase(), { value: v, label: v, hint: spoke.has(v.toLowerCase()) ? t('spoke') : t('invited'), avatar: v });
   }
   return [...out.values()];
 }
-function setAddOwner(v) {
-  N.addOwner = String(v || '').trim();
-  const pick = $('[data-act="a-pick"]'), box = $('#a-people');
-  if (pick) { pick.classList.toggle('on', !!N.addOwner); $('.ellipsis', pick).textContent = N.addOwner || t('Unassigned'); pick.setAttribute('aria-expanded', 'false'); }
-  if (box) { box.hidden = true; $$('[data-aowner]', box).forEach((c) => c.classList.toggle('on', c.dataset.aowner === N.addOwner)); }
-  $('#a-new')?.focus();
+function pickOwner(anchor, current) {
+  return pickFrom(anchor, [{ value: '', label: t('Unassigned') }, ...actionPeople()], { current, placeholder: t('Search people or type a name…'), custom: t('Assign to “{name}”'), search: true, width: 280 });
+}
+// The chip shows the date in words; the hidden field holds it
+function setDue(input) {
+  const chip = input.closest('.act-due');
+  chip.outerHTML = dueChip(input.id, input.value && input.value >= todayIso() ? input.value : '');
 }
 
 function transcriptTab(body) {
@@ -481,21 +500,15 @@ function bind(main) {
       else if (e.target.matches('#attachtranscript')) { await attachTranscript(e.target.files[0]); e.target.value = ''; }
       else if (e.target.matches('.seg-reassign')) { await api('POST', `/api/notes/${N.id}/segments/${e.target.dataset.seg}/speaker`, { speakerId: e.target.value }); await reloadTranscript(); }
       else if (e.target.matches('.act-row .cbx')) { const row = e.target.closest('.act-row'); await api('PATCH', `/api/actions/${row.dataset.aid}`, { done: e.target.checked }); row.classList.toggle('done', e.target.checked); const a = N.actions.find((x) => x.id === row.dataset.aid); if (a) a.done = e.target.checked; window.dispatchEvent(new Event('wb:refresh')); }
-      else if (e.target.matches('.act-row [data-field="due"]')) { const row = e.target.closest('.act-row'); await api('PATCH', `/api/actions/${row.dataset.aid}`, { due: e.target.value }); }
+      else if (e.target.matches('#a-due')) { N.addDue = e.target.value >= todayIso() ? e.target.value : ''; setDue(e.target); }
+      else if (e.target.matches('#a-edit-due')) { N.editDue = e.target.value >= todayIso() ? e.target.value : ''; setDue(e.target); }
     } catch (err) { fail(err); }
   };
-  main.addEventListener('focusout', async (e) => {
-    if (!e.target.matches?.('.act-row [data-field="text"]')) return;
-    const row = e.target.closest('.act-row'), a = N.actions.find((x) => x.id === row.dataset.aid);
-    const text = e.target.textContent.trim();
-    if (!a || text === a.text) return;
-    if (!text) { e.target.textContent = a.text; return; }
-    try { await api('PATCH', `/api/actions/${a.id}`, { text }); a.text = text; } catch (err) { fail(err); }
-  });
   main.addEventListener('keydown', (e) => {
-    if (e.target.matches?.('.act-row [data-field="text"]') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
-    else if (e.target.id === 'a-other' && e.key === 'Enter') { e.preventDefault(); if (e.target.value.trim()) setAddOwner(e.target.value); }
-    else if (e.key === 'Escape' && e.target.closest?.('#a-add') && !$('#a-people')?.hidden) { e.preventDefault(); setAddOwner(N.addOwner); }
+    if (e.target.matches?.('.act-row .act-text')) {
+      if (e.key === 'Enter') { e.preventDefault(); saveAction(); }
+      else if (e.key === 'Escape') { e.preventDefault(); N.editAction = null; rerenderActions(); }
+    }
   });
   main.addEventListener('submit', async (e) => {
     if (e.target.id !== 'a-add') return;
@@ -504,16 +517,31 @@ function bind(main) {
     if (!raw) return;
     // "@name" in the text still works as a shortcut and wins over the picker for this one task
     const owner = /@([\p{L}][\p{L}.-]*(?:\s[\p{Lu}][\p{L}.-]*)?)/u.exec(raw)?.[1] || N.addOwner || '';
-    try { const a = await api('POST', `/api/notes/${N.id}/actions`, { text: raw.replace(/@\S+(\s\p{Lu}\S*)?/u, '').trim() || raw, owner, due: $('#a-due')?.value || '' }); N.actions.push(a); rerenderActions(); $('#a-new')?.focus(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
+    try { const a = await api('POST', `/api/notes/${N.id}/actions`, { text: raw.replace(/@\S+(\s\p{Lu}\S*)?/u, '').trim() || raw, owner, due: N.addDue || '' }); N.actions.push(a); N.addDue = ''; rerenderActions(); $('#a-new')?.focus(); $('#actlist')?.lastElementChild?.scrollIntoView({ block: 'nearest' }); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
   });
   main.onclick = async (e) => {
     const tab = e.target.closest('[data-tab]');
     if (tab) { N.tab = tab.dataset.tab; history.replaceState(null, '', `#/note/${N.id}?tab=${N.tab}`); renderTab(); return; }
     if (e.target.closest('[data-merge-speakers]')) { mergeSpeakers(); return; }
-    const ao = e.target.closest('[data-aowner]');
-    if (ao) { setAddOwner(ao.dataset.aowner); return; }
-    const pick = e.target.closest('[data-act="a-pick"]');
-    if (pick) { const box = $('#a-people'); box.hidden = !box.hidden; pick.setAttribute('aria-expanded', String(!box.hidden)); if (!box.hidden) $('[data-aowner].on', box)?.focus(); return; }
+    const pick = e.target.closest('[data-act="a-pick"], [data-act="a-owner"]');
+    if (pick) {
+      const add = pick.dataset.act === 'a-pick';
+      const v = await pickOwner(pick, add ? N.addOwner || '' : N.editOwner);
+      if (v === undefined) return;
+      if (add) N.addOwner = v.trim(); else N.editOwner = v.trim();
+      pick.outerHTML = ownerChip(pick.dataset.act, v.trim());
+      (add ? $('#a-new') : $('.act-row.editing .act-text'))?.focus();
+      return;
+    }
+    const due = e.target.closest('.act-due');
+    if (due) {
+      e.preventDefault();
+      const input = $('input', due);
+      if (e.target.closest('[data-act="due-clear"]')) { input.value = ''; input.dispatchEvent(new Event('change', { bubbles: true })); return; }
+      input.min = todayIso();
+      try { input.showPicker(); } catch { input.focus(); }
+      return;
+    }
     const tv = e.target.closest('[data-tr-view]');
     if (tv) { N.tr.view = tv.dataset.trView; renderTab(); return; }
     if (e.target.closest('[data-tr-cancel]')) { const j = N.tr.job; N.tr.job = null; if (j) await api('POST', `/api/notes/${N.id}/translate/cancel`, { lang: j.lang }).catch(() => {}); renderTab(); return; }
@@ -555,7 +583,9 @@ function bind(main) {
       else if (a === 'copy-seg') { const s = N.segs.find((x) => x.id === Number(btn.closest('.seg').dataset.id)); await navigator.clipboard.writeText(`“${s.text}” — ${label(s)}`); done(t('Copied')); }
       else if (a === 'star') await toggleStar(btn.closest('.seg'));
       else if (a === 'a-del') { const id = btn.closest('.act-row').dataset.aid; await api('DELETE', `/api/actions/${id}`); N.actions = N.actions.filter((x) => x.id !== id); rerenderActions(); window.dispatchEvent(new Event('wb:refresh')); }
-      else if (a === 'a-owner') { const row = btn.closest('.act-row'), it = N.actions.find((x) => x.id === row.dataset.aid); const people = actionPeople().map((p) => p.value); const r = await promptDialog(t('Who owns this?'), it.owner, { extra: people.length ? `<div class="chips">${people.map((p) => `<button type="button" class="chip" data-suggest="${esc(p)}">${esc(p)}</button>`).join('')}</div>` : '' }); const v = typeof r === 'string' ? r : r?.value; if (v !== undefined && v !== null) { Object.assign(it, await api('PATCH', `/api/actions/${it.id}`, { owner: v })); rerenderActions(); } }
+      else if (a === 'a-edit') { const it = N.actions.find((x) => x.id === btn.closest('.act-row').dataset.aid); N.editAction = it.id; N.editOwner = it.owner || ''; N.editDue = it.due || ''; rerenderActions(); const inp = $('.act-row.editing .act-text'); inp?.focus(); inp?.setSelectionRange(inp.value.length, inp.value.length); }
+      else if (a === 'a-cancel') { N.editAction = null; rerenderActions(); }
+      else if (a === 'a-save') await saveAction();
       else if (a === 'a-linear') { btn.disabled = true; const id = btn.closest('.act-row').dataset.aid; const r = await api('POST', `/api/notes/${N.id}/send`, { target: 'linear', mode: 'actions', itemIds: [id] }); toast(t('Created {id}', { id: r.issues[0].identifier }), { ok: true }); await reloadOverview(main); }
       else if (a === 'add-topic') { const name = await promptDialog(t('Add a topic'), '', { placeholder: t('e.g. Pricing') }); if (name) { N.topics = await api('POST', `/api/notes/${N.id}/topics`, { name }); renderAside(); window.dispatchEvent(new Event('wb:refresh')); } }
       else if (a === 'add-link') await addLink();
@@ -776,7 +806,26 @@ async function reloadOverview(main) {
   if (!(N.tab === 'notes' && document.activeElement?.matches('.editor'))) renderTab();
   renderAside(); updateCounts();
 }
-function rerenderActions() { const sec = $('[data-sec="actions"] .sb'); if (sec) sec.innerHTML = actionsHtml(); updateCounts(); }
+async function saveAction() {
+  const row = $('.act-row.editing'), it = row && N.actions.find((x) => x.id === row.dataset.aid);
+  if (!it) return;
+  const text = $('.act-text', row).value.trim();
+  if (!text) { $('.act-text', row).focus(); return; }
+  try { Object.assign(it, await api('PATCH', `/api/actions/${it.id}`, { text, owner: N.editOwner, due: N.editDue })); N.editAction = null; rerenderActions(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
+}
+// drawn again (added, edited, deleted): the list keeps its scroll, and the task being edited is brought into view
+function rerenderActions() {
+  const sec = $('[data-sec="actions"] .sb');
+  if (sec) {
+    const top = $('#actlist')?.scrollTop || 0;
+    sec.innerHTML = actionsHtml();
+    $('#actlist').scrollTop = top;
+    $('.act-row.editing')?.scrollIntoView({ block: 'nearest' });
+    const badge = $('[data-sec="actions"] > summary .badge');
+    if (badge) badge.textContent = `${N.actions.filter((a) => !a.done).length}/${N.actions.length}`;
+  }
+  updateCounts();
+}
 function updateCounts() { $$('[data-count]').forEach((b) => { const c = count(b.dataset.count); b.textContent = c; b.hidden = !c; }); }
 
 // ---------- live events ----------

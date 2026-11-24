@@ -75,6 +75,19 @@ const cur = (names, extra = () => true) => (names.includes(S.view.name) && extra
 function navlink(href, ic, label, { count, current = '', title } = {}) {
   return `<a class="navlink" href="${href}" ${current} title="${esc(title || label)}">${ic}<span class="lbl">${esc(label)}</span>${count ? `<span class="count">${count}</span>` : ''}</a>`;
 }
+// Spaces and tags can grow without end: each is a folding group that shows the first few (plus the one open now) and
+// lists the rest in its own short scroll on demand, so Sources and the account stay within reach.
+const SIDE_FIRST = 5;
+const sideAll = new Set();
+const sideClosed = (k) => { try { return localStorage.getItem(`wb.side.${k}`) === '0'; } catch { return false; } };
+function sideGroup(key, label, addAct, addLabel, items, emptyText) {
+  const closed = sideClosed(key), all = sideAll.has(key);
+  const shown = all ? items : items.filter((it, i) => i < SIDE_FIRST || it.on);
+  return `<div class="side-group${closed ? ' closed' : ''}" data-group="${key}">
+    <div class="side-label"><button type="button" class="side-toggle" data-act="side-toggle" aria-expanded="${!closed}">${icon('chevdown', 'sm')}<span>${esc(label)}</span>${items.length ? `<span class="n">${items.length}</span>` : ''}</button><button class="btn ghost icon xs" data-act="${addAct}" title="${esc(addLabel)}" aria-label="${esc(addLabel)}">${icon('plus', 'sm')}</button></div>
+    ${closed ? '' : `<nav class="nav${all ? ' side-list' : ''}">${shown.map((it) => it.html).join('') || `<div class="xsmall faint side-more" style="padding:2px 10px">${esc(emptyText)}</div>`}</nav>
+    ${items.length > SIDE_FIRST ? `<button type="button" class="side-more-btn side-more" data-act="side-all">${all ? t('Show less') : t('Show all {n}', { n: items.length })}</button>` : ''}`}</div>`;
+}
 export function renderSidebar() {
   const st = S.state?.stats || {};
   const src = S.state?.sources || {};
@@ -99,16 +112,14 @@ export function renderSidebar() {
         ${navlink('#/glossary', icon('book'), t('Glossary'), { count: st.glossary, current: cur(['glossary', 'term']) })}
         ${navlink('#/people', icon('users'), t('People'), { current: cur(['people', 'person']) })}
       </nav>
-      <div class="side-label">${t('Spaces')}<button class="btn ghost icon xs" data-act="new-space" title="${t('New space')}" aria-label="${t('New space')}">${icon('plus', 'sm')}</button></div>
-      <nav class="nav">${S.spaces.map((f) => navlink(`#/meetings?space=${f.id}`, icon('folder'), f.name, { count: f.notes, current: inMeetings && p.get('space') === f.id ? 'aria-current="page"' : '' })).join('') || `<div class="xsmall faint side-more" style="padding:2px 10px">${t('Group meetings into spaces')}</div>`}</nav>
-      <div class="side-label">${t('Tags')}<button class="btn ghost icon xs" data-act="new-tag" title="${t('New tag')}" aria-label="${t('New tag')}">${icon('plus', 'sm')}</button></div>
-      <nav class="nav">${S.tags.map((tg) => `<a class="navlink" href="#/meetings?tag=${tg.id}" ${inMeetings && p.get('tag') === tg.id ? 'aria-current="page"' : ''} title="${esc(tg.name)}" data-tag="${tg.id}"><span class="tagdot" style="background:${tg.color}"></span><span class="lbl">${esc(tg.name)}</span><span class="count">${tg.notes || ''}</span></a>`).join('') || `<div class="xsmall faint side-more" style="padding:2px 10px">${t('No tags yet')}</div>`}</nav>
       <div class="side-label">${t('Sources')}</div>
       <nav class="nav">
         ${navlink('#/meetings?source=local', icon('mic'), t('Recorded here'), { count: (src.recorded || 0) + (src.manual || 0), current: inMeetings && p.get('source') === 'local' ? 'aria-current="page"' : '' })}
         ${navlink('#/meetings?source=imported', icon('inbox'), t('From outside'), { count: imported, current: inMeetings && p.get('source') === 'imported' ? 'aria-current="page"' : '' })}
         ${navlink('#/meetings?external=1', icon('globe'), t('External meetings'), { current: inMeetings && p.get('external') === '1' ? 'aria-current="page"' : '', title: t('Meetings with people outside your organisation') })}
       </nav>
+      ${sideGroup('spaces', t('Spaces'), 'new-space', t('New space'), S.spaces.map((f) => ({ on: inMeetings && p.get('space') === f.id, html: navlink(`#/meetings?space=${f.id}`, icon('folder'), f.name, { count: f.notes, current: inMeetings && p.get('space') === f.id ? 'aria-current="page"' : '' }) })), t('Group meetings into spaces'))}
+      ${sideGroup('tags', t('Tags'), 'new-tag', t('New tag'), S.tags.map((tg) => ({ on: inMeetings && p.get('tag') === tg.id, html: `<a class="navlink" href="#/meetings?tag=${tg.id}" ${inMeetings && p.get('tag') === tg.id ? 'aria-current="page"' : ''} title="${esc(tg.name)}" data-tag="${tg.id}"><span class="tagdot" style="background:${tg.color}"></span><span class="lbl">${esc(tg.name)}</span><span class="count">${tg.notes || ''}</span></a>` })), t('No tags yet'))}
     </div>
     <div class="side-foot">
       <button class="usercard" data-act="account-menu" aria-haspopup="menu" title="${esc(name)}">${avatar(name, { cls: 'lg' })}<span class="who"><b>${esc(name)}</b><span>${esc(S.settings?.userEmail || S.settings?.google?.email || t('Everything stays on this device'))}</span></span><span class="chev">${icon('chevdown', 'sm')}</span></button>
@@ -130,6 +141,8 @@ sidebar.addEventListener('click', async (e) => {
       ]);
       m.style.minWidth = `${el.offsetWidth}px`;
     }
+    else if (a === 'side-toggle') { const k = e.target.closest('[data-group]').dataset.group; try { localStorage.setItem(`wb.side.${k}`, sideClosed(k) ? '1' : '0'); } catch { /* remembered for this view only */ } renderSidebar(); }
+    else if (a === 'side-all') { const k = e.target.closest('[data-group]').dataset.group; if (!sideAll.delete(k)) sideAll.add(k); renderSidebar(); if (sideAll.has(k)) sidebar.querySelector(`[data-group="${k}"] .side-list`)?.scrollIntoView({ block: 'nearest' }); }
     else if (a === 'collapse') { S.settings = await api('PUT', '/api/settings', { sidebarCollapsed: !S.settings.sidebarCollapsed }); applyTheme(); }
     else if (a === 'new-space') { const name = await promptDialog(t('New space'), '', { placeholder: t('e.g. Customers, Hiring, Product') }); if (name) { const sp = await api('POST', '/api/spaces', { name }); await refreshCounts(); go(`#/meetings?space=${sp.id}`); } }
     else if (a === 'new-tag') { const name = await promptDialog(t('New tag'), '', { placeholder: t('e.g. Important') }); if (name) { await api('POST', '/api/tags', { name }); await refreshCounts(); } }

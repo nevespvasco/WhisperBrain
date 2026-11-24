@@ -5,32 +5,52 @@ import { S, $, api, t, esc, icon, fail, done, go, debounce, empty, modal, confir
 export async function render(main, { name, parts }) {
   if (name === 'term' && parts[1]) return termPage(main, parts[1]);
   const terms = await api('GET', '/api/glossary');
+  const KINDS = [['all', t('All'), () => true], ['auto', t('Found by AI'), (g) => g.auto], ['mine', t('Added by you'), (g) => !g.auto], ['undef', t('Needs a definition'), (g) => !g.definition]];
   main.innerHTML = `<div class="page narrow">
     <div class="page-head"><div><h1>${t('Glossary')}</h1><div class="sub">${t('The words, acronyms and product names your meetings use — so newcomers (and future you) can follow along.')}</div></div>
       <div class="actions"><button class="btn primary" data-act="add">${icon('plus', 'sm')} ${t('Add term')}</button></div></div>
-    <div class="toolbar"><div class="search-in">${icon('search', 'sm')}<input id="g-q" type="search" placeholder="${t('Search terms and definitions…')}"></div><span class="small muted">${t('{n} terms', { n: terms.length })}</span></div>
+    <div class="toolbar"><div class="search-in">${icon('search', 'sm')}<input id="g-q" type="search" placeholder="${t('Search terms and definitions…')}"></div>
+      <div class="seg-ctl" role="tablist">${KINDS.map(([v, l, f]) => `<button type="button" role="tab" data-kind="${v}" aria-selected="${v === 'all'}">${l} <span class="faint">${terms.filter(f).length}</span></button>`).join('')}</div></div>
+    <div class="gl-az" id="g-az" aria-label="${t('Jump to letter')}"></div>
     <div id="g-list"></div></div>`;
-  let q = '';
+  let q = '', kind = 'all';
+  const letterOf = (g) => { const L = (g.term[0] || '#').toUpperCase().normalize('NFD').replace(/\p{M}/gu, ''); return /\p{L}/u.test(L) ? L : '#'; };
   const draw = () => {
-    const list = terms.filter((g) => !q || [g.term, g.definition, ...g.aliases].join(' ').toLowerCase().includes(q));
+    const keep = KINDS.find(([v]) => v === kind)[2];
+    const list = terms.filter((g) => keep(g) && (!q || [g.term, g.definition, ...g.aliases].join(' ').toLowerCase().includes(q)))
+      .sort((x, y) => (letterOf(x) === '#') - (letterOf(y) === '#') || x.term.localeCompare(y.term, undefined, { sensitivity: 'base', numeric: true }));
     const box = $('#g-list', main);
-    if (!list.length) { box.innerHTML = `<div class="panel">${empty('book', terms.length ? t('No terms match') : t('Your glossary is empty'), t('When a meeting is enhanced, unfamiliar terms are collected here with a definition. You can add your own too.'))}</div>`; return; }
     const letters = new Map();
-    for (const g of list) { const L = (g.term[0] || '#').toUpperCase().normalize('NFD').replace(/\p{M}/gu, ''); if (!letters.has(L)) letters.set(L, []); letters.get(L).push(g); }
-    box.innerHTML = [...letters.entries()].map(([L, items]) => `<div class="gl-letter">${esc(L)}</div><div class="list">${items.map((g) => `<div class="gl-item" data-id="${g.id}">
-      <div><a class="term-name" href="#/term/${g.id}">${esc(g.term)}</a>${g.aliases.length ? `<div class="xsmall muted">${esc(g.aliases.join(', '))}</div>` : ''}${g.auto ? `<span class="badge accent" title="${t('Found by AI')}" style="margin-top:4px">${icon('sparkles', 'sm')} ${t('auto')}</span>` : ''}</div>
-      <div class="small" style="color:var(--text-2)">${esc(g.definition) || `<span class="faint">${t('No definition yet')}</span>`}${g.noteTitle ? `<div class="xsmall muted" style="margin-top:4px">${t('First seen in')} <a href="#/note/${g.noteId}">${esc(g.noteTitle)}</a></div>` : ''}</div>
-      <div class="row" style="gap:2px"><button class="btn ghost icon xs" data-edit="${g.id}" aria-label="${t('Edit')}">${icon('edit', 'sm')}</button><button class="btn ghost icon xs" data-del="${g.id}" aria-label="${t('Delete')}">${icon('trash', 'sm')}</button></div></div>`).join('')}</div>`).join('');
+    for (const g of list) { const L = letterOf(g); if (!letters.has(L)) letters.set(L, []); letters.get(L).push(g); }
+    // a short glossary is one grid; letters (and the A–Z bar) only once there is enough to look things up in
+    const byLetter = list.length > 12;
+    $('#g-az', main).innerHTML = byLetter ? [...'ABCDEFGHIJKLMNOPQRSTUVWXYZ#'].map((L) => `<button type="button" data-jump="${L}" ${letters.has(L) ? '' : 'disabled'}>${L}</button>`).join('') : '';
+    if (!list.length) { box.innerHTML = `<div class="panel">${empty('book', terms.length ? t('No terms match') : t('Your glossary is empty'), t('When a meeting is enhanced, unfamiliar terms are collected here with a definition. You can add your own too.'))}</div>`; return; }
+    const card = (g) => `<article class="gl-card" data-id="${g.id}">
+      <div class="gl-top"><a class="term-name" href="#/term/${g.id}">${esc(g.term)}</a>${g.auto ? `<span class="gl-auto" title="${t('Found by AI')}">${icon('sparkles', 'sm')}</span>` : ''}
+        <span class="gl-tools"><button class="btn ghost icon xs" data-edit="${g.id}" aria-label="${t('Edit')}" title="${t('Edit')}">${icon('edit', 'sm')}</button><button class="btn ghost icon xs" data-del="${g.id}" aria-label="${t('Delete')}" title="${t('Delete')}">${icon('trash', 'sm')}</button></span></div>
+      ${g.aliases.length ? `<div class="gl-aliases">${g.aliases.map((a) => `<span>${esc(a)}</span>`).join('')}</div>` : ''}
+      <p class="gl-def">${esc(g.definition) || `<button type="button" class="linkish" data-edit="${g.id}">${icon('plus', 'sm')} ${t('Add a definition')}</button>`}</p>
+      ${g.noteTitle ? `<div class="gl-src">${icon('video', 'sm')}<span>${t('First seen in')}</span> <a href="#/note/${g.noteId}" class="ellipsis">${esc(g.noteTitle)}</a></div>` : ''}</article>`;
+    box.innerHTML = !byLetter ? `<div class="gl-grid">${list.map(card).join('')}</div>`
+      : [...letters.entries()].map(([L, items]) => `<section class="gl-sec" id="gl-${L === '#' ? 'num' : L}"><div class="gl-letter"><span>${esc(L)}</span><i></i><span class="faint">${items.length}</span></div><div class="gl-grid">${items.map(card).join('')}</div></section>`).join('');
   };
   draw();
   $('#g-q', main).addEventListener('input', debounce((e) => { q = e.target.value.trim().toLowerCase(); draw(); }, 150));
   main.onclick = async (e) => {
     try {
-      if (e.target.closest('[data-act="add"]')) { if (await editTerm()) render(main, { name, parts }); }
+      const k = e.target.closest('[data-kind]');
+      if (k) { kind = k.dataset.kind; main.querySelectorAll('[data-kind]').forEach((b) => b.setAttribute('aria-selected', String(b === k))); draw(); return; }
+      const j = e.target.closest('[data-jump]');
+      if (j) { $(`#gl-${j.dataset.jump === '#' ? 'num' : j.dataset.jump}`, main)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); return; }
+      if (e.target.closest('[data-act="add"]')) { if (await editTerm()) render(main, { name, parts }); return; }
       const ed = e.target.closest('[data-edit]');
-      if (ed) { if (await editTerm(terms.find((g) => g.id === ed.dataset.edit))) render(main, { name, parts }); }
+      if (ed) { if (await editTerm(terms.find((g) => g.id === ed.dataset.edit))) render(main, { name, parts }); return; }
       const del = e.target.closest('[data-del]');
-      if (del) { const g = terms.find((x) => x.id === del.dataset.del); if (await confirmDialog(t('Remove “{term}” from the glossary?', { term: g.term }))) { await api('DELETE', `/api/glossary/${g.id}`); terms.splice(terms.indexOf(g), 1); draw(); window.dispatchEvent(new Event('wb:refresh')); } }
+      if (del) { const g = terms.find((x) => x.id === del.dataset.del); if (await confirmDialog(t('Remove “{term}” from the glossary?', { term: g.term }))) { await api('DELETE', `/api/glossary/${g.id}`); terms.splice(terms.indexOf(g), 1); draw(); window.dispatchEvent(new Event('wb:refresh')); } return; }
+      // the whole card opens the term, links and buttons inside keep their own job
+      const card = e.target.closest('.gl-card');
+      if (card && !e.target.closest('a, button') && !getSelection().toString()) go(`#/term/${card.dataset.id}`);
     } catch (err) { fail(err); }
   };
 }
