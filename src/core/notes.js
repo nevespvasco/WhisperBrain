@@ -198,6 +198,7 @@ class Notes {
   // display label: the name the user gave, else a saved voice profile's name, else "Speaker 2" / "Me".
   segments(noteId) {
     return this.db.prepare(`SELECT s.id, s.speaker, s.channel, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
+        CASE WHEN s.words IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM json_each(s.words) w WHERE json_extract(w.value, '$[3]') = 1) END AS overlap,
         COALESCE(NULLIF(ns.name, ''), v.name, '') AS speakerName
       FROM segments s LEFT JOIN note_speakers ns ON ns.note_id = s.note_id AND ns.speaker_id = s.speaker_id LEFT JOIN voices v ON v.id = ns.voice_id
       WHERE s.note_id = ? ORDER BY s.start_ms, s.id`).all(noteId)

@@ -253,7 +253,7 @@ test('foldStarved: a voice with almost no speech joins its nearest neighbour; cl
   assert.equal(foldStarved({ turns: res.turns.slice(0, 2), voices: res.voices.slice(0, 2) }, { minShare: 0.05, minSeconds: 8 }).folded, 0);
 });
 
-test('diarizeChannel: the calendar count is passed to the clustering as a soft hint and a starved extra voice is folded away', async () => {
+test('diarizeChannel: the calendar count is an upper bound, not forced on the clustering, and a starved extra voice is folded away', async () => {
   const db = open(':memory:');
   const notes = new Notes(db, new Bus()), speakers = new Speakers(db, new Bus());
   const n = notes.create({});
@@ -262,6 +262,43 @@ test('diarizeChannel: the calendar count is passed to the clustering as a soft h
   const seen = [];
   const fake = async (o) => { seen.push(o.numSpeakers); return { turns: [{ start: 0, end: 60, speaker: 0 }, { start: 59, end: 60, speaker: 1 }], voices: [{ speaker: 0, centroid: Float32Array.from([1, 0, 0, 0]), pitch: 120, ms: 60000 }, { speaker: 1, centroid: Float32Array.from([0.9, 0.1, 0, 0]), pitch: 121, ms: 1000 }] }; };
   const out = await diarizeChannel({ diarize: fake, notes, speakers, noteId: n.id, channel: 'system', source: { file: '/x' }, stretches: [{ at: 0, ms: 0 }], segIds: [a.id], segmentation: '/s', embedding: '/e', options: { expected: 2 } });
-  assert.deepEqual(seen, [2]);
+  assert.deepEqual(seen, [undefined], 'the clustering is free to find fewer people than were invited');
   assert.equal(out.speakers, 1, 'the one-second extra voice was folded into the first');
+});
+
+// ---- the count from the roster / calendar is an upper bound; only the person's own count is forced ----
+function boundRig(voicesFound, { expected, numSpeakers } = {}) {
+  const db = open(':memory:');
+  const notes = new Notes(db, new Bus()), speakers = new Speakers(db, new Bus());
+  const n = notes.create({});
+  // one utterance per voice, inside that voice's 100 s of the call
+  const made = notes.addSegments(n.id, Array.from({ length: voicesFound }, (_, k) => ({ speaker: 'them', speakerId: 's1', startMs: k * 100000 + 1000, endMs: k * 100000 + 3000, text: 'hello there', words: [['hello', 0, 400], ['there', 500, 900]] })));
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: Float32Array.from([1, 0, 0, 0]), count: 1 });
+  const seen = [];
+  // voice k: 100 s of speech each (k = 0..), centroids: 0 and 1 alike, 2 and 3 alike
+  const cent = [[1, 0.1, 0, 0], [0.9, 0.2, 0, 0], [0, 0, 1, 0.1], [0, 0, 0.9, 0.2]];
+  const fake = async (o) => { seen.push(o.numSpeakers); return {
+    turns: Array.from({ length: voicesFound }, (_, k) => ({ start: k * 100, end: k * 100 + 100, speaker: k })),
+    voices: Array.from({ length: voicesFound }, (_, k) => ({ speaker: k, centroid: Float32Array.from(cent[k]), pitch: 120, ms: 100000 })) }; };
+  const run = () => diarizeChannel({ diarize: fake, notes, speakers, noteId: n.id, channel: 'system', source: { file: '/x' }, stretches: [{ at: 0, ms: 0 }], segIds: made.map((m) => m.id), segmentation: '/s', embedding: '/e', options: { ...(expected ? { expected } : {}), ...(numSpeakers ? { numSpeakers } : {}) } });
+  return { run, seen };
+}
+
+test('upper bound: more voices than the roster allows are merged down, closest voices first', async () => {
+  const r = boundRig(4, { expected: 2 });
+  const out = await r.run();
+  assert.deepEqual(r.seen, [undefined]);
+  assert.equal(out.speakers, 2, 'four voices became two: {0,1} and {2,3}, the pairs that sound alike');
+});
+
+test('upper bound: fewer voices than invited stay as they are (not everybody came)', async () => {
+  const r = boundRig(2, { expected: 4 });
+  assert.equal((await r.run()).speakers, 2);
+  assert.deepEqual(r.seen, [undefined]);
+});
+
+test('forced: the count the person gave ("Others on the call") is still passed to the clustering as it is', async () => {
+  const r = boundRig(4, { numSpeakers: 3 });
+  await r.run();
+  assert.deepEqual(r.seen, [3]);
 });

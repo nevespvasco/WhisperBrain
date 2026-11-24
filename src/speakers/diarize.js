@@ -129,7 +129,7 @@ function splitByWords(seg, labels) {
     const startMs = k === 0 ? seg.startMs : seg.startMs + p.w[0][1];
     const endMs = k === parts.length - 1 ? seg.endMs : seg.startMs + parts[k + 1].w[0][1];
     const off = startMs - seg.startMs;
-    return { startMs, endMs, text: p.w.map((w) => w[0]).join(' '), words: p.w.map(([t, s, e]) => [t, s - off, e - off]), speakerId: p.speakerId };
+    return { startMs, endMs, text: p.w.map((w) => w[0]).join(' '), words: p.w.map(([t, s, e, o]) => (o ? [t, s - off, e - off, 1] : [t, s - off, e - off])), speakerId: p.speakerId };
   });
 }
 
@@ -140,13 +140,18 @@ function planChannel({ segments, turns, prefix = 's', usedIds = [], tolerance = 
   const { map, born } = mapSpeakers(segments, turns, { prefix, usedIds });
   const changes = [];
   let nWords = 0, overlapped = 0;
-  for (const seg of segments) {
+  for (let seg of segments) {
     const words = (seg.words || []).map(([, s, e]) => ({ startMs: seg.startMs + s, endMs: seg.startMs + e }));
     let parts = null;
+    let flagChanged = false;
     if (words.length) {
       const got = assignWords(words, turns, { tolerance });
       nWords += got.length;
       overlapped += got.filter((g) => g.overlap).length;
+      // an overlapped word (two people talking at once) carries a fourth element, 1; redone from scratch on every pass
+      const flagged = seg.words.map(([t, s, e], i) => (got[i].overlap ? [t, s, e, 1] : [t, s, e]));
+      flagChanged = flagged.some((w, i) => (w[3] || 0) !== (seg.words[i][3] || 0));
+      seg = { ...seg, words: flagged };
       // a word with no turn near it keeps the label of its neighbours (or the utterance's own)
       const labels = got.map((g) => (g.speaker === null ? null : map.get(g.speaker)));
       for (let i = 0; i < labels.length; i++) if (!labels[i]) labels[i] = labels[i - 1] || labels.find(Boolean) || seg.speakerId;
@@ -158,7 +163,7 @@ function planChannel({ segments, turns, prefix = 's', usedIds = [], tolerance = 
       const best = [...cover].sort((a, b) => b[1] - a[1])[0];
       parts = [{ ...pick(seg), speakerId: best ? map.get(best[0]) : seg.speakerId }];
     }
-    if (parts.length > 1 || parts[0].speakerId !== seg.speakerId) changes.push({ id: seg.id, parts });
+    if (parts.length > 1 || parts[0].speakerId !== seg.speakerId || flagChanged) changes.push({ id: seg.id, parts });
   }
   return { map, born, changes, words: nWords, overlapped };
 }

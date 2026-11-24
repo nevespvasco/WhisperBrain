@@ -31,6 +31,13 @@ class Speakers {
     return rows.map((r) => ({ ...r, centroid: fromBlob(r.centroid) }));
   }
 
+  // Milliseconds of this speaker's speech that were spoken while somebody else talked (the after-recording pass flags those
+  // words, see diarize.js): not clean speech, so not counted towards a saved voice.
+  overlapMs(noteId, speakerId) {
+    return this.db.prepare(`SELECT COALESCE(SUM(json_extract(w.value, '$[2]') - json_extract(w.value, '$[1]')), 0) AS ms
+      FROM segments s, json_each(s.words) w WHERE s.note_id = ? AND s.speaker_id = ? AND s.words IS NOT NULL AND json_extract(w.value, '$[3]') = 1`).get(noteId, speakerId).ms;
+  }
+
   publicForNote(noteId, userName) {
     return this.forNote(noteId).filter((s) => s.segments > 0).map(({ centroid, ...s }) => ({ ...s, label: s.name || s.voiceName || defaultLabel(s.speakerId, s.channel === 'mic' ? 'me' : 'them', userName) }));
   }
@@ -92,7 +99,7 @@ class Speakers {
   learnFromMeeting(noteId, speakerId, { consent = false } = {}) {
     if (consent !== true) return false;
     const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
-    if (!sp?.name || !sp.centroid || sp.talkMs < 8000) return false; // a voice print needs some seconds of speech to mean anything
+    if (!sp?.name || !sp.centroid || sp.talkMs - this.overlapMs(noteId, speakerId) < 8000) return false; // a voice print needs some seconds of clean speech to mean anything
     const existing = this.voiceByName(sp.name);
     if (existing && sp.voiceId !== existing.id) return false;
     this.rename(noteId, speakerId, sp.name, { remember: true, consentSource: 'meeting', keepSource: true });
@@ -155,7 +162,8 @@ class Speakers {
     }
     if (remember && clean && sp.centroid && CONSENT_SOURCES.has(consentSource)) {
       const existing = voiceId ? this.voice(voiceId) : this.voiceByName(clean);
-      const seconds = sp.talkMs > 0 ? sp.talkMs / 1000 : Math.max(1, sp.count) * 3;
+      // overlapped speech is two people at once: it does not count as this person's clean speech
+      const seconds = sp.talkMs > 0 ? Math.max(0, sp.talkMs - this.overlapMs(noteId, speakerId)) / 1000 : Math.max(1, sp.count) * 3;
       const print = { embedding: sp.centroid, weight: Math.min(30, seconds), channel: sp.channel === 'mic' ? 'mic' : 'system', pitch: sp.pitch, source };
       if (existing) {
         this.reinforce(existing.id, print, { name: clean, utterances: Math.max(1, sp.count) });

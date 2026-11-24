@@ -358,6 +358,8 @@ export const PT = {
   'The only other person on the call.': 'A única outra pessoa na chamada.',
   'The platform’s own transcript: its words matched what this voice said.': 'A transcrição da própria plataforma: as palavras coincidiram com o que esta voz disse.',
   '{n}% sure': '{n}% de certeza',
+  'overlap': 'sobreposição',
+  'Somebody else was talking at the same time here: some words may be less reliable, and they are not used to learn a voice.': 'Outra pessoa estava a falar ao mesmo tempo: algumas palavras podem ser menos fiáveis e não servem para aprender uma voz.',
   'Merge speakers': 'Juntar oradores',
   'Merge': 'Juntar',
   'Two names for the same person? Join them.': 'Dois nomes para a mesma pessoa? Junta-os.',

@@ -150,7 +150,7 @@ function segHtml(s) {
   const name = label(s);
   const starred = N.snippets.some((x) => x.segmentId === s.id);
   return `<div class="seg ${starred ? 'starred' : ''}" data-id="${s.id}">${avatar(name, { color: speakerColor(s.speakerId, name) })}
-    <div><div class="who"><button class="linkish" data-rename="${esc(s.speakerId || '')}" style="color:${speakerColor(s.speakerId, name)}">${esc(name)}</button><span class="ts">${fmtClock(s.startMs)}</span></div>
+    <div><div class="who"><button class="linkish" data-rename="${esc(s.speakerId || '')}" style="color:${speakerColor(s.speakerId, name)}">${esc(name)}</button><span class="ts">${fmtClock(s.startMs)}</span>${s.overlap ? `<span class="overlap" title="${esc(t('Somebody else was talking at the same time here: some words may be less reliable, and they are not used to learn a voice.'))}">${icon('users', 'sm')} ${t('overlap')}</span>` : ''}</div>
     <div class="txt">${highlightTerms(s.text)}</div></div>
     <div class="tools"><button class="btn ghost icon xs star-btn" data-act="star" title="${starred ? t('Remove from snippets') : t('Save as snippet')}" aria-label="${t('Save as snippet')}">${icon('star', 'sm')}</button>
       ${N.speakers.length > 1 && s.speakerId ? `<select class="seg-reassign" data-seg="${s.id}" aria-label="${t('Change who said this')}" title="${t('Change who said this')}">${N.speakers.map((x) => `<option value="${x.speakerId}" ${x.speakerId === s.speakerId ? 'selected' : ''}>${esc(spLabel(x))}</option>`).join('')}</select>` : ''}
