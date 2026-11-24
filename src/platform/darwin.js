@@ -4,6 +4,7 @@
 // NOTE: written without access to a Mac - only the pure parsers are unit-tested.
 const { execFile } = require('node:child_process');
 const { classify, classifyWindowTitle } = require('./apps');
+const { systemSource } = require('./native-capture');
 
 const run = (cmd, args, { timeout = 4000 } = {}) => new Promise((resolve) => {
   execFile(cmd, args, { timeout, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
@@ -48,17 +49,24 @@ function meetingWindowsFromHelper(text) {
   return [];
 }
 
+// A Core Audio process tap (what the capture helper uses) exists from macOS 14.2, which is Darwin 23.2.
+const hasProcessTap = (osRelease) => { const [major, minor] = String(osRelease).split('.').map(Number); return major > 23 || (major === 23 && minor >= 2); };
+
 // windowsHelper: { command, args(mode) } from src/meet/a11y-source.js, when the helper is there
-function create({ clipboard, windowsHelper = null } = {}) {
+// captureHelper: { command, prefixArgs } from src/platform/native-capture.js: system audio from the helper (macOS 14.2+)
+// instead of the renderer. The microphone stays with the renderer: the helper's echo-cancelled `mic` mode is there to be tried
+// on a Mac before it is switched on.
+function create({ clipboard, windowsHelper = null, captureHelper = null, osRelease = require('node:os').release() } = {}) {
+  const nativeSystem = !!captureHelper && hasProcessTap(osRelease);
   return {
     id: 'darwin',
     session: 'aqua',
-    capture: { mic: 'renderer', system: 'renderer' },
+    capture: { mic: 'renderer', system: nativeSystem ? 'native' : 'renderer' },
     async capabilities() {
       return {
         platform: 'darwin', session: 'aqua', mic: true, systemAudio: true, micActivity: true, paste: true,
         notes: [
-          'System audio needs macOS 13+ and the Screen & System Audio Recording permission.',
+          nativeSystem ? 'System audio is captured per application (macOS 14.2+) and needs the System Audio Recording permission.' : 'System audio needs macOS 13+ and the Screen & System Audio Recording permission.',
           'Auto-paste needs the Accessibility permission.',
           'Meeting detection is heuristic on macOS (power assertions of call apps).',
         ],
@@ -66,7 +74,8 @@ function create({ clipboard, windowsHelper = null } = {}) {
     },
     async listMics() { return []; }, // enumerated in the renderer
     createMicSource() { return null; },
-    async createSystemSource() { return null; },
+    // Native only: the helper captures the meeting app's audio (or everything). null = the renderer captures it.
+    async createSystemSource({ app } = {}) { return nativeSystem ? systemSource(captureHelper, app) : null; },
     async micActivity() {
       const out = await run('pmset', ['-g', 'assertions']);
       if (out === null) return { supported: false, active: false, apps: [] };
