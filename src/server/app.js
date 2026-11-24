@@ -28,13 +28,13 @@ const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null } = {}) {
+function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
   const conn = db.open(path.join(dataDir, 'whisperbrain.sqlite'));
   const notes = new Notes(conn, bus);
-  const settings = new Settings(conn, bus);
+  const settings = new Settings(conn, bus, secretBox);
   const templates = new Templates(conn);
   const speakers = new Speakers(conn, bus);
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
@@ -108,9 +108,12 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
+  const ready = settings.init();
   return Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
+    ready,                       // resolves when the secrets are opened: await it before anything reads an API key
+    settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings }, id, opts),
     async state() {
       const caps = await plat.capabilities();
@@ -127,6 +130,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
         sources: notes.sourceCounts(),
         detector: typeof detector.status === 'function' ? detector.status() : null,
         pdf: !!renderPdf,
+        secrets: settings.secretStatus(),
       };
     },
     close() {
@@ -135,7 +139,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
       meet.close().catch(() => {});
       discord.logout().catch(() => {});
       engine.stop();
-      try { conn.close(); } catch { /* already closed */ }
+      const closeDb = () => { try { conn.close(); } catch { /* already closed */ } };
+      self.settled = settings.box ? settings.flush().then(closeDb) : (closeDb(), Promise.resolve());   // a sealed write may still be queued
     },
   });
 }

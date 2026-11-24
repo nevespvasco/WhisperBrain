@@ -48,10 +48,21 @@ const adviceCard = (adv) => {
 const fitBadge = (id) => { const f = FIT[S.state?.modelAdvice?.models[id]?.fit]; return f ? `<span class="badge ${f[0]}">${t(f[1])}</span>` : ''; };
 const whenLine = (id) => { const w = WHEN[S.state?.modelAdvice?.models[id]?.when]; return w ? `<div class="small mt-s"><b>${t('When to use')}:</b> ${t(w)}</div>` : ''; };
 
+// How API keys and tokens rest on disk (src/core/secret-box.js). Only worth a line when the protection is weak.
+const secretsBanner = () => {
+  const st = S.state?.secrets;
+  if (!st || !st.warning) return '';
+  if (st.warning === 'key-file') return `<div class="banner small mb">${icon('lock')}<div class="grow">${t('API keys and tokens are sealed with a key file next to your data. That keeps them out of a copied database, but anyone who can read both files can read them.')}</div></div>`;
+  const why = st.warning === 'no-backend' ? t('This computer has no system keystore available to protect your API keys and tokens.') : t('The system keystore on this computer gives no real protection (it is the “basic text” fallback), so your API keys and tokens are stored as plain text.');
+  if (st.needsChoice) return `<div class="banner warn small mb" role="alert">${icon('lock')}<div class="grow">${why} ${t('Choose what to do:')}</div>
+    <button class="btn xs" data-act="secrets-plaintext">${t('Keep them as plain text')}</button><button class="btn xs" data-act="secrets-never">${t('Do not save them')}</button></div>`;
+  return `<div class="banner small mb">${icon('lock')}<div class="grow">${why} ${st.policy === 'never' ? t('You chose not to save them: they are forgotten when the app closes.') : t('You chose to keep them as plain text.')}</div></div>`;
+};
+
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
   const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
-    <div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
+    ${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
     <div id="secbody" class="set-section" data-sec="${sec}">${inner}</div></div></div>`;
   // Re-rendering the section already on screen (removing a model, a download finishing…) must not jump the page:
   // build the new content first, swap it in one go, and put the scroll position back.
@@ -224,6 +235,10 @@ function bind(main, sec, body) {
       else if (b.dataset.modelRemove) { if (await confirmDialog(t('Remove this speech model? You can download it again later.'), { ok: t('Remove') })) { await api('DELETE', `/api/models/${b.dataset.modelRemove}`); rerender(); } }
       else if (b.dataset.act === 'tpl-add' || b.dataset.tplEdit) await editTemplate(S.templates.find((x) => x.id === b.dataset.tplEdit), rerender);
       else if (b.dataset.tplDel) { if (await confirmDialog(t('Delete this template?'))) { await api('DELETE', `/api/templates/${b.dataset.tplDel}`); rerender(); } }
+      else if (b.dataset.act === 'secrets-plaintext') { await save({ secretStorage: 'plaintext' }); S.state = await api('GET', '/api/state'); rerender(); }
+      else if (b.dataset.act === 'secrets-never') {
+        if (await confirmDialog(t('Remove your saved API keys and tokens from this computer? You will need to enter them again after restarting.'), { ok: t('Do not save'), danger: false })) { await save({ secretStorage: 'never' }); S.state = await api('GET', '/api/state'); rerender(); }
+      }
       else if (b.dataset.act === 'llm-save') { await save({ llm: llmForm() }); $('#llm-result').textContent = '✓'; S.state = await api('GET', '/api/state'); }
       else if (b.dataset.act === 'llm-list') { await save({ llm: llmForm() }); const r = await api('GET', '/api/llm/models'); $('#llm-models').innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join(''); $('#llm-result').textContent = t('{n} models', { n: r.models.length }); if (!$('#llm-model').value && r.models[0]) $('#llm-model').value = r.models[0]; }
       else if (b.dataset.act === 'llm-test') { await save({ llm: llmForm() }); $('#llm-result').textContent = '…'; const r = await api('POST', '/api/llm/test'); $('#llm-result').textContent = r.ok ? `✓ ${r.model}` : `✗ ${r.error}`; S.state = await api('GET', '/api/state'); }

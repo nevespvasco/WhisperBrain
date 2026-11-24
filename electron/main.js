@@ -1,7 +1,8 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen } = require('electron');
+const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen, safeStorage } = require('electron');
+const { electronSecretBox } = require('../src/core/secret-box');
 const { SIZE, shouldShow, placeWithin, defaultBounds } = require('./float');
 
 const ROOT = path.join(__dirname, '..');
@@ -45,7 +46,9 @@ async function captureMeetingWindow() {
 
 async function start() {
   const dataDir = app.getPath('userData');
-  core = createApp({ dataDir, clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf, captureWindow: captureMeetingWindow });
+  // API keys and tokens rest sealed by the OS keystore (safeStorage); on Linux without a real one the person is asked, see Settings.
+  core = createApp({ dataDir, secretBox: electronSecretBox(safeStorage), clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf, captureWindow: captureMeetingWindow });
+  await core.ready;
   server = createServer(core, { uiDir: path.join(ROOT, 'ui') });
   const { port, token, url } = await server.listen(0);
   origin = url;
@@ -335,7 +338,7 @@ async function shutdown() {
   globalShortcut.unregisterAll();
   hideFloat();
   try { if (core?.recording.status().active) await Promise.race([core.recording.stop(), new Promise((r) => setTimeout(r, 15000))]); } catch { /* best effort */ }
-  try { await server?.close(); core?.close(); } catch { /* best effort */ }
+  try { await server?.close(); core?.close(); await core?.settled; } catch { /* best effort */ }
 }
 
 app.on('second-instance', showWindow);

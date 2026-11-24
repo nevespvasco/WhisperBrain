@@ -54,6 +54,7 @@ const DEFAULTS = {
   captureCalendar: 'off',       // start recording when a calendar meeting starts: off | selected | all
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
+  secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
   google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] },
   notion: { token: '', parentId: '', parentKind: 'page', parentTitle: '', autoExport: false },
   linear: { apiKey: '', teamId: '', teamName: '' },
@@ -78,6 +79,24 @@ const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion',
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
 const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
+const { SecretBox } = require('./secret-box');
+
+// Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.
+function secretFields(key, value) {
+  if (key === 'webhooks') return Array.isArray(value) ? value.map((w) => [w, 'secret']) : [];
+  return (SECRETS[key] || []).filter((f) => value && typeof value === 'object').map((f) => [value, f]);
+}
+const hasSecrets = (key) => key === 'webhooks' || !!SECRETS[key];
+function mapSecrets(key, value, f) {
+  const out = structuredClone(value);
+  for (const [holder, field] of secretFields(key, out)) if (typeof holder[field] === 'string' && holder[field]) holder[field] = f(holder[field]);
+  return out;
+}
+async function mapSecretsAsync(key, value, f) {
+  const out = structuredClone(value);
+  for (const [holder, field] of secretFields(key, out)) if (typeof holder[field] === 'string' && holder[field]) holder[field] = await f(holder[field]);
+  return out;
+}
 
 function validate(key, value) {
   if (!(key in DEFAULTS)) throw new Error(`unknown setting: ${key}`);
@@ -93,6 +112,7 @@ function validate(key, value) {
     return merged;
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
+  if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
@@ -113,10 +133,56 @@ function validate(key, value) {
 }
 
 class Settings {
-  constructor(db, bus) {
+  // secretBox (optional): where secrets rest. With one, call `await init()` once before use: until then secrets that were
+  // sealed read as '' (never as their sealed text). Reads and updates stay synchronous; the sealed write of a secret
+  // follows in order (`await flush()` to wait for it, e.g. at quit).
+  constructor(db, bus, secretBox = null) {
     this.db = db;
     this.bus = bus;
+    this.box = secretBox;
     this.cache = null;
+    this.opened = new Map();           // sealed text -> plaintext, filled by init()
+    this.queue = Promise.resolve();    // sealed writes, one after another
+    this.unreadable = [];              // keys whose sealed secrets could not be opened (another user, another keystore)
+  }
+
+  async init() {
+    if (!this.box) return this;
+    for (const row of this.db.prepare('SELECT key, value FROM settings').all()) {
+      if (!hasSecrets(row.key)) continue;
+      let value; try { value = JSON.parse(row.value); } catch { continue; }
+      const sealed = [];
+      mapSecrets(row.key, value, (v) => { if (SecretBox.isSealed(v)) sealed.push(v); return v; });
+      for (const v of sealed) {
+        try { this.opened.set(v, await this.box.open(v)); } catch { this.opened.set(v, ''); if (!this.unreadable.includes(row.key)) this.unreadable.push(row.key); }
+      }
+    }
+    this.cache = null;
+    if (this.mode() !== 'plain') this.rewriteSecrets();   // the one-time move of what an older version left in the clear
+    await this.flush();
+    return this;
+  }
+
+  flush() { return this.queue; }
+
+  // How secrets are written: 'seal' (keystore), 'plain' (as before: no box, or a weak one the person chose to live with
+  // or has not been asked about yet), 'omit' (the person said not to save them).
+  mode() {
+    if (!this.box) return 'plain';
+    if (this.box.strength === 'strong' || this.box.strength === 'fallback') return 'seal';
+    return this.all().secretStorage === 'never' ? 'omit' : 'plain';
+  }
+
+  // For the UI: how secrets rest right now, and whether the person has a choice to make.
+  secretStatus() {
+    const weak = !!this.box && (this.box.strength === 'weak' || this.box.strength === 'none');
+    const policy = this.all().secretStorage;
+    return {
+      kind: this.box?.kind || 'none', strength: this.box?.strength || 'none', policy, mode: this.mode(),
+      needsChoice: weak && policy === 'ask',
+      warning: !this.box ? null : this.box.strength === 'weak' ? 'weak-backend' : this.box.strength === 'none' ? 'no-backend' : this.box.strength === 'fallback' ? 'key-file' : null,
+      unreadable: [...this.unreadable],
+    };
   }
 
   all() {
@@ -124,7 +190,11 @@ class Settings {
       const out = structuredClone(DEFAULTS);
       for (const row of this.db.prepare('SELECT key, value FROM settings').all()) {
         if (!(row.key in DEFAULTS)) continue;
-        try { out[row.key] = validate(row.key, JSON.parse(row.value)); } catch { /* keep default */ }
+        try {
+          let v = JSON.parse(row.value);
+          if (hasSecrets(row.key)) v = mapSecrets(row.key, v, (x) => (SecretBox.isSealed(x) ? (this.opened.get(x) ?? '') : x));
+          out[row.key] = validate(row.key, v);
+        } catch { /* keep default */ }
       }
       this.cache = out;
     }
@@ -141,6 +211,31 @@ class Settings {
     return s;
   }
 
+  write(entries) {
+    const stmt = this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    this.db.exec('BEGIN');
+    try {
+      for (const [k, v] of entries) stmt.run(k, JSON.stringify(v));
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+  }
+
+  // Write one secret-bearing setting the way the current mode says, after whatever was queued before it.
+  persistSecretKey(key, value) {
+    this.queue = this.queue.then(async () => {
+      const mode = this.mode();
+      const stored = mode === 'seal' ? await mapSecretsAsync(key, value, (v) => this.box.seal(v))
+        : mode === 'omit' ? mapSecrets(key, value, () => '') : value;
+      this.write([[key, stored]]);
+    }).catch((e) => this.bus?.publish('settings.error', { key, message: e.message }));
+  }
+
+  rewriteSecrets() {
+    const present = new Set(this.db.prepare('SELECT key FROM settings').all().map((r) => r.key));
+    const all = this.all();
+    for (const key of present) if (hasSecrets(key) && key in all && !this.unreadable.includes(key)) this.persistSecretKey(key, all[key]);   // an unreadable row stays for the keystore that can open it
+  }
+
   update(patch) {
     const current = this.all();
     const next = {};
@@ -153,13 +248,14 @@ class Settings {
       if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => (w?.secret === MASK ? { ...w, secret: current.webhooks.find((x) => x.id === w.id)?.secret || '' } : w));
       next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);
     }
-    const stmt = this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
-    this.db.exec('BEGIN');
-    try {
-      for (const [k, v] of Object.entries(next)) stmt.run(k, JSON.stringify(v));
-      this.db.exec('COMMIT');
-    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
-    this.cache = null;
+    const before = current.secretStorage;
+    const sync = Object.entries(next).filter(([k]) => !(this.box && hasSecrets(k)));
+    if (sync.length) this.write(sync);
+    if (this.box) {
+      this.cache = { ...current, ...next };
+      for (const [k, v] of Object.entries(next)) if (hasSecrets(k)) { this.unreadable = this.unreadable.filter((x) => x !== k); this.persistSecretKey(k, v); }
+      if (next.secretStorage && next.secretStorage !== before) this.rewriteSecrets();   // the person chose: apply it to what is stored
+    } else this.cache = null;
     this.bus?.publish('settings', { keys: Object.keys(next) });
     return this.publicView();
   }
