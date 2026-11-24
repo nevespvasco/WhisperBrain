@@ -21,6 +21,9 @@ extraResources:
     to: resources
   - from: build/icon.png
     to: build/icon.png
+  # the browser extension for Google Meet: the person loads this folder into their browser ("Load unpacked")
+  - from: extension/meet
+    to: extension/meet
 linux:
   target: [AppImage, deb]
   category: Office
@@ -32,8 +35,10 @@ linux:
   extraResources:
     - from: build/x11/whisperbrain-x11
       to: bin/whisperbrain-x11
+    - from: build/atspi/whisperbrain-atspi
+      to: bin/whisperbrain-atspi
 deb:
-  depends: [libpipewire-0.3-0, pipewire-bin, xclip, libx11-6, libxtst6, libxi6]
+  depends: [libpipewire-0.3-0, pipewire-bin, xclip, libx11-6, libxtst6, libxi6, libatspi2.0-0]
   recommends: [wl-clipboard, wtype]
 mac:
   target: [dmg, zip]
@@ -43,14 +48,21 @@ mac:
   gatekeeperAssess: false
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extraResources:
+    - from: build/ax/whisperbrain-ax
+      to: bin/whisperbrain-ax
   extendInfo:
     NSMicrophoneUsageDescription: WhisperBrain records your microphone to transcribe your meetings on this device.
     NSAudioCaptureUsageDescription: WhisperBrain captures system audio to transcribe the other side of your calls on this device.
     NSScreenCaptureUsageDescription: WhisperBrain needs screen recording access to capture system audio.
     NSAppleEventsUsageDescription: WhisperBrain pastes dictated text into the focused app.
+    NSAccessibilityUsageDescription: WhisperBrain reads who is speaking in the meeting window of your browser, to name the voices on the call.
 win:
   target: [nsis, portable]
   icon: build/icon.png
+  extraResources:
+    - from: native/windows/whisperbrain-uia.ps1
+      to: bin/whisperbrain-uia.ps1
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

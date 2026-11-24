@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "verified": false,
+  "note": "A first guess at how Google Meet shows up in a browser's accessibility tree. It has NOT been checked against a real call: capture one with `npm run a11y:dump` and correct this file (or put a corrected copy at <data folder>/meet-selectors.json, which wins over this one).",
+  "window": {
+    "title": "(?:^|\\s)Meet\\b|[a-z]{3}-[a-z]{4}-[a-z]{3}",
+    "code": "([a-z]{3}-[a-z]{4}-[a-z]{3})"
+  },
+  "participants": {
+    "scope": { "role": "^list$", "name": "participants|people|pessoas|participantes|teilnehmer|personnes" },
+    "name": { "role": "^(?:static|text|heading|label)$", "name": "\\S" },
+    "group": "following",
+    "speaking": { "name": "^(?:speaking|is speaking|talking|a falar|está a falar|esta a falar|está falando|hablando|spricht|parle)$" },
+    "self": { "name": "\\((?:you|tu|você|voce|vous|du|tú)\\)$" }
+  }
+}

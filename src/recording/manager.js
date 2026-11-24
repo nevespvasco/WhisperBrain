@@ -7,6 +7,9 @@ const { SpeakerTracker } = require('../speakers/cluster');
 const { refineNote, describeUtterance } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
+const { MeetingCollector } = require('../meet/collector');
+const { planCorrections } = require('../meet/correct');
+const { speechOf } = require('../meet/names');
 const { Spool } = require('./spool');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
@@ -16,6 +19,8 @@ const DRAFT_ECHO_WAIT_MS = 700;   // a mic draft needs this much audio before th
 
 const SPEAKER = { mic: 'me', system: 'them' };
 const REMOTE_GAP_MS = 60;        // a person on Discord is silent between sentences (nothing is sent): gaps longer than this are filled with silence so times stay true
+const LEARN_MS = 10000;          // a voice is remembered from the call's names only when one name was highlighted this long over it...
+const LEARN_SHARE = 0.85;        // ...and held this share of everything highlighted over it
 const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and reopened instead (an hour of silence is not fed to the recognizer)
 
 class RecordingError extends Error {
@@ -30,8 +35,9 @@ class RecordingManager {
   // diarization: { run, threshold, windowShift, tolerance } overrides for the after-recording diarization (tests, the eval harness).
   // discord: the Discord voice bot (src/discord/bot.js) or a stand-in with join()/leave()/on('audio'): when it joins the call,
   // every person arrives on a channel of their own ('dc:<user id>') and replaces the mixed system audio.
-  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null }) {
-    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord });
+  // meet: the SignalHub (src/meet/hub.js) the meeting window's readers report to: who is speaking and who is on the call.
+  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null }) {
+    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet });
     if (spoolDir) Spool.sweep(spoolDir);
     this.active = null;
     this.engine.on('segment', (s) => this.onSegment(s));
@@ -97,7 +103,9 @@ class RecordingManager {
       recentSystem: [],                    // the last few final system segments, to tell a mic draft that merely echoes them
       remote: new Map(),                   // Discord: channel ('dc:<id>') -> { userId, name, speakerId, t0, chain }, one per person heard
       discord: null,                       // { info, onAudio } while the bot is in the call
+      meet: null,                          // what the meeting window shows while recording: highlights, roster, captions (src/meet/collector.js)
     };
+    if (this.meet && s.meet.enabled) a.meet = new MeetingCollector({ hub: this.meet, elapsed: () => this.elapsed(a), paused: () => a.paused, originMs: a.accMs, useCaptions: s.meet.captions, selfNames: () => [this.settings.get('userName')] });
     try {
       await this.ensureEngine();
       await this.applyVocabulary(noteId);
@@ -387,6 +395,7 @@ class RecordingManager {
     this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
     for (const src of Object.values(a.channels)) src.stop();
     this.leaveDiscord(a);
+    a.meet?.detach(); // nothing the meeting window shows after Stop belongs to this recording
     try { await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
     if (this.speakers) {
       const s = this.settings.all();
@@ -402,6 +411,7 @@ class RecordingManager {
         }
       }
       try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      if (a.meet) this.nameFromMeeting(a, s); // last: it must not overrule a saved voice the speaker was just matched to
     }
     this.closeSpools(a);
     this.active = null;
@@ -428,7 +438,9 @@ class RecordingManager {
       const refs = a.refs.filter((r) => r.ch === ch);
       // the number of others on the call the user gave is forced on the system audio; the calendar is only a hint
       const told = ch === 'system' && note?.speakerCount ? { numSpeakers: note.speakerCount } : null;
-      const expected = told ? null : expectedSpeakers({ attendees, channel: ch });
+      // ...then the call's own list of people, which is better than the invitation: it says who actually joined
+      const joined = !told && ch === 'system' && s.meet.headcount ? a.meet?.expectedVoices() : null;
+      const expected = told ? null : (joined || expectedSpeakers({ attendees, channel: ch }));
       if (told || expected) a.settled.add(ch); // the head count is known: the acoustic pass must not change how many speakers there are
       try {
         const out = await diarizeChannel({
@@ -447,6 +459,45 @@ class RecordingManager {
       } catch (e) { this.bus.publish('recording.warning', { message: `speaker diarization (${ch}): ${e.message}` }); }
     }
     return done;
+  }
+
+  // Names for the voices of the system audio from who the meeting window highlighted while each spoke. Best effort and
+  // never over a name the user typed or a saved voice a speaker matched. Runs after the speaker passes, so it names the
+  // voices the recording ended with. The names first fix the voices (one person heard as two, two heard as one), then
+  // name them, then teach the saved voices the ones that were named beyond doubt.
+  nameFromMeeting(a, s) {
+    try {
+      const m = s.meet;
+      const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs });
+      let res = run();
+      const fixed = m.refine ? this.fixVoicesFromMeeting(a, res) : { merged: 0, moved: 0 };
+      if (fixed.merged || fixed.moved) res = run();
+      const named = [], conflicts = [];
+      for (const n of res.named) {
+        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name);
+        if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
+      }
+      let learned = 0;
+      if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId)) learned++;
+      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, ...fixed };
+      if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
+    } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
+  }
+
+  // Join voices that are one person and split voices that are two, where the call's names say so strongly.
+  fixVoicesFromMeeting(a, res) {
+    const out = { merged: 0, moved: 0 };
+    const mine = a.meet.mine(this.notes.segmentWords(a.noteId));
+    const plan = planCorrections({ speech: speechOf(mine), utterances: mine, active: res.active, vote: res });
+    for (const mg of plan.merges) if (this.speakers.mergeSpeakers(a.noteId, mg.from, mg.into)) out.merged++;
+    const fresh = new Map(); // a name that no voice has yet -> the new voice made for it
+    for (const mv of plan.moves) {
+      if (!this.speakers.forNote(a.noteId).some((x) => x.speakerId === mv.from)) continue;
+      let to = mv.to;
+      if (!to) { to = fresh.get(mv.name); if (!to) { to = this.speakers.freeSpeakerId(a.noteId, 'system'); fresh.set(mv.name, to); } }
+      if (this.speakers.reassignSegment(a.noteId, mv.id, to)) out.moved++;
+    }
+    return out;
   }
 
   // ---- Discord ----
@@ -516,7 +567,7 @@ class RecordingManager {
 
   closeSpools(a) { for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } } }
 
-  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); this.closeSpools(a); }
+  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); a.meet?.detach(); this.closeSpools(a); }
 }
 
 module.exports = { RecordingManager, RecordingError };

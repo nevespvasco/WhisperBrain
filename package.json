@@ -19,9 +19,13 @@
     "dist:linux": "electron-builder --linux",
     "dist:mac": "electron-builder --mac",
     "dist:win": "electron-builder --win",
-    "predist:linux": "npm run build:x11",
+    "predist:linux": "npm run build:x11 && npm run build:atspi",
     "predist": "node scripts/make-icons.js",
-    "pack": "electron-builder --dir"
+    "pack": "electron-builder --dir",
+    "build:atspi": "bash scripts/build-atspi.sh",
+    "a11y:dump": "node scripts/a11y-dump.js",
+    "build:ax": "bash scripts/build-ax.sh",
+    "predist:mac": "npm run build:ax"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

@@ -1,7 +1,7 @@
 'use strict';
 const { newId } = require('../core/ids');
 const { tx } = require('../core/db');
-const { toBlob, fromBlob, norm, blend, mergeClusters, matchVoices, addPrint, populationMean, MATCH, MAX_REJECTS, VOICE_MEAN } = require('./cluster');
+const { toBlob, fromBlob, norm, blend, cosine, mergeClusters, matchVoices, addPrint, populationMean, MATCH, MAX_REJECTS, VOICE_MEAN } = require('./cluster');
 const { semitones } = require('../audio/features');
 
 const PITCH_VETO = 4;   // semitones: two voices this far apart in pitch are never the same person
@@ -46,6 +46,71 @@ class Speakers {
       ON CONFLICT(note_id, speaker_id) DO UPDATE SET name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END`)
       .run(noteId, speakerId, channel, String(name || '').slice(0, 80));
     this.bus?.publish('speakers.updated', { noteId });
+  }
+
+  // A name read from the meeting window (who was highlighted while this voice spoke). It never replaces a name the user
+  // typed, and it never overrules a saved voice: a speaker that sounds like a saved person keeps that person. A saved
+  // voice with the name is linked to the speaker only when the two sound alike.
+  // -> 'named' | 'agrees' (it is the person the voice already matched) | 'conflict' (the voice matched somebody else) |
+  //    'kept' (the user already named it) | null (no such speaker)
+  nameFromMeeting(noteId, speakerId, name) {
+    const clean = String(name || '').trim().slice(0, 80);
+    const all = this.forNote(noteId);
+    const sp = all.find((x) => x.speakerId === speakerId);
+    if (!sp || !clean) return null;
+    if (sp.name) return 'kept';
+    const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+    if (sp.voiceId && sp.voiceName && !same(sp.voiceName, clean)) return 'conflict';
+    const voice = this.voiceByName(clean);
+    let link = null;
+    if (voice && !all.some((x) => x.voiceId === voice.id && x.speakerId !== speakerId)) {
+      const fits = sp.voiceId === voice.id || (sp.centroid && matchVoices([{ id: sp.speakerId, centroid: sp.centroid, channel: sp.channel }], [voice], MATCH.threshold - 0.2, null, { mu: this.channelMeans() }).has(sp.speakerId));
+      if (fits || !sp.centroid) link = voice.id;
+    }
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id) WHERE note_id = ? AND speaker_id = ?').run(clean, link, noteId, speakerId);
+    this.bus?.publish('speakers.updated', { noteId });
+    return sp.voiceId && sp.voiceName && same(sp.voiceName, clean) ? 'agrees' : 'named';
+  }
+
+  // Remember a voice the meeting window named, for the next meetings: the speaker's print becomes (one more print of) a
+  // saved voice. Refused when a voice with that name exists and this one does not sound like it: two people may share a
+  // first name, and a wrong highlight must not teach a profile somebody else's voice. -> true when learned
+  learnFromMeeting(noteId, speakerId) {
+    const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
+    if (!sp?.name || !sp.centroid || sp.talkMs < 8000) return false; // a voice print needs some seconds of speech to mean anything
+    const existing = this.voiceByName(sp.name);
+    if (existing && sp.voiceId !== existing.id) return false;
+    this.rename(noteId, speakerId, sp.name, { remember: true });
+    return true;
+  }
+
+  // Fold one speaker of a note into another (the same person heard as two voices): its utterances move, the voice prints
+  // are pooled, and the name and saved-voice link carry over. Refused for voices that clearly differ: unlike names read
+  // off a screen, the sound is not a guess. -> true when merged
+  mergeSpeakers(noteId, from, into, { minSimilarity = 0.25 } = {}) {
+    const all = this.forNote(noteId);
+    const a = all.find((x) => x.speakerId === into), b = all.find((x) => x.speakerId === from);
+    if (!a || !b || a.channel !== b.channel || from === into) return false;
+    if (a.centroid && b.centroid && cosine(a.centroid, b.centroid) < minSimilarity) return false;
+    if (a.pitch && b.pitch && semitones(a.pitch, b.pitch) > PITCH_VETO) return false;
+    if (a.name && b.name && a.name.toLowerCase() !== b.name.toLowerCase()) return false;
+    tx(this.db, () => {
+      this.db.prepare('UPDATE segments SET speaker_id = ? WHERE note_id = ? AND speaker_id = ?').run(into, noteId, from);
+      const centroid = a.centroid && b.centroid ? blend(norm(a.centroid), a.count || 1, norm(b.centroid), b.count || 1) : (a.centroid || b.centroid);
+      this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, name = CASE WHEN name = \'\' THEN ? ELSE name END, voice_id = COALESCE(voice_id, ?), pitch = COALESCE(pitch, ?) WHERE note_id = ? AND speaker_id = ?')
+        .run(toBlob(centroid), a.count + b.count, b.name, b.voiceId, b.pitch, noteId, into);
+      this.db.prepare('DELETE FROM note_speakers WHERE note_id = ? AND speaker_id = ?').run(noteId, from);
+    });
+    this.bus?.publish('speakers.updated', { noteId });
+    return true;
+  }
+
+  // The next free id for a speaker of a channel: s5 when s1..s4 exist ('m' for the microphone).
+  freeSpeakerId(noteId, channel) {
+    const prefix = channel === 'mic' ? 'm' : 's';
+    const used = this.db.prepare('SELECT speaker_id AS id FROM note_speakers WHERE note_id = ? UNION SELECT DISTINCT speaker_id FROM segments WHERE note_id = ? AND speaker_id IS NOT NULL').all(noteId, noteId)
+      .map((r) => Number(String(r.id).slice(1))).filter((n) => Number.isFinite(n));
+    return `${prefix}${Math.max(0, ...used) + 1}`;
   }
 
   // Name a speaker in one note. With remember=true the voice is saved (or reinforced) as a profile, so future

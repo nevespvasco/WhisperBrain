@@ -144,3 +144,19 @@ test('windows: tasklist CSV window titles', () => {
   assert.deepEqual(rows, [{ app: 'chrome', title: 'Meet - abc-defg-hij - Google Chrome' }, { app: 'Zoom', title: 'Zoom Meeting' }, { app: 'notepad', title: 'say "hi", ok - Notepad' }]);
   assert.deepEqual(win32.meetingWindowsFrom(rows).map((w) => w.platform), ['meet', 'zoom']);
 });
+
+test('macOS: the accessibility helper\'s window list tells which browser windows are a call', () => {
+  const { meetingWindowsFromHelper, create } = require('../src/platform/darwin');
+  const out = [
+    '{"event":"hello","helper":"ax","version":1}',
+    '{"event":"permission","trusted":true}',
+    JSON.stringify({ event: 'windows', windows: [{ app: 'Google Chrome', title: 'Meet - abc-defg-hij - Google Chrome', pid: 11 }, { app: 'Google Chrome', title: 'Inbox - Gmail - Google Chrome', pid: 11 }, { app: 'Brave Browser', title: 'Weekly sync - Zoom', pid: 12 }] }),
+  ].join('\n');
+  const w = meetingWindowsFromHelper(out);
+  assert.ok(w.length >= 1 && w.every((x) => x.platform && x.title && x.app), 'only the calls are kept');
+  assert.ok(!w.some((x) => /Gmail/.test(x.title)));
+  assert.deepEqual(meetingWindowsFromHelper(''), []);
+  assert.deepEqual(meetingWindowsFromHelper('not json\n{"event":"permission","trusted":false}\n{"event":"windows","windows":[]}'), [], 'no permission: an empty list');
+  // without the helper nothing is claimed
+  return create({}).meetingWindows().then((r) => assert.deepEqual(r, []));
+});

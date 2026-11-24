@@ -11,12 +11,32 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
-      - run: sudo apt-get update && sudo apt-get install -y xvfb libx11-dev libxi-dev libxtst-dev
+      - run: sudo apt-get update && sudo apt-get install -y xvfb libx11-dev libxi-dev libxtst-dev libatspi2.0-dev at-spi2-core dbus-x11
       - run: npm ci
       - run: npm run build:x11
+      - run: npm run build:atspi
       # Hardware/model integration tests skip themselves when PipeWire or a speech model is absent.
       - run: node scripts/fetch-models.js parakeet-tdt-110m-en
       - run: npm test
+
+  # The helpers that read a browser's Meet window cannot be built or run on the Linux machine the tests run on:
+  # compile (macOS) and load (Windows) them here, so a mistake shows up early. It runs beside the installers and does not
+  # hold them back (the macOS installer job builds the helper too, so a mistake there still shows up in that job).
+  native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, run: npm run build:ax }
+          - { os: windows-latest, run: 'powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/whisperbrain-uia.ps1 -Mode selftest' }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24 }
+      - run: ${{ matrix.run }}
+      - if: runner.os == 'macOS'
+        run: ./build/ax/whisperbrain-ax windows | head -c 400
 
   dist:
     needs: test
@@ -34,7 +54,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev
       - run: npm ci
       # Each OS builds its own installer so npm installs the matching sherpa-onnx native package.
       - run: npm run ${{ matrix.script }}

@@ -3,6 +3,7 @@
 import { S, $, api, t, esc, icon, fail, done, go, modal, promptDialog, confirmDialog, switchEl, field, download } from '../lib.js';
 import { listMicrophones } from '../capture.js';
 import { openExport } from './transfer.js';
+import * as meetPanel from './meet-panel.js';
 
 const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
 let modelListener = null; // the Audio section's download listener (see bind)
@@ -121,7 +122,8 @@ const SECTION = {
       <section class="panel"><div class="panel-head"><h3>${t('After a meeting')}</h3></div>
       ${tog('set-autosum', s.autoSummarize, t('Enhance notes automatically when a recording stops'), t('Needs an AI model.'))}
       ${tog('set-insights', s.autoInsights, t('Find topics, glossary terms and action items'), t('Runs after enhancing. Without AI, topics are still found offline.'))}
-      ${row(t('Default template'), '', `<select id="def-tpl">${S.templates.map((x) => `<option value="${x.id}" ${x.id === s.defaultTemplate ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`)}</section>`;
+      ${row(t('Default template'), '', `<select id="def-tpl">${S.templates.map((x) => `<option value="${x.id}" ${x.id === s.defaultTemplate ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>`)}</section>
+      ${await meetPanel.render().catch((e) => `<section class="panel"><div class="small muted">${esc(e.message)}</div></section>`)}`;
   },
   async audio() {
     const s = S.settings;
@@ -234,6 +236,7 @@ function bind(main, sec, body) {
   // download event snowballed until the page ran out of memory. Re-renders are coalesced for the same reason.
   if (modelListener) window.removeEventListener('wb:event', modelListener);
   modelListener = null;
+  if (sec === 'meetings') meetPanel.bind(body, rerender);
   if (sec !== 'audio') return;
   let pending = 0;
   const later = (refreshState) => {

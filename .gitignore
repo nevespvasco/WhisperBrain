@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/x11/
+build/atspi/
 *.log
 .DS_Store
 .models/

@@ -3,7 +3,7 @@
 // 'loopback' audio, which uses ScreenCaptureKit on macOS 13+, for system audio) and is pushed to the server.
 // NOTE: written without access to a Mac - only the pure parsers are unit-tested.
 const { execFile } = require('node:child_process');
-const { classify } = require('./apps');
+const { classify, classifyWindowTitle } = require('./apps');
 
 const run = (cmd, args, { timeout = 4000 } = {}) => new Promise((resolve) => {
   execFile(cmd, args, { timeout, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
@@ -37,7 +37,19 @@ function micUsersFromAssertions(assertions) {
   return apps;
 }
 
-function create({ clipboard } = {}) {
+// The browser windows the accessibility helper lists (`whisperbrain-ax windows`) that are a call, by their titles.
+function meetingWindowsFromHelper(text) {
+  for (const line of String(text || '').split('\n')) {
+    if (!line.startsWith('{')) continue;
+    let m; try { m = JSON.parse(line); } catch { continue; }
+    if (m.event !== 'windows' || !Array.isArray(m.windows)) continue;
+    return m.windows.map((w) => ({ ...w, cls: classifyWindowTitle(w.title) })).filter((w) => w.cls).map((w) => ({ title: w.title, app: w.app, platform: w.cls.id }));
+  }
+  return [];
+}
+
+// windowsHelper: { command, args(mode) } from src/meet/a11y-source.js, when the helper is there
+function create({ clipboard, windowsHelper = null } = {}) {
   return {
     id: 'darwin',
     session: 'aqua',
@@ -65,9 +77,13 @@ function create({ clipboard } = {}) {
       const out = await run('osascript', ['-e', 'tell application "System Events" to get name of first application process whose frontmost is true']);
       return (out || '').trim();
     },
-    // Listing other apps' window titles needs the Accessibility/Automation permissions (and prompts for them),
-    // so macOS relies on power assertions alone for now.
-    async meetingWindows() { return []; },
+    // Listing other apps' window titles needs the Accessibility permission. The helper never asks for it here (this runs in
+    // the background): without it the list is empty and the power assertions above carry the detection, as before.
+    async meetingWindows() {
+      if (!windowsHelper) return [];
+      const out = await run(windowsHelper.command, windowsHelper.args('windows'), { timeout: 4000 });
+      return out === null ? [] : meetingWindowsFromHelper(out);
+    },
     clipboard,
     async paste(text, { restore = true } = {}) {
       if (!clipboard) return { ok: false, method: 'none', reason: 'no clipboard available' };
@@ -81,4 +97,4 @@ function create({ clipboard } = {}) {
   };
 }
 
-module.exports = { create, parsePmsetAssertions, micUsersFromAssertions };
+module.exports = { create, parsePmsetAssertions, micUsersFromAssertions, meetingWindowsFromHelper };

@@ -1,0 +1,10 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Mock Meet - abc-defg-hij</title></head><body>
+<div role="list" aria-label="Participants">
+ <div class="tile" data-participant-id="p1"><span class="name">Ana Silva</span><div class="ind" aria-label="" ></div></div>
+ <div class="tile" data-participant-id="p2"><span class="name">Bruno Costa</span><div class="ind" aria-label=""></div></div>
+ <div class="tile" data-participant-id="p3"><span class="name">Carla Dias</span><div class="ind" aria-label=""></div></div>
+</div>
+<script>
+ const t=[...document.querySelectorAll('.tile')]; let i=0;
+ setInterval(()=>{ t.forEach((x,k)=>{ const on=k===i%3; x.querySelector('.ind').setAttribute('aria-label', on?'Speaking':''); x.classList.toggle('speaking',on);}); i++; }, 1000);
+</script></body></html>

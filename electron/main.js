@@ -34,9 +34,18 @@ const hostClipboard = { read: () => clipboard.readText(), write: (t) => clipboar
 
 function resource(...p) { return path.join(app.isPackaged ? process.resourcesPath : ROOT, ...p); }
 
+// A picture of the window of a call, for the last-resort "who is speaking" reader (src/meet/vision.js). The title is looked
+// for among the windows on screen; macOS asks the person for Screen Recording first, and says so here when it was refused.
+async function captureMeetingWindow() {
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') throw Object.assign(new Error('screen recording is not allowed'), { code: 'permission' });
+  const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1280, height: 720 } });
+  const win = sources.find((s) => /meet\b|[a-z]{3}-[a-z]{4}-[a-z]{3}/i.test(s.name) && !s.thumbnail.isEmpty());
+  return win ? { jpeg: win.thumbnail.toJPEG(70), title: win.name } : null;
+}
+
 async function start() {
   const dataDir = app.getPath('userData');
-  core = createApp({ dataDir, clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf });
+  core = createApp({ dataDir, clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf, captureWindow: captureMeetingWindow });
   server = createServer(core, { uiDir: path.join(ROOT, 'ui') });
   const { port, token, url } = await server.listen(0);
   origin = url;

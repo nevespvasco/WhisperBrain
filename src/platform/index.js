@@ -17,7 +17,7 @@ function x11HelperPath(root) {
 
 function createPlatform({ platform = process.platform, clipboard, root = path.join(__dirname, '..', '..') } = {}) {
   if (platform === 'linux') return require('./linux').create({ clipboard, x11Helper: x11HelperPath(root) });
-  if (platform === 'darwin') return require('./darwin').create({ clipboard });
+  if (platform === 'darwin') return require('./darwin').create({ clipboard, windowsHelper: require('../meet/a11y-source').helperSpec('darwin', { roots: [path.join(root, 'build'), process.resourcesPath || ''].filter(Boolean) }) });
   if (platform === 'win32') return require('./win32').create({ clipboard });
   throw new Error(`unsupported platform: ${platform}`);
 }

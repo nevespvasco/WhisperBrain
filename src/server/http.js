@@ -261,6 +261,7 @@ function createRoutes(app) {
   add('GET', '/api/calendar/current', async () => ({ event: await app.calendar.current() }));
 
   require('./routes-knowledge')(add, app, { HttpError, noteOr404, readBody });
+  require('./routes-meet')(add, app, { HttpError });
 
   // events (SSE)
   add('GET', '/api/events', async ({ req, res }) => {

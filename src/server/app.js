@@ -26,8 +26,9 @@ const { Importer } = require('../knowledge/importer');
 const { Integrations } = require('../integrations/service');
 const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
+const { MeetService } = require('../meet/service');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null } = {}) {
+function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
@@ -43,10 +44,11 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
+  const meet = new MeetService({ settings, bus, version, llm, captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
-  const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes });
+  const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
   const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge });
 
@@ -102,12 +104,13 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
     else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
   };
-  if (detect) { detector.start(); warmDiscord(); }
+  if (detect) { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }
+  bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   return Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
-    knowledge, analyze, openExternal, renderPdf, discord,
+    knowledge, analyze, openExternal, renderPdf, discord, meet,
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings }, id, opts),
     async state() {
       const caps = await plat.capabilities();
@@ -129,6 +132,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     close() {
       self.pendingGoogleAuth?.cancel?.();
       detector.stop();
+      meet.close().catch(() => {});
       discord.logout().catch(() => {});
       engine.stop();
       try { conn.close(); } catch { /* already closed */ }

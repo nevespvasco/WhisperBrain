@@ -1,0 +1,21 @@
+<!doctype html><html><head><meta charset="utf-8"><title>Meet</title></head><body>
+<div id="grid">
+  <div data-participant-id="p0" data-is-self="true"><span data-self-name="Vasco Neves (You)">Vasco Neves (You)</span></div>
+  <div data-participant-id="p1"><span data-self-name="Ana Silva">Ana Silva</span></div>
+  <div data-participant-id="p2"><span data-self-name="Bruno Costa">Bruno Costa</span></div>
+  <div data-participant-id="p3"><span data-self-name="Carla Dias">Carla Dias</span></div>
+</div>
+<div aria-label="Captions"><div><div data-speaker-name>Ana Silva</div><div id="cap">hello there everyone</div></div></div>
+<script>
+  // the highlight moves Ana -> Bruno -> Carla, one second each; the captions follow whoever speaks
+  const tiles = [...document.querySelectorAll('[data-participant-id]')].slice(1);
+  const words = ['hello there everyone', 'good morning to you', 'shall we begin the meeting'];
+  let i = 0;
+  setInterval(() => {
+    tiles.forEach((t, k) => { if (k === i % 3) t.setAttribute('data-is-speaking', 'true'); else t.removeAttribute('data-is-speaking'); });
+    const block = document.querySelector('[aria-label="Captions"] > div');
+    block.querySelector('[data-speaker-name]').textContent = tiles[i % 3].querySelector('[data-self-name]').textContent;
+    document.getElementById('cap').textContent = words[i % 3];
+    i++;
+  }, 1000);
+</script></body></html>

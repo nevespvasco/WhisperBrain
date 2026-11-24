@@ -9,8 +9,10 @@ const isBrowser = (a) => a.appId === 'browser' || (!a.appId && BROWSERS.test(a.n
 const appId = (a) => a.appId || classify({ name: a.name })?.id || 'other';
 
 class MeetingDetector {
-  constructor({ platform, calendar, bus, settings, recording, notes = null, now = Date.now, confirmTicks = 2, idleTicks = 5 }) {
-    Object.assign(this, { platform, calendar, bus, settings, recording, notes, now, confirmTicks, idleTicks });
+  // signals: the hub of what the meeting window shows (src/meet/hub.js). A call it sees (the browser extension or the
+  // accessibility reader says "in a call") counts as a meeting even where the microphone cannot be watched (macOS).
+  constructor({ platform, calendar, bus, settings, recording, notes = null, signals = null, now = Date.now, confirmTicks = 2, idleTicks = 5 }) {
+    Object.assign(this, { platform, calendar, bus, settings, recording, notes, signals, now, confirmTicks, idleTicks });
     this.streak = 0;
     this.idle = 0;
     this.latched = false;   // already announced for this mic session
@@ -49,7 +51,10 @@ class MeetingDetector {
     // Window titles only matter when something holds the mic; a meeting window alone is never enough.
     const windows = users.length && this.platform.meetingWindows ? await this.platform.meetingWindows().catch(() => []) : [];
     const meetWins = windows.map((w) => ({ ...w, cls: classifyWindowTitle(w.title) })).filter((w) => w.cls);
-    const apps = users.filter((a) => !a.weak || (isBrowser(a) && meetWins.length));
+    let apps = users.filter((a) => !a.weak || (isBrowser(a) && meetWins.length));
+    // a call the meeting window itself shows is a call, whatever the microphone says; it does not need a window title either
+    const seen = this.signals?.status().meeting;
+    if (!apps.length && seen?.inCall) apps = [{ name: 'Google Meet', appId: 'meet', weak: false, title: seen.title }];
     if (!apps.length) {
       this.idle++;
       if (this.idle >= this.idleTicks) {
@@ -71,7 +76,8 @@ class MeetingDetector {
   // Native call apps name the platform; a browser borrows it from the meeting window title.
   pickPlatform(apps, meetWins) {
     const native = apps.map(appId).find((id) => id !== 'browser' && id !== 'other');
-    if (native) return { platform: native, win: meetWins.find((w) => w.cls.id === native) };
+    // a title the meeting window itself gave (the extension, the accessibility reader) stands in for a listed window
+    if (native) return { platform: native, win: meetWins.find((w) => w.cls.id === native) || (apps.find((a) => a.title) ? { title: apps.find((a) => a.title).title } : undefined) };
     if (meetWins.length) return { platform: meetWins[0].cls.id, win: meetWins[0] };
     return { platform: appId(apps[0]), win: null };
   }

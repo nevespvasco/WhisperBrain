@@ -262,3 +262,45 @@ test('dictation: autoPaste off copies to the clipboard; too-short takes are skip
   assert.equal(c.d.state, 'idle');
   assert.equal(tidy(' a\n b  '), 'a b');
 });
+
+test('detector: a call the meeting window shows is a meeting where the microphone cannot be watched (macOS), and it ends when the call does', async () => {
+  const { SignalHub } = require('../src/meet/hub');
+  const { settings, bus, events } = env();
+  const hub = new SignalHub();
+  const calendar = { current: async () => null, sources: () => [], events: async () => ({ events: [] }) };
+  // macOS-like: the microphone use is not known and no window title is listed
+  const platform = { micActivity: async () => ({ supported: false, active: false, apps: [] }), meetingWindows: async () => [] };
+  const det = new MeetingDetector({ platform, calendar, bus, settings, recording: { status: () => ({ active: false }) }, signals: hub, idleTicks: 3 });
+  await det.tick(); await det.tick();
+  assert.equal(events.filter((e) => e.type === 'meeting.detected').length, 0, 'nothing is seen: nothing is detected');
+  hub.ingest({ type: 'meeting', inCall: true, code: 'abc-defg-hij', title: 'Weekly sync' }, { source: 'extension', kind: 'extension' });
+  await det.tick();
+  assert.equal(events.filter((e) => e.type === 'meeting.detected').length, 0, 'one tick is not enough');
+  await det.tick();
+  const hit = events.filter((e) => e.type === 'meeting.detected');
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].data.platform, 'meet');
+  assert.equal(hit[0].data.title, 'Weekly sync');
+  for (let i = 0; i < 3; i++) await det.tick();
+  assert.equal(events.filter((e) => e.type === 'meeting.detected').length, 1, 'announced once for the call');
+  hub.ingest({ type: 'meeting', inCall: false, code: '' }, { source: 'extension', kind: 'extension' });
+  for (let i = 0; i < 3; i++) await det.tick();
+  assert.equal(events.filter((e) => e.type === 'meeting.ended').length, 1, 'the call is over: so is the meeting');
+});
+
+test('detector: with no signals source nothing changes, and a stale call is not a meeting', async () => {
+  const { SignalHub } = require('../src/meet/hub');
+  let t = 1_000_000;
+  const hub = new SignalHub({ now: () => t });
+  const { settings, bus, events } = env();
+  const calendar = { current: async () => null, sources: () => [], events: async () => ({ events: [] }) };
+  const platform = { micActivity: async () => ({ supported: false, active: false, apps: [] }), meetingWindows: async () => [] };
+  hub.ingest({ type: 'meeting', inCall: true }, { source: 'extension', kind: 'extension' });
+  t += 120000; // two minutes with no word from the extension (the browser was closed)
+  const det = new MeetingDetector({ platform, calendar, bus, settings, recording: { status: () => ({ active: false }) }, signals: hub });
+  await det.tick(); await det.tick(); await det.tick();
+  assert.equal(events.filter((e) => e.type === 'meeting.detected').length, 0);
+  const none = new MeetingDetector({ platform, calendar, bus, settings, recording: { status: () => ({ active: false }) } });
+  await none.tick(); await none.tick();
+  assert.equal(events.length, 0);
+});

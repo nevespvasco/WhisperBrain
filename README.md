@@ -11,6 +11,7 @@ Everything stays on your computer: audio is transcribed locally with [sherpa-onn
 | Home | Start an online meeting (paste the link), an in-person one (microphone only) or upload one; recent meetings; today's calendar with per-meeting "record automatically" switches; open to-dos |
 | Record | Mic ("Me") and system audio ("Them") as separate channels, live transcript, levels, pause/resume, echo removal |
 | Who is talking | Voice prints per utterance, live clustering into *Speaker 1, 2…*, one-click naming with attendee suggestions, "remember this voice" across meetings, per-line reassignment |
+| Names from the call | On a Google Meet call, WhisperBrain reads who is on the call and who is speaking from the meeting window (the browser's accessibility tree, or a small browser extension, with a local vision model as a last resort) and puts the right name on each voice, uses the people on the call as the number of voices, joins and splits voices where the names say so, and remembers voices named beyond doubt. See [docs/meeting-names.md](docs/meeting-names.md) |
 | Floating recorder | While recording and WhisperBrain is minimised, hidden or behind another window, a small always-on-top recording icon (pulsing dot, timer, level) floats in the corner. Click it to read the live transcript with names, pause or stop, or jump back to the note; drag it anywhere. Settings: when the app is in the background / always while recording / off |
 | Speaker double-check | When you press Stop, the recording is analysed again for **pitch and timbre** (MFCC voice colour, brightness) on top of the voice model: misjudged utterances are re-assigned, two people the voice model merged are split, one person it cut in two is rejoined, and pitch is kept so a saved voice is never matched to a clearly different voice. It runs only after capture ends, so live transcription is never slowed down |
 | Speaker analytics | Talk time, words per minute, turns, questions, talk % / listen %, and a timeline of who spoke when |
@@ -140,13 +141,14 @@ What still needs testing on real machines:
 npm test
 ```
 
-Over 150 tests, including integration tests that use real models and devices:
+Over 400 tests, including integration tests that use real models and devices:
 
 - real ASR, multilingual ASR and speaker identification on real voices
 - a recording through the HTTP API
 - PipeWire system-audio capture through a private null sink (nothing audible)
 - PipeWire echo cancellation looped back inside a private null sink (no microphone is opened), and a check that the helper dies with the app
 - the X11 paste path inside Xvfb
+- a real Chromium-based browser showing a mock Meet page, read by the real AT-SPI helper and, separately, by the real browser extension, into the real intake server (skipped without Xvfb, D-Bus or a non-snap browser; `WB_SKIP_BROWSER=1` skips them)
 - booting the Electron app (and the packaged AppImage contents) headless
 - the knowledge layer, imports of every supported format, exports, Notion/Linear/Google against fake servers, Obsidian against a temporary vault, signed webhooks
 
@@ -157,6 +159,7 @@ Tests that need a model or a device skip themselves when it is missing. `node sc
 - Audio is never stored; it is transcribed in memory.
 - While a recording runs, its raw audio is parked in a private temporary file (`<data>/spool`, user-only permissions) so the speaker double-check can listen again after Stop; the file is deleted as soon as that finishes, and any leftovers from a crash are removed at the next start. Turn it off with *Settings → Double-check speakers after recording*; nothing is then written.
 - Voice prints are numeric embeddings kept in the local database. Only voices you choose to remember become profiles.
+- Reading the meeting window (the accessibility readers, the browser extension, the optional look at the window) is local, runs only while a recording does, and the extension talks to a port of its own on 127.0.0.1 with its own secret and accepts calls from browser extensions only. Only the optional vision source sends a picture, to the LLM you configured.
 - The local server only listens on 127.0.0.1. It requires the per-launch token and refuses foreign `Host` and `Origin` headers.
 - API keys are never sent to the UI or included in exports.
 

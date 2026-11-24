@@ -59,12 +59,24 @@ const DEFAULTS = {
   linear: { apiKey: '', teamId: '', teamName: '' },
   obsidian: { vaultPath: '', folder: 'Meetings', transcript: true, autoExport: false },
   webhooks: [],                 // [{ id, name, url, secret, auto }]
+  meet: {
+    enabled: true,              // use what the meeting window shows (who is speaking, who is on the call) to name the voices on the call
+    headcount: true,            // ...and the number of other people on the call as the number of voices to expect
+    a11y: true,                 // read the meeting from the browser's accessibility tree (no extension; Linux needs the browser started with accessibility on)
+    extension: false,           // accept the browser extension on 127.0.0.1 (off until you pair it)
+    port: 47631,                // where the extension finds the app; the next ports are tried when it is taken
+    token: '',                  // the secret the extension pairs with (made on first use)
+    refine: true,               // let the names fix the voices: one person heard as two voices is joined, two people heard as one are split
+    learnVoices: true,          // remember a voice the call named clearly (many seconds, no doubt) so the next meetings recognise it
+    captions: true,             // use the meeting's live captions (name and words) when the extension sends them
+    vision: false,              // last resort: look at the meeting window and ask your local vision model who is speaking
+  },
   discord: { enabled: false, token: '', userId: '', guildId: '', channelId: '' }, // bot that joins your voice call and hears each person separately; userId = your own Discord user ID (found from your voice channel, and left out because the microphone already has you)
 };
 
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion', 'linear', 'obsidian', 'discord']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion', 'linear', 'obsidian', 'meet', 'discord']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], discord: ['token'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
 
 function validate(key, value) {
@@ -77,6 +89,7 @@ function validate(key, value) {
     for (const k of Object.keys(def)) {
       if (typeof merged[k] !== typeof def[k]) throw new Error(`${key}.${k} must be a ${typeof def[k]}`);
     }
+    if (key === 'meet' && !(Number.isInteger(merged.port) && merged.port >= 1024 && merged.port <= 65000)) throw new Error('meet.port must be a port from 1024 to 65000');
     return merged;
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
