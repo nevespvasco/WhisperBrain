@@ -19,7 +19,7 @@ class FakeEngine extends EventEmitter {
   reset(ch) { this.resets.push(ch); }
 }
 
-function setup({ capture = { mic: 'renderer', system: 'renderer' }, model = { id: 'm' }, vad = true } = {}) {
+function setup({ capture = { mic: 'renderer', system: 'renderer' }, model = { id: 'm' }, vad = true, platform: extra = {} } = {}) {
   const db = open(':memory:');
   const bus = new Bus();
   const events = [];
@@ -28,7 +28,7 @@ function setup({ capture = { mic: 'renderer', system: 'renderer' }, model = { id
   const settings = new Settings(db, bus);
   const engine = new FakeEngine();
   const models = { resolve: () => model, vadInstalled: () => vad, vadPath: () => '/vad.onnx' };
-  const platform = { capture, createMicSource: () => new PushSource(), createSystemSource: async () => new PushSource() };
+  const platform = { capture, createMicSource: () => new PushSource(), createSystemSource: async () => new PushSource(), ...extra };
   const mgr = new RecordingManager({ notes, engine, models, settings, platform, bus });
   return { db, bus, events, notes, settings, engine, mgr };
 }
@@ -140,4 +140,62 @@ test('recording again on a note continues its timeline instead of overlapping th
   const later = notes.segments(n.id).find((s) => s.text === 'later session');
   assert.ok(later.startMs > 60000, `startMs ${later.startMs} should follow the 60 s already transcribed`);
   await mgr.stop();
+});
+
+// ---- which application the system channel follows (per-app capture) ----
+function followRig({ apps, setting } = {}) {
+  const calls = { system: [], activity: 0 };
+  const platform = {
+    async createSystemSource(opts) { calls.system.push(opts); const src = new PushSource(); src.capture = { mode: opts?.app ? 'app' : 'output', app: opts?.app?.name, reason: '' }; return src; },
+    async micActivity() { calls.activity++; return { supported: true, active: !!apps?.length, apps: apps || [] }; },
+  };
+  const rig = setup({ capture: { mic: 'native', system: 'native' }, platform });
+  if (setting !== undefined) rig.settings.update({ perAppCapture: setting });
+  return { ...rig, calls };
+}
+const ZOOM = { name: 'Zoom', appId: 'zoom', weak: false, pid: 4242, binary: 'zoom' };
+const start = async ({ mgr, notes }, opts) => { const n = notes.create({}); await mgr.start(n.id, { mic: false, ...opts }); return n; };
+
+test('system capture follows the application the caller names (an automatic start knows it)', async () => {
+  const r = followRig({ apps: [] });
+  await start(r, { app: ZOOM });
+  assert.deepEqual(r.calls.system, [{ app: ZOOM }]);
+  await r.mgr.stop();
+});
+
+test('without one, it follows the single confident meeting app that holds the microphone', async () => {
+  const r = followRig({ apps: [ZOOM] });
+  await start(r);
+  assert.deepEqual(r.calls.system, [{ app: ZOOM }]);
+  await r.mgr.stop();
+});
+
+test('a weak guess, several candidates, or nothing: the whole output, never a guess', async () => {
+  for (const apps of [[{ name: 'Some tab', appId: 'browser', weak: true, pid: 1 }], [ZOOM, { name: 'Discord', appId: 'discord', weak: false, pid: 2 }], []]) {
+    const r = followRig({ apps });
+    await start(r);
+    assert.deepEqual(r.calls.system, [{ app: undefined }], JSON.stringify(apps.map((a) => a.name)));
+    await r.mgr.stop();
+  }
+});
+
+test('the setting can turn per-app capture off: the whole output, and nobody is asked who is on the call', async () => {
+  const r = followRig({ apps: [ZOOM], setting: false });
+  await start(r, { app: ZOOM });
+  assert.deepEqual(r.calls.system, [{ app: undefined }]);
+  assert.equal(r.calls.activity, 0);
+  await r.mgr.stop();
+});
+
+test('what the system channel is capturing is reported, and so is a change (the app stopped playing)', async () => {
+  const r = followRig({ apps: [ZOOM] });
+  const n = await start(r);
+  assert.deepEqual(r.events.find((e) => e.type === 'recording.started').data.systemCapture, { mode: 'app', app: 'Zoom', reason: '' });
+  const src = r.mgr.active.channels.system;
+  src.capture = { mode: 'output', reason: 'the application stopped playing: capturing the whole output' };
+  src.emit('capture', src.capture);
+  const ev = r.events.find((e) => e.type === 'recording.system-capture');
+  assert.deepEqual([ev.data.noteId, ev.data.mode], [n.id, 'output']);
+  assert.ok(r.events.some((e) => e.type === 'recording.warning' && /whole output/.test(e.data.message)), 'and the person is told');
+  await r.mgr.stop();
 });

@@ -54,4 +54,36 @@ class ProcessSource extends AudioSource {
   }
 }
 
-module.exports = { AudioSource, PushSource, ProcessSource };
+// Audio from a preferred source that carries on with another one when the first ends by itself (an application's own
+// stream that goes away mid-call): the channel must not fall silent. `capture` says what is being captured now
+// ({ mode, ... }); 'capture' is emitted when it changes. Stopping on purpose never starts the fallback.
+class FallbackSource extends AudioSource {
+  constructor({ primary, makeFallback, capture, fallbackCapture }) {
+    super();
+    Object.assign(this, { primary, makeFallback, capture, fallbackCapture });
+    this.current = null;
+    this.stopping = false;
+  }
+
+  start() {
+    this.current = this.primary;
+    this.primary.on('pcm', (b) => this.emit('pcm', b));
+    this.primary.on('error', () => {});                       // an ending stream is not an error: 'end' follows and decides
+    this.primary.once('end', () => {
+      if (this.stopping) { this.emit('end'); return; }
+      const next = this.makeFallback();
+      this.current = next;
+      this.capture = this.fallbackCapture;
+      next.on('pcm', (b) => this.emit('pcm', b));
+      next.on('error', (e) => this.emit('error', e));
+      next.once('end', () => this.emit('end'));
+      this.emit('capture', this.capture);
+      next.start();
+    });
+    this.primary.start();
+  }
+
+  stop() { this.stopping = true; this.current?.stop(); }
+}
+
+module.exports = { AudioSource, PushSource, ProcessSource, FallbackSource };

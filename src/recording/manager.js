@@ -11,6 +11,7 @@ const { MeetingCollector } = require('../meet/collector');
 const { planCorrections } = require('../meet/correct');
 const { speechOf } = require('../meet/names');
 const { Spool } = require('./spool');
+const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
 const CARRY_MS = 3000;        // a short utterance without a usable embedding inherits the previous speaker within this gap
@@ -81,7 +82,9 @@ class RecordingManager {
     return model;
   }
 
-  async start(noteId, { mic, system } = {}) {
+  // app: the meeting application ({ name, appId, pid, binary }) when the caller knows it; the system channel then follows it
+  // alone where the platform can (Linux), see resolveSystemApp.
+  async start(noteId, { mic, system, app } = {}) {
     if (this.active) throw new RecordingError('busy', 'A recording is already in progress.');
     const note = this.notes.get(noteId);
     if (!note) throw new RecordingError('not-found', 'Note not found.');
@@ -118,7 +121,7 @@ class RecordingManager {
         try {
           let src;
           if (cap[ch] === 'native') {
-            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource();
+            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource({ app: await this.resolveSystemApp(s, app) });
           } else {
             src = new PushSource();
             a.rendererChannels.push(ch);
@@ -136,7 +139,7 @@ class RecordingManager {
       if (!Object.keys(a.channels).length && !a.discord) throw new RecordingError('no-source', 'No audio source could be started.');
       this.notes.update(noteId, { status: 'recording', startedAt: note.startedAt || Date.now() });
       for (const src of Object.values(a.channels)) src.start();
-      this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec });
+      this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec, systemCapture: a.channels.system?.capture || null });
       if (a.rendererChannels.length) this.bus.publish('capture.request', { noteId, channels: a.rendererChannels });
       return this.status();
     } catch (e) {
@@ -197,8 +200,21 @@ class RecordingManager {
     return r.id;
   }
 
+  // The application the system channel should follow: the one named, else the single confident meeting app using the
+  // microphone right now; none (the whole output) when per-app capture is off or nothing is certain.
+  async resolveSystemApp(s, hint) {
+    if (!s.perAppCapture) return undefined;
+    if (hint) return hint;
+    try { return pickTargetApp((await this.platform.micActivity?.())?.apps) || undefined; } catch { return undefined; }
+  }
+
   attach(a, ch, src) {
     a.channels[ch] = src;
+    // a source that can change what it captures (the application's stream went away) says so; the person is told
+    src.on('capture', (c) => {
+      this.bus.publish('recording.system-capture', { noteId: a.noteId, ...c });
+      if (c.reason) { a.warnings.push(`${ch}: ${c.reason}`); this.bus.publish('recording.warning', { message: `${ch}: ${c.reason}` }); }
+    });
     src.on('pcm', (buf) => this.onPcm(a, ch, buf));
     src.on('error', (e) => {
       this.bus.publish('recording.warning', { message: `${ch}: ${e.message}` });

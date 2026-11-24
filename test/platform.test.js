@@ -160,3 +160,111 @@ test('macOS: the accessibility helper\'s window list tells which browser windows
   // without the helper nothing is claimed
   return create({}).meetingWindows().then((r) => assert.deepEqual(r, []));
 });
+
+// ---- per-app capture (Linux): which playback stream belongs to the meeting app ----
+const PW = () => linux.parsePwDump(fs.readFileSync(fixture('pw-dump.json'), 'utf8'));
+
+test('linux: pw-dump lists playback streams with the ids pw-record can target', () => {
+  const d = PW();
+  const zoom = d.outputStreams.find((s) => s.pid === 4242);
+  assert.deepEqual({ serial: zoom.serial, nodeName: zoom.nodeName, running: zoom.running, binary: zoom.binary }, { serial: 701, nodeName: 'zoom-playback', running: true, binary: 'zoom' });
+  assert.equal(d.outputStreams.length, 6, 'mpv (no ids) and every Stream/Output/Audio node');
+  assert.equal(d.outputStreams.find((s) => s.name === 'mpv').serial, null);
+  assert.equal(d.outputStreams.find((s) => s.serial === 704).running, false);
+});
+
+test('linux: pickOutputStream finds the meeting app\'s stream by pid, then binary, then what the stream is called', () => {
+  const d = PW();
+  const pick = (app, opts) => linux.pickOutputStream(d, app, opts);
+  assert.equal(pick({ pid: 4242, appId: 'zoom' }).stream.serial, 701, 'same process');
+  // Chrome: the microphone is held by pid 5000 but the audio plays from its audio service (pid 5002); the stream titled as
+  // the call wins over the YouTube tab
+  assert.equal(pick({ pid: 5000, binary: 'chrome', appId: 'browser' }).stream.serial, 702);
+  assert.equal(pick({ appId: 'zoom', name: 'Zoom' }).stream.serial, 701, 'no pid: the app itself');
+  assert.equal(pick({ appId: 'other', name: 'ZOOM' }).stream.serial, 701, 'a native PipeWire client has no pid on its stream: the name does');
+});
+
+test('linux: pickOutputStream says why it did not pick, and never picks the wrong thing', () => {
+  const d = PW();
+  const none = (app, opts) => { const r = linux.pickOutputStream(d, app, opts); assert.equal(r.stream, null); return r.reason; };
+  assert.match(none(null), /no application/i);
+  assert.match(none({ pid: 4300, appId: 'slack' }), /not playing/i, 'an idle stream is not the call');
+  assert.match(none({ pid: 1, appId: 'teams' }), /no playback stream/i);
+  assert.match(none({ pid: 999, appId: 'other' }, { selfPids: [999] }), /ourselves|no playback stream/i, 'never our own capture or playback');
+  // two Chrome streams and nothing says which one is the call: stay with the whole output rather than guess
+  const two = { ...d, outputStreams: d.outputStreams.filter((s) => s.serial !== 702) .concat([{ ...d.outputStreams.find((s) => s.serial === 703), serial: 799, title: 'Another tab' }]) };
+  const r = linux.pickOutputStream(two, { pid: 5000, binary: 'chrome', appId: 'browser' });
+  assert.equal(r.stream, null);
+  assert.match(r.reason, /several/i);
+  // one Chrome stream is the call, whatever it is called
+  const one = { ...d, outputStreams: d.outputStreams.filter((s) => s.serial !== 702) };
+  assert.equal(linux.pickOutputStream(one, { pid: 5000, binary: 'chrome', appId: 'browser' }).stream.serial, 703);
+});
+
+const { EventEmitter } = require('node:events');
+// A stand-in for pw-record: remembers how it was started and lets a test play audio / end it.
+function fakeRecorder() {
+  const made = [];
+  const record = (args, label) => {
+    const src = Object.assign(new EventEmitter(), { args, label, started: false, stopped: false, start() { this.started = true; }, stop() { this.stopped = true; this.emit('end'); } });
+    made.push(src);
+    return src;
+  };
+  return { record, made };
+}
+const dumpOf = (d) => async () => d;
+
+test('linux: a known meeting app is captured on its own, by the id of its playback stream', async () => {
+  const { record, made } = fakeRecorder();
+  const p = linux.create({ env: {}, pwDump: dumpOf(PW()), record });
+  const src = await p.createSystemSource({ app: { pid: 4242, appId: 'zoom' } });
+  assert.deepEqual(made[0].args.slice(-3), ['--target', '701', '-']);
+  assert.ok(!made[0].args.includes('stream.capture.sink=true'), 'this is the stream, not the output device');
+  assert.deepEqual([src.capture.mode, src.capture.app], ['app', 'zoom']);
+});
+
+test('linux: without an app, or when none can be found, the whole output is captured as before and it says why', async () => {
+  for (const [label, deps, app, reason] of [
+    ['no app', {}, undefined, /whole output/i],
+    ['no stream', {}, { pid: 1, appId: 'teams' }, /no playback stream/i],
+    ['PipeWire cannot be asked', { pwDump: async () => null }, { pid: 4242, appId: 'zoom' }, /pipewire/i],
+  ]) {
+    const { record, made } = fakeRecorder();
+    const p = linux.create({ env: {}, pwDump: deps.pwDump || dumpOf(PW()), record });
+    // (no app and a dump that has no default sink would throw: give the default one a name)
+    const src = await p.createSystemSource({ app, sink: 'alsa_output.pci.analog-stereo' });
+    assert.deepEqual(made[0].args.slice(-5), ['-P', 'stream.capture.sink=true', '--target', 'alsa_output.pci.analog-stereo', '-'], label);
+    assert.equal(src.capture.mode, 'output', label);
+    assert.match(src.capture.reason, reason, label);
+  }
+});
+
+test('linux: if the app\'s stream goes away mid-call the capture carries on with the whole output instead of going silent', async () => {
+  const { record, made } = fakeRecorder();
+  const p = linux.create({ env: {}, pwDump: dumpOf(PW()), record });
+  const src = await p.createSystemSource({ app: { pid: 4242, appId: 'zoom' }, sink: 'alsa_output.pci.analog-stereo' });
+  const heard = [], events = [];
+  src.on('pcm', (b) => heard.push(b.toString()));
+  src.on('capture', (c) => events.push(c.mode));
+  src.start();
+  made[0].emit('pcm', Buffer.from('app'));
+  made[0].emit('end');                                    // the stream is gone
+  assert.equal(made.length, 2, 'the output capture was started');
+  assert.ok(made[1].started);
+  made[1].emit('pcm', Buffer.from('all'));
+  assert.deepEqual(heard, ['app', 'all']);
+  assert.deepEqual(events, ['output']);
+  assert.equal(src.capture.mode, 'output');
+  src.stop();
+  assert.ok(made[1].stopped);
+});
+
+test('linux: stopping a per-app capture on purpose does not start the fallback', async () => {
+  const { record, made } = fakeRecorder();
+  const p = linux.create({ env: {}, pwDump: dumpOf(PW()), record });
+  const src = await p.createSystemSource({ app: { pid: 4242, appId: 'zoom' }, sink: 'x' });
+  let ended = 0; src.on('end', () => { ended++; });
+  src.start(); src.stop();
+  assert.equal(made.length, 1);
+  assert.equal(ended, 1);
+});

@@ -343,6 +343,8 @@ export const PT = {
   'US (all-party consent): also ask them to agree by staying': 'EUA (consentimento de todos): pedir também que concordem ao ficar',
   'Copied': 'Copiado',
   'Could not copy here. Open WhisperBrain and copy the notice from the recording bar.': 'Não foi possível copiar aqui. Abre o WhisperBrain e copia o aviso a partir da barra de gravação.',
+  'Capture only the meeting app': 'Gravar só a aplicação da reunião',
+  'Records the audio of the call itself, so music or a video playing next to it stays out of the transcript. If the app cannot be told, everything the computer plays is recorded.': 'Grava o áudio da própria chamada, para que música ou um vídeo a tocar ao lado fiquem fora da transcrição. Se não for possível saber qual é a aplicação, grava-se tudo o que o computador reproduz.',
   'Merge speakers': 'Juntar oradores',
   'Merge': 'Juntar',
   'Two names for the same person? Join them.': 'Dois nomes para a mesma pessoa? Junta-os.',
