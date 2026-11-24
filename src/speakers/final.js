@@ -6,7 +6,8 @@
 const { toTimeline, planChannel } = require('./diarize');
 const { diarize: runWorker } = require('./diarizer');
 
-const DEFAULTS = { threshold: 0.5, windowShift: 0.1, tolerance: 200 };
+// threshold: sherpa's clustering distance. 0.6 separates clean distinct voices (0.7 merged two of them in the real-voice test) and gave 25.4/24.9 WDER on AMI/libri-call; 0.7 was better on the AMI far-field mix (20.9) but merges people, see eval/README.md
+const DEFAULTS = { threshold: 0.6, windowShift: 0.1, tolerance: 200 };
 
 // source: { file } (a spool) or { pcm } (s16le mono 16 kHz). stretches: [{ at, ms }], where each stretch of the
 // source starts in samples and on the note timeline. segIds: the utterances of this recording on this channel (an

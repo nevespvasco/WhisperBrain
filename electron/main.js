@@ -83,6 +83,16 @@ function createWindow(url) {
     if (quitting) return;
     if (core?.recording.status().active) { e.preventDefault(); win.hide(); notify('WhisperBrain', 'Still recording in the background. Use the tray icon to reopen or stop.'); }
   });
+  // If the page process dies (out of memory, GPU trouble), reload it instead of leaving a blank white window.
+  // Back off when it keeps dying so a crash on load does not spin.
+  let crashes = [];
+  win.webContents.on('render-process-gone', (_e, d) => {
+    console.error(`renderer gone: ${d.reason} (exit ${d.exitCode})`);
+    if (quitting || d.reason === 'clean-exit' || !win || win.isDestroyed()) return;
+    const now = Date.now();
+    crashes = crashes.filter((at) => now - at < 60000).concat(now);
+    if (crashes.length <= 3) setTimeout(() => { if (win && !win.isDestroyed()) win.loadURL(url); }, 500 * crashes.length);
+  });
   win.on('closed', () => { win = null; updateFloat(); });
   for (const ev of ['focus', 'blur', 'minimize', 'restore', 'show', 'hide']) win.on(ev, updateFloat);
   if (SMOKE) win.webContents.once('did-finish-load', () => setTimeout(smoke, 1500));

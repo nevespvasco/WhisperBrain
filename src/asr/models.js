@@ -164,7 +164,13 @@ class Models {
     if (this.downloads.has(id)) throw new Error(`${id} is already downloading`);
     const ctl = { progress: 0, abort: new AbortController() };
     this.downloads.set(id, ctl);
-    const report = (p) => { ctl.progress = p; onProgress?.(p); this.bus?.publish('model.progress', { id, progress: p }); };
+    // download() reports every network chunk; tell the UI only when the whole percentage moves (≤100 events)
+    let shown = -1;
+    const report = (p) => {
+      ctl.progress = p; onProgress?.(p);
+      const pct = Math.floor(p * 100);
+      if (pct !== shown) { shown = pct; this.bus?.publish('model.progress', { id, progress: p }); }
+    };
     const tmp = path.join(this.dir, `.tmp-${id}-${process.pid}`);
     try {
       fs.rmSync(tmp, { recursive: true, force: true });

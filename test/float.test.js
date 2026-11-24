@@ -40,6 +40,7 @@ test('setting floatingRecorder is validated and defaults to "background"', () =>
   assert.equal(s.update({ floatingRecorder: 'always' }).floatingRecorder, 'always');
   assert.throws(() => s.update({ floatingRecorder: 'sometimes' }), /off, background or always/);
   assert.equal(s.get('speakerRefine'), true);
+  assert.equal(s.get('speakerDiarize'), true);
 });
 
 test('the recorder page is served by the app and wired to what the main process offers', async () => {

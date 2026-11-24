@@ -76,13 +76,18 @@ a:hover { text-decoration: underline; }
 .navlink .count { font-size: 12px; color: var(--faint); font-weight: 500; font-variant-numeric: tabular-nums; }
 .navlink[aria-current="page"] .count { color: var(--accent); }
 .navlink .tagdot { width: 9px; height: 9px; border-radius: 50%; flex: none; margin: 0 4px; }
-.side-foot { padding: 10px; border-top: 1px solid var(--line); display: grid; gap: 2px; }
-.usercard { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; text-decoration: none !important; color: inherit; }
-.usercard:hover { background: var(--accent-softer); }
+.side-foot { padding: 10px; border-top: 1px solid var(--line); display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.usercard { width: 100%; min-width: 0; box-sizing: border-box; background: none; border: 0; cursor: pointer; text-align: left; font: inherit; display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; text-decoration: none !important; color: inherit; }
+.usercard .chev { color: var(--muted); display: flex; }
+.usercard { transition: background .12s ease; }
+.usercard:hover, .usercard[aria-expanded=true] { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); }
+.usercard:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+.usercard .chev svg { transition: transform .15s ease; }
+.usercard[aria-expanded=true] .chev svg { transform: rotate(180deg); }
 .usercard .who { min-width: 0; flex: 1; }
 .usercard .who b { display: block; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .usercard .who span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .side-label, .app.collapsed .usercard .who, .app.collapsed .side-more { display: none; }
+.app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .side-label, .app.collapsed .usercard .who, .app.collapsed .usercard .chev, .app.collapsed .side-more { display: none; }
 .app.collapsed .navlink { justify-content: center; padding: 9px; }
 .app.collapsed .brand { justify-content: center; padding-left: 14px; }
 .app.collapsed .side-scroll { padding: 4px 12px; }
@@ -529,7 +534,7 @@ dialog[open] { animation: dlgin .16s ease; }
 
 .menu { position: fixed; z-index: 150; min-width: 200px; max-width: min(320px, calc(100vw - 16px)); background: var(--surface-solid); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; display: grid; gap: 1px; animation: dlgin .12s ease; max-height: 70vh; overflow-y: auto; }
 .menu button, .menu a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; background: none; border: 0; cursor: pointer; text-align: left; color: var(--text); font-size: 13.5px; text-decoration: none !important; white-space: nowrap; }
-.menu button:hover, .menu a:hover, .menu button:focus-visible { background: var(--accent-softer); outline: none; }
+.menu button:hover, .menu a:hover, .menu button:focus-visible, .menu a:focus-visible { background: var(--accent-soft); outline: none; }
 .menu button.danger { color: var(--danger); }
 .menu button:disabled { opacity: .45; cursor: default; }
 .menu .sep { height: 1px; background: var(--line); margin: 4px 2px; }
@@ -572,7 +577,7 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 280px; transform: translateX(-100%); transition: transform .2s ease; box-shadow: var(--shadow-lg); background: var(--surface-solid); }
   .app.drawer .sidebar { transform: none; }
   .app.drawer .scrim { display: block; position: fixed; inset: 0; background: rgba(20, 16, 45, .3); z-index: 25; }
-  .app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .usercard .who { display: block; }
+  .app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .usercard .who, .app.collapsed .usercard .chev { display: block; }
   .app.collapsed .side-label { display: flex; }
   .app.collapsed .navlink { justify-content: flex-start; padding: 7px 10px; }
   .app.collapsed .brand { justify-content: flex-start; padding-left: 18px; }

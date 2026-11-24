@@ -63,6 +63,8 @@ test('install: downloads (following redirects), verifies, extracts, picks int8 f
   assert.equal(models.resolve('auto').id, 'fake');
   assert.equal(models.list()[0].installed, true);
   assert.ok(events.some((e) => e.type === 'model.progress'));
+  const pcts = events.filter((e) => e.type === 'model.progress').map((e) => Math.floor(e.data.progress * 100));
+  assert.ok(pcts.length <= 101 && new Set(pcts).size === pcts.length, 'progress is published once per whole percent, not per network chunk');
   assert.ok(events.some((e) => e.type === 'model.installed'));
   assert.deepEqual(fs.readdirSync(dir).filter((n) => n.startsWith('.tmp-')), [], 'no temp files left behind');
   models.remove('fake');

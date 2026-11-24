@@ -358,7 +358,7 @@ class RecordingManager {
         a.stage = 'speakers';
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
         if (s.speakerDiarize) diarized = await this.diarize(a, s);
-        if (s.speakerRefine) { // optional acoustic second look (pitch, timbre); off by default, see eval/README.md
+        if (s.speakerRefine) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }

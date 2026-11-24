@@ -1,4 +1,4 @@
-import { S, $, $$, api, t, esc, icon, toast, fail, go, avatar, debounce, menu, promptDialog, confirmDialog, PLATFORMS } from './lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, go, avatar, debounce, menu, menuIsOpen, promptDialog, confirmDialog, PLATFORMS } from './lib.js';
 import { setLang } from './i18n.js';
 import { events, ApiError } from './api.js';
 import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recEvents } from './recording.js';
@@ -98,17 +98,26 @@ export function renderSidebar() {
       </nav>
     </div>
     <div class="side-foot">
-      ${navlink('#/integrations', icon('plug'), t('Integrations'), { current: cur(['integrations']) })}
-      ${navlink('#/settings', icon('settings'), t('Settings'), { current: S.view.name === 'settings' && S.view.parts?.[1] !== 'account' ? 'aria-current="page"' : '' })}
-      <a class="usercard" href="#/settings/account" title="${esc(name)}">${avatar(name, { cls: 'lg' })}<span class="who"><b>${esc(name)}</b><span>${esc(S.settings?.userEmail || S.settings?.google?.email || t('Everything stays on this device'))}</span></span></a>
+      <button class="usercard" data-act="account-menu" aria-haspopup="menu" title="${esc(name)}">${avatar(name, { cls: 'lg' })}<span class="who"><b>${esc(name)}</b><span>${esc(S.settings?.userEmail || S.settings?.google?.email || t('Everything stays on this device'))}</span></span><span class="chev">${icon('chevdown', 'sm')}</span></button>
     </div>`;
 }
+let menuWasOpen = false;
+sidebar.addEventListener('mousedown', (e) => { menuWasOpen = menuIsOpen() && !!e.target.closest('[data-act="account-menu"]'); }, true);
 sidebar.addEventListener('click', async (e) => {
   const a = e.target.closest('[data-act]')?.dataset.act;
   if (!a) return;
   e.preventDefault();
   try {
-    if (a === 'collapse') { S.settings = await api('PUT', '/api/settings', { sidebarCollapsed: !S.settings.sidebarCollapsed }); applyTheme(); }
+    if (a === 'account-menu') {
+      if (menuWasOpen) { menuWasOpen = false; return; }
+      const el = e.target.closest('[data-act]');
+      const m = menu(el, [
+        { label: t('Integrations'), icon: 'plug', href: '#/integrations' },
+        { label: t('Settings'), icon: 'settings', href: '#/settings' },
+      ]);
+      m.style.minWidth = `${el.offsetWidth}px`;
+    }
+    else if (a === 'collapse') { S.settings = await api('PUT', '/api/settings', { sidebarCollapsed: !S.settings.sidebarCollapsed }); applyTheme(); }
     else if (a === 'new-space') { const name = await promptDialog(t('New space'), '', { placeholder: t('e.g. Customers, Hiring, Product') }); if (name) { const sp = await api('POST', '/api/spaces', { name }); await refreshCounts(); go(`#/meetings?space=${sp.id}`); } }
     else if (a === 'new-tag') { const name = await promptDialog(t('New tag'), '', { placeholder: t('e.g. Important') }); if (name) { await api('POST', '/api/tags', { name }); await refreshCounts(); } }
   } catch (err) { fail(err); }

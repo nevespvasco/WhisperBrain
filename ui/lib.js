@@ -128,8 +128,9 @@ export function promptDialog(title, value = '', { ok = t('Save'), placeholder = 
 }
 
 // ---------- popover menu ----------
-let openMenu = null;
-export function closeMenu() { openMenu?.remove(); openMenu = null; }
+let openMenu = null, openAnchor = null;
+export function closeMenu() { openMenu?.remove(); openAnchor?.removeAttribute('aria-expanded'); openMenu = null; openAnchor = null; }
+export const menuIsOpen = () => !!openMenu;
 // items: [{ label, icon, run, danger, disabled, selected, href } | 'sep' | { header }]
 export function menu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
@@ -166,7 +167,7 @@ export function menu(anchor, items, { align = 'start' } = {}) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
     else if (e.key === 'Escape') { closeMenu(); anchor.focus(); }
   });
-  openMenu = m;
+  openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
   setTimeout(() => m.querySelector('button:not(:disabled), a')?.focus(), 0);
   return m;
 }
