@@ -279,6 +279,39 @@ test('refineNote: audio that cannot be read just means the voice model decides a
   assert.deepEqual(notes.segments(n.id).map((s) => s.speakerId), ['s1', 's1', 's1', 's1']);
 });
 
+test('refineNote: utterances described while recording are not read or described again', async () => {
+  const { notes, speakers } = world();
+  const n = notes.create({});
+  notes.addSegments(n.id, [1, 2, 3].map((k) => ({ speaker: 'them', speakerId: 's1', startMs: k * 1000, endMs: k * 1000 + 900, text: `t${k}`, embedding: EMB.man })));
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: EMB.man, count: 3 });
+  const ids = notes.segments(n.id).map((s) => s.id);
+  const ready = new Map([[ids[0], voiceFeatures(utterance(MAN, { seed: 5, seconds: 2 }))], [ids[1], voiceFeatures(utterance(MAN, { seed: 6, seconds: 2 }))]]);
+  const reads = [];
+  const out = await refineNote({ speakers, noteId: n.id, refs: ids.map((segId) => ({ segId, ch: 'system', from: 0, to: 16000 })), read: (ch, from, to) => { reads.push(from); return toPcm16(utterance(MAN, { seed: 7, seconds: 2 })); }, described: ready });
+  assert.equal(reads.length, 1, 'only the utterance that was not described yet is read');
+  assert.equal(out.described, 3);
+});
+
+test('recording: voices are described in the gaps while recording, and Stop reuses them', async () => {
+  const { notes, speakers, settings, bus } = world();
+  const spoolDir = tmpDir('wb-describe-');
+  try {
+    const engine = new FakeEngine();
+    const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk' };
+    const platform = { capture: { mic: 'renderer', system: 'renderer' }, createMicSource: () => new PushSource(), createSystemSource: async () => new PushSource() };
+    const mgr = new RecordingManager({ notes, engine, models, settings, platform, bus, speakers, spoolDir });
+    const n = notes.create({});
+    await mgr.start(n.id, { mic: false, system: true });
+    mgr.pushPcm(n.id, 'system', toPcm16(utterance(MAN, { seed: 3, seconds: 3 })));
+    engine.emit('segment', { ch: 'system', startMs: 0, endMs: 3000, text: 'hello there', embedding: EMB.man });
+    const a = mgr.active;
+    await new Promise((r) => setTimeout(r, 250));
+    assert.equal(a.acoustic.size, 1, 'the utterance was described before Stop');
+    assert.ok([...a.acoustic.values()][0].f0 > 60);
+    await mgr.stop();
+  } finally { fs.rmSync(spoolDir, { recursive: true, force: true }); }
+});
+
 const models = testModels();
 const realSkip = models && models.speakerInstalled() && models.isInstalled('parakeet-tdt-0.6b-v3') ? false : 'needs the speaker model and parakeet-tdt-0.6b-v3 (with its sample wavs)';
 test('real voices: the after-recording analysis leaves two real speakers apart, records their pitch and deletes the audio', { skip: realSkip, timeout: 180000 }, async (t) => {

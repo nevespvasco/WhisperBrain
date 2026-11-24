@@ -39,6 +39,15 @@ class Speakers {
       .run(noteId, speakerId, channel, toBlob(centroid), count, voiceId || null, pitch || null);
   }
 
+  // A speaker whose identity is known from outside the audio (a Discord user): no voice print, named from the start.
+  // A name the user has already changed is kept.
+  ensureNamed(noteId, speakerId, name, channel = 'system') {
+    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, count, name) VALUES(?, ?, ?, 0, ?)
+      ON CONFLICT(note_id, speaker_id) DO UPDATE SET name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END`)
+      .run(noteId, speakerId, channel, String(name || '').slice(0, 80));
+    this.bus?.publish('speakers.updated', { noteId });
+  }
+
   // Name a speaker in one note. With remember=true the voice is saved (or reinforced) as a profile, so future
   // meetings recognise this person automatically: the speaker's voice print is added to the profile as one more print
   // (a speaker confirmed twice replaces its own print), weighted by the seconds this person spoke.

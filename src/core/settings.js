@@ -25,7 +25,7 @@ const DEFAULTS = {
   speakerDetection: true,       // tell voices apart ("Speaker 1", "Ana"…) with an on-device voice model
   speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
-  speakerCountHint: true,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only)
+  speakerCountHint: false,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only). Off: exactly right it takes AMI 18.1 -> 14.8 and libri-call 24.9 -> 17.9 WDER, one voice off it costs up to 6 points; see eval/README.md
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
@@ -59,11 +59,12 @@ const DEFAULTS = {
   linear: { apiKey: '', teamId: '', teamName: '' },
   obsidian: { vaultPath: '', folder: 'Meetings', transcript: true, autoExport: false },
   webhooks: [],                 // [{ id, name, url, secret, auto }]
+  discord: { enabled: false, token: '', userId: '', guildId: '', channelId: '' }, // bot that joins your voice call and hears each person separately; userId = your own Discord user ID (found from your voice channel, and left out because the microphone already has you)
 };
 
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion', 'linear', 'obsidian']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion', 'linear', 'obsidian', 'discord']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], discord: ['token'] };
 const MASK = '********';
 
 function validate(key, value) {

@@ -47,6 +47,16 @@ export async function render(main) {
         <label class="row between"><span class="small">${t('Export automatically after enhancing a meeting')}</span>${switchEl('o-auto', s.obsidian.autoExport)}</label>
         <div class="row"><button class="btn primary" data-act="o-save">${t('Save & test')}</button>${ints.obsidian.configured ? `<button class="btn" data-act="import-obsidian">${icon('download', 'sm')} ${t('Import notes')}</button><button class="btn" data-act="o-all">${icon('upload', 'sm')} ${t('Export all meetings')}</button>` : ''}<span class="small" id="o-status"></span></div>`)}
 
+      ${card('discord', '#5865f2', 'users', 'Discord', ints.discord.configured ? (ints.discord.enabled ? t('The bot joins your voice call when you record') : t('Connected — switched off')) : t('A bot that hears each person in a call separately'), ints.discord.configured && ints.discord.enabled, `
+        <div class="small muted">${t('On a Discord call the computer only plays one mixed sound, so people who talk at the same time blur together. With a bot in the call, Discord hands over every person on their own, so each line has the right name and overlapping speech is kept. Everyone in the call can see the bot; tell them you are recording.')}</div>
+        <ol class="steps"><li>${t('Open the')} <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer">${t('Discord Developer Portal')}</a> → <b>New Application</b>.</li><li>${t('Bot tab → Reset Token → copy the token and paste it below. No other switches (intents) are needed.')}</li><li>${t('Add the bot to your server: press Test below, then open the invite link it shows (or OAuth2 → URL Generator → scope bot → View Channel + Connect).')}</li><li>${t('In Discord: Settings → Advanced → Developer Mode on. Then right-click your own name → Copy User ID and paste it below.')}</li></ol>
+        ${field('d-token', t('Bot token'), `<input id="d-token" type="password" value="${ints.discord.configured ? MASK : ''}" placeholder="MTI3…" autocomplete="off">`)}
+        ${field('d-user', t('Your Discord user ID'), `<input id="d-user" value="${esc(ints.discord.userId)}" inputmode="numeric" placeholder="123456789012345678" autocomplete="off">`, t('The bot joins the voice channel you are in, and leaves your own voice to the microphone.'))}
+        ${field('d-channel', t('Always join this voice channel (optional)'), `<input id="d-channel" value="${esc(ints.discord.channelId)}" inputmode="numeric" placeholder="${t('Channel ID, empty = the one you are in')}" autocomplete="off">`)}
+        <label class="row between"><span class="small">${t('Join my call when I record')}</span>${switchEl('d-on', ints.discord.enabled)}</label>
+        <div class="row"><button class="btn primary" data-act="d-save">${t('Save & test')}</button>${ints.discord.configured ? `<button class="btn ghost sm" data-act="d-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="d-status"></span></div>
+        <div class="small" id="d-result"></div>`)}
+
       ${card('webhook', '#0ea5e9', 'webhook', t('Webhooks'), t('Send meetings anywhere: Zapier, Make, n8n, Slack, your own server'), ints.webhooks.length > 0, `
         <div class="stack tight">${ints.webhooks.map((w) => `<div class="row card" style="padding:10px 12px"><div class="grow"><div class="strong ellipsis">${esc(w.name)}</div><div class="xsmall muted ellipsis">${esc(w.url)}</div></div>${switchEl('', w.auto, t('Send automatically')).replace('id=""', `data-hook-auto="${w.id}"`)}<button class="btn ghost xs" data-hook-test="${w.id}">${t('Test')}</button><button class="btn ghost icon xs" data-hook-del="${w.id}" aria-label="${t('Remove')}">${icon('trash', 'sm')}</button></div>`).join('')}</div>
         <div class="hint">${t('Each POST carries the meeting as JSON (summary, notes, action items, topics, transcript, Markdown). With a secret, it is signed in X-WhisperBrain-Signature (HMAC-SHA256).')}</div>
@@ -113,6 +123,17 @@ function bind(main, ints) {
         if (!S.settings.linear.teamId && r.teams.length === 1) await save({ linear: { teamId: r.teams[0].id, teamName: r.teams[0].name } });
         setTimeout(() => render(main), 900);
       } else if (a === 'l-remove') { await save({ linear: { apiKey: '', teamId: '', teamName: '' } }); render(main); }
+      else if (a === 'd-save') {
+        await save({ discord: { token: $('#d-token').value.trim(), userId: $('#d-user').value.trim(), channelId: $('#d-channel').value.trim(), enabled: $('#d-on').checked } });
+        $('#d-status').textContent = t('Joining your call for a few seconds — say something…');
+        b.disabled = true;
+        const r = await api('POST', '/api/integrations/discord/test');
+        b.disabled = false;
+        status('#d-status', !!r.call && /works/.test(r.verdict || ''), r.verdict || r.note || t('Bot is ready'));
+        const bits = [`${t('Bot')}: ${esc(r.bot.name)}`];
+        if (r.call) bits.push(`${esc(r.call.server)} › ${esc(r.call.channel)}`, `${t('heard')}: ${r.call.heard.length ? r.call.heard.map(esc).join(', ') : t('nobody')}`, r.call.dave ? t('end-to-end encryption: on') : t('end-to-end encryption: off'));
+        $('#d-result').innerHTML = `${bits.join(' · ')}<br><a href="${esc(r.inviteUrl)}" target="_blank" rel="noopener noreferrer">${t('Invite link: add the bot to a server')}</a>`;
+      } else if (a === 'd-remove') { await save({ discord: { token: '', enabled: false, channelId: '' } }); render(main); }
       else if (a === 'o-save') {
         await save({ obsidian: { vaultPath: $('#o-path').value.trim(), folder: $('#o-folder').value.trim() || 'Meetings', transcript: $('#o-tr').checked, autoExport: $('#o-auto').checked } });
         const r = await api('POST', '/api/integrations/obsidian/test');
@@ -135,7 +156,7 @@ function bind(main, ints) {
       else if (a === 'import-files') openImport();
     } catch (err) {
       fail(err); b.disabled = false;
-      const map = { 'n-save': '#n-status', 'l-save': '#l-status', 'o-save': '#o-status', 'g-connect': '#g-status' };
+      const map = { 'n-save': '#n-status', 'l-save': '#l-status', 'o-save': '#o-status', 'g-connect': '#g-status', 'd-save': '#d-status' };
       if (map[a]) status(map[a], false, err.message);
     }
   };

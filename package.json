@@ -24,6 +24,9 @@
     "pack": "electron-builder --dir"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.28.1",
+    "opusscript": "^0.0.8",
     "sherpa-onnx-node": "2.0.3"
   },
   "devDependencies": {

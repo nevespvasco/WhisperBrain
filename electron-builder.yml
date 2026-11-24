@@ -14,6 +14,8 @@ files:
 # Native speech engine (sherpa-onnx .node + shared libs) cannot run from inside the asar archive.
 asarUnpack:
   - "**/node_modules/sherpa-onnx-*/**"
+  # Discord calls are end-to-end encrypted (DAVE); the bot decrypts them with a native module
+  - "**/node_modules/@snazzah/davey-*/**"
 extraResources:
   - from: resources
     to: resources

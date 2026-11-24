@@ -317,24 +317,31 @@ const CHANNELS = [['mic', 'm'], ['system', 's']];
 const MAX_UTTERANCE_SECONDS = 8;  // a few seconds of an utterance describe a voice as well as all of it
 const MIN_UTTERANCE_BYTES = 16000; // < 0.5 s of audio is not worth describing
 
+// The acoustic description (pitch, timbre) of one stored utterance, from its first few seconds; null when its audio
+// cannot be read or is too short. ref: { ch, from, to } in samples; read(ch, from, to) -> s16le mono 16 kHz.
+function describeUtterance(read, ref) {
+  let buf = null;
+  try { buf = read(ref.ch, ref.from, Math.min(ref.to, ref.from + MAX_UTTERANCE_SECONDS * 16000)); } catch { return null; } // audio unavailable: embedding only
+  return buf && buf.length >= MIN_UTTERANCE_BYTES ? voiceFeatures(pcm16ToFloat(buf)) : null;
+}
+
 // Re-examine a finished note. refs say where each stored utterance's audio is: [{ segId, ch, from, to }] (sample
 // offsets); read(ch, from, to) returns that audio as s16le mono 16 kHz. Heavy, so it is cooperative: it yields to
 // the event loop between utterances and gives up describing more audio at `deadline` (labels are still refined).
 // settled: channels whose number of speakers must not change (see refineChannel's `structure`).
-async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadline = Date.now() + 120000, settled = [] }) {
+// described: Map(segId -> features) of utterances already described while recording (see describeUtterance); only the
+// rest (utterances cut by the diarization, any the recording had no time for) is described here.
+async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadline = Date.now() + 120000, settled = [], described: ready = null }) {
   const rows = speakers.segmentVoices(noteId);
   const byId = new Map(rows.map((r) => [r.id, r]));
   let described = 0;
   for (const ref of refs) {
     const row = byId.get(ref.segId);
     if (!row) continue;
+    if (ready?.has(ref.segId)) { row.acoustic = ready.get(ref.segId); described++; continue; }
     if (Date.now() > deadline) break;
-    let buf = null;
-    try { buf = read(ref.ch, ref.from, Math.min(ref.to, ref.from + MAX_UTTERANCE_SECONDS * 16000)); } catch { /* audio unavailable: embedding only */ }
-    if (buf && buf.length >= MIN_UTTERANCE_BYTES) {
-      const f = voiceFeatures(pcm16ToFloat(buf));
-      if (f) { row.acoustic = f; described++; }
-    }
+    const f = describeUtterance(read, ref);
+    if (f) { row.acoustic = f; described++; }
     await new Promise((r) => setImmediate(r)); // keep the app responsive
   }
   const current = speakers.forNote(noteId);
@@ -350,4 +357,4 @@ async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadl
   return out;
 }
 
-module.exports = { refineChannel, refineNote, EMB_SCALE, AC_SCALE };
+module.exports = { refineChannel, refineNote, describeUtterance, EMB_SCALE, AC_SCALE };

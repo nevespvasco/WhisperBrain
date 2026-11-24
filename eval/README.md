@@ -60,7 +60,7 @@ Things to know before trusting these numbers:
 - **Acoustic refine** (`speakerRefine`, MFCC/F0 split/merge/reassign) only helps on top of diarization. On its own it changed nothing. After diarize at 0.6 it merges the two extra clusters on AMI (25.4 → 18.1) and is neutral on libri-call. At 0.7 it hurt (20.9 → 23.5). It is on by default because the shipped configuration shows a gain, but that rests on one real meeting; re-check when more recordings are added. F0 also stays as the veto in consolidate/autoMatch.
 - Both recordings were also used to pick the threshold, so expect some optimism. Add more AMI meetings (`node eval/prepare.js --ami ...`) before tuning further.
 - **Stop-time cost:** about 45-55 s for 14 min of single-channel audio, about 30 s for 5.6 min over two channels (8 threads, an idle machine).
-- **Still wrong:** libri-call still merges two of its three remote voices, and overlapped words go to the dominant speaker. Next steps from the research report: VBx instead of AHC, speaker-count hints from the calendar, and caching segmentation/embeddings during recording.
+- **Still wrong (see the section at the end for what was tried since):** libri-call still merges two of its three remote voices, and overlapped words go to the dominant speaker. Next steps from the research report: VBx instead of AHC, speaker-count hints from the calendar, and caching segmentation/embeddings during recording.
 
 ## Saved voices (`voices.js`)
 
@@ -112,3 +112,38 @@ In short: strangers wrongly linked drop from 40-76 % to 1-6 % and wrong-person l
 - Read speech in clean recordings, one microphone chain per reader across chapters: easier than real meetings. Real calls, other microphones, noisy rooms, and people who are ill or tired were not tested. The call and phone channels are simulated. No real meeting audio with the same people in two meetings was available (AMI participants do not recur in the downloaded meetings).
 - The average voice used in the table is built from the other half of the people. The threshold (0.6) and margin (0.02) were picked with `calibrate` on one half and scored on the other (`calibrate` picked 0.6 and 0.625 on the two halves with a wrong link costed as 3 misses, 0.575-0.65 for costs 2-5; its margin pick was noisy, 0.02 and 0.12), but the shipped values were then chosen having seen both halves, and the table above was run with them on the same people, so the table is somewhat optimistic. `VOICE_MEAN` itself is built from all 40 readers: it will be less well centred on other voices and microphones, which the per-channel adaptation is there to soften.
 - The fast path used for sweeps and `Speakers` itself agree on 243 of 260 random histories; the rest are borderline scores (the order in which near-duplicate voices are folded when averaging differs).
+
+## Knowing how many people are on the call, and a faster Stop (2026-11-24)
+
+All numbers: `node eval/run.js --configs diarize+refine`, the same two recordings as above (so the same optimism applies). WDER, lower is better; the defaults are AMI 18.1 and libri-call 24.9.
+
+### Head count from the calendar (`src/speakers/hint.js`, setting `speakerCountHint`, off by default)
+
+The attendee list of the calendar event, minus the user, is the number of voices expected on the system channel (small meetings only: 2 to 6 attendees). `--attendees N` gives the eval note N attendees; `--speakers N` forces a count directly.
+
+| Count given for the system channel | AMI (true 4) | libri-call (true 3) |
+|---|---|---|
+| none (today's default) | 18.1 | 24.9 |
+| exactly right | **14.8** | **17.9** |
+| one too few | 20.9 | 24.9 |
+| one too many | 24.2 | 27.7 |
+
+- A right count is worth 3 to 7 points, a wrong one costs 0 to 6, and calendar lists overcount (no-shows, people who only listen), so the hint is off by default. The number the user types themselves (see the note's "others on the call") is the reliable version of the same thing.
+- The count must also tell the acoustic pass (`speakerRefine`) to keep its hands off the number of speakers: with the right count and the pass free to split and merge, libri-call went from 18.0 to 36.5 and AMI from 14.9 to 17.4. The manager passes `settled` to `refineNote` for every channel that had a count.
+- A forced count that produces a voice with under 5% of the speech (or under 8 s) folds it into its nearest neighbour (`foldStarved` in `final.js`), because invited people do not always come.
+
+### Stop-time
+
+- The acoustic description of each utterance (pitch, timbre, about 25 ms) is now made in the gaps while recording (`describeSoon` in the recording manager) and reused by `refineNote`. Results are identical (AMI 18.1, libri-call 24.9); the speaker pass after Stop went from 64.7 s to 51.3 s on the 14 minute AMI meeting.
+- The diarization model itself (49 s on AMI, 21 s on libri-call at 8 threads) is the rest. More threads do not help (4: 78 s, 8: 57 s, 16: 63 s, 24: 103 s).
+- A larger segmentation hop (`--window-shift`) is faster but not safe: 0.3 took AMI to 19.4 and libri-call to 26.9 (speaker pass 16 s and 11 s), 0.2 took them to 28.6 and 35.8. Kept at 0.1.
+
+### Diarization in pieces (`eval/pieces.js`, `eval/offline.js --strategy pieces`): tried, not shipped
+
+Diarize each finished 4 minute piece while recording, merge the pieces' voice prints at Stop. That leaves 4 to 6 s of work for Stop, but accuracy depends on one threshold that only works in a narrow range: merge at cosine 0.4 gave AMI 20.2 and libri-call 25.4 (offline, diarize only; sherpa over the whole meeting: 26.3 and 25.0), at 0.5 AMI split into 12 speakers (WDER 57.0), and even a forced correct count gave AMI 47.3. Voice prints pooled per piece are too weak to merge reliably on a far-field mix.
+
+### Regrouping turns, VBx-style (`eval/regroup.js`, `eval/offline.js --strategy regroup`): tried, not shipped
+
+Embed every speaker turn of sherpa's output and regroup the prints: average-link, spectral clustering with an eigengap, and a variational Bayes mixture with pruning in the style of VBx, without the trained PLDA (scales estimated from an over-clustering of the same meeting). Starting from the default grouping all of them were worse than sherpa's own clustering (WDER 33 to 51 against 26.3 and 25.0); starting from an over-split at 0.4 they were 34 to 56. Feeding sherpa's own labels through the same code reproduces its score, so the harness is not the cause. Real VBx would need window-level prints cut with the segmentation model's masks (sherpa does not expose them, it would take onnxruntime in the app) and a PLDA trained for this voice model.
+
+`eval/offline.js` caches the recognized words and the diarization output under `.eval/cache`, so a new grouping idea is scored in seconds instead of a 5 minute run.

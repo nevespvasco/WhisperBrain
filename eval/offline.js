@@ -27,6 +27,7 @@ const { diarize } = require('../src/speakers/diarizer');
 const { assignWords, toTimeline } = require('../src/speakers/diarize');
 const { planPieces, mergeVoices } = require('./pieces');
 const { foldStarved } = require('../src/speakers/final');
+const regroup = require('./regroup');
 const { score } = require('./metrics');
 
 const ROOT = path.join(__dirname, '..');
@@ -88,6 +89,26 @@ async function runWorker(name, ch, pcm, from, to, o) {
   });
 }
 
+// A voice print for each turn of at least `minSec`, from the model that runs inside the app.
+async function turnPrints(name, ch, pcm, turns, tag, minSec) {
+  return cached(`tp:${name}:${ch}:${tag}:${minSec}`, async () => {
+    const sherpa = require('sherpa-onnx-node');
+    const ex = new sherpa.SpeakerEmbeddingExtractor({ model: models.speakerPath(), numThreads: 4, provider: 'cpu', debug: 0 });
+    const out = [];
+    turns.forEach((t, i) => {
+      if (t.end - t.start < minSec) return;
+      const a = Math.round(t.start * 16000), b = Math.min(pcm.length, Math.round(t.end * 16000));
+      const f = new Float32Array(b - a);
+      for (let k = 0; k < f.length; k++) f[k] = pcm[a + k] / 32768;
+      const st = ex.createStream();
+      st.acceptWaveform({ samples: f, sampleRate: 16000 });
+      st.inputFinished();
+      if (ex.isReady(st)) out.push({ i, v: Array.from(ex.compute(st, false)) });
+    });
+    return out;
+  });
+}
+
 (async () => {
   const strategy = opt('--strategy', 'full');
   const o = { threshold: num('--threshold', 0.6), windowShift: num('--window-shift', 0.1), threads: num('--threads', 8), numSpeakers: num('--speakers', 0) };
@@ -108,6 +129,33 @@ async function runWorker(name, ch, pcm, from, to, o) {
         const r = await runWorker(name, ch, pcm, 0, total, o);
         stopSeconds += r.seconds; totalSeconds += r.seconds;
         turns = r.turns;
+      } else if (strategy === 'regroup') {
+        const base = num('--base-threshold', 0.4);
+        const r = await runWorker(name, ch, pcm, 0, total, { ...o, threshold: base, numSpeakers: 0 });
+        const minSec = num('--min-turn', 1);
+        const tp = await turnPrints(name, ch, pcm, r.turns, base, minSec);
+        let pts = tp.map((x) => Float64Array.from(x.v));
+        if (opt('--center', '1') === '1') { // the meeting's average print is the channel's colour, shared by every voice on it
+          const mean = new Float64Array(pts[0].length);
+          for (const p of pts) { const n = Math.hypot(...p); p.forEach((v, d) => { mean[d] += v / n / pts.length; }); }
+          pts = pts.map((p) => { const n = Math.hypot(...p); return Float64Array.from(p, (v, d) => v / n - mean[d]); });
+        }
+        const wts = tp.map((x) => r.turns[x.i].end - r.turns[x.i].start);
+        const initIds = [...new Set(tp.map((x) => r.turns[x.i].speaker))];
+        const init = Int32Array.from(tp, (x) => initIds.indexOf(r.turns[x.i].speaker));
+        const method = opt('--method', 'ahc');
+        let lab;
+        if (method === 'init') lab = init; // sanity check: sherpa's own labels through the same code path
+        else if (method === 'ahc') lab = regroup.ahc(pts, wts, { threshold: num('--merge', 0.5) });
+        else if (method === 'spectral') lab = regroup.spectral(pts, wts, { keep: num('--keep', 0.2), k: o.numSpeakers });
+        else lab = regroup.vb(pts, wts, init, { dim: num('--dim', 24), Fa: num('--fa', 0.4), Fb: num('--fb', 1), prune: num('--prune', 0.03) });
+        // every sherpa speaker takes the group most of its long turns went to; the short turns follow their speaker
+        const votes = new Map();
+        tp.forEach((x, k) => { const sp = r.turns[x.i].speaker; const m = votes.get(sp) || new Map(); m.set(lab[k], (m.get(lab[k]) || 0) + wts[k]); votes.set(sp, m); });
+        const group = new Map([...votes].map(([sp, m]) => [sp, [...m].sort((a, b) => b[1] - a[1])[0][0]]));
+        const direct = new Map(tp.map((x, k) => [x.i, lab[k]]));
+        turns = r.turns.map((t, i) => ({ ...t, speaker: direct.has(i) ? direct.get(i) : (group.get(t.speaker) ?? 0) }));
+        totalSeconds += r.seconds; stopSeconds += r.seconds;
       } else {
         const pieces = planPieces(tr.utterances.filter((u) => u.ch === ch), total, { targetSec: num('--piece', 240) });
         const voices = [], all = [];

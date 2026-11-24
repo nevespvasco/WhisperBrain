@@ -27,6 +27,7 @@ class Integrations {
       obsidian: { configured: !!s.get('obsidian').vaultPath, ...s.get('obsidian') },
       google: { configured: !!g.clientId, connected: !!g.refreshToken, email: g.email, calendars: g.calendars },
       webhooks: s.publicView().webhooks,
+      discord: { configured: !!s.get('discord').token, enabled: s.get('discord').enabled, userId: s.get('discord').userId, guildId: s.get('discord').guildId, channelId: s.get('discord').channelId, call: this.app.discord?.status() || { joined: false } },
     };
   }
 
@@ -34,6 +35,10 @@ class Integrations {
     if (kind === 'notion') return { ok: true, ...(await this.notion().me()) };
     if (kind === 'linear') { const l = this.linear(); const [viewer, teams] = await Promise.all([l.viewer(), l.teams()]); return { ok: true, viewer, teams }; }
     if (kind === 'obsidian') return this.obsidian().check();
+    if (kind === 'discord') {
+      if (this.app.recording.status().active) throw err('Stop the recording first: the test joins your call by itself.', 409, 'busy');
+      try { return await this.app.discord.probe(); } finally { this.app.discord.leave(); }
+    }
     throw err('unknown integration');
   }
 

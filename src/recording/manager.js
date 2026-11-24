@@ -4,7 +4,7 @@ const { rms } = require('../audio/pcm');
 const { isEcho, micSegmentIsEnergyEcho } = require('../audio/echo');
 const { EnergyEnvelope } = require('../audio/envelope');
 const { SpeakerTracker } = require('../speakers/cluster');
-const { refineNote } = require('../speakers/refine');
+const { refineNote, describeUtterance } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
 const { Spool } = require('./spool');
@@ -15,6 +15,8 @@ const DRAFT_ECHO_ACTIVE_DB = -50; // the system channel counts as speaking above
 const DRAFT_ECHO_WAIT_MS = 700;   // a mic draft needs this much audio before the loudness comparison can call it an echo
 
 const SPEAKER = { mic: 'me', system: 'them' };
+const REMOTE_GAP_MS = 60;        // a person on Discord is silent between sentences (nothing is sent): gaps longer than this are filled with silence so times stay true
+const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and reopened instead (an hour of silence is not fed to the recognizer)
 
 class RecordingError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -26,8 +28,10 @@ class RecordingManager {
   // spoolDir: where raw audio is parked for the after-recording speaker pass (omit to skip that pass).
   // vocabulary: (noteId) => terms the meeting is likely to say (attendees, glossary, speaker names) for hotword biasing.
   // diarization: { run, threshold, windowShift, tolerance } overrides for the after-recording diarization (tests, the eval harness).
-  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {} }) {
-    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization });
+  // discord: the Discord voice bot (src/discord/bot.js) or a stand-in with join()/leave()/on('audio'): when it joins the call,
+  // every person arrives on a channel of their own ('dc:<user id>') and replaces the mixed system audio.
+  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null }) {
+    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord });
     if (spoolDir) Spool.sweep(spoolDir);
     this.active = null;
     this.engine.on('segment', (s) => this.onSegment(s));
@@ -49,6 +53,7 @@ class RecordingManager {
       elapsedMs: this.elapsed(a), channels: Object.keys(a.channels), needsRenderer: a.rendererChannels,
       echo: { cancellation: a.aec ? { ...a.aec } : null, dropped: { ...a.echoDropped } },
       draft: a.draft ? { on: a.draft.on, reason: a.draft.reason || null } : { on: false, reason: null },
+      discord: a.discord ? { ...a.discord.info, people: [...a.remote.values()].map((r) => r.name) } : null,
     };
   }
 
@@ -87,14 +92,18 @@ class RecordingManager {
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
       draft: null,                         // { requested, on, reason }: live draft captions for this recording (see applyDraft)
       drafts: { mic: null, system: null }, // the draft line on each channel right now: { startMs, text, shown, echo }. Never stored.
+      acoustic: new Map(), describeQueue: [], describing: false, // utterance voice descriptions made while recording (describeSoon)
       settled: new Set(),                  // channels whose number of speakers is known (user or calendar): refine keeps it
       recentSystem: [],                    // the last few final system segments, to tell a mic draft that merely echoes them
+      remote: new Map(),                   // Discord: channel ('dc:<id>') -> { userId, name, speakerId, t0, chain }, one per person heard
+      discord: null,                       // { info, onAudio } while the bot is in the call
     };
     try {
       await this.ensureEngine();
       await this.applyVocabulary(noteId);
       this.applyDraft(a); // loads in the worker's queue ahead of the first audio; the recording does not wait for it
       a.resumedAt = Date.now();
+      if (await this.joinDiscord(a, s, want.mic)) want.system = false; // the bot hears everyone separately: the mixed system audio would only repeat it
       const cap = this.platform.capture;
       for (const ch of ['mic', 'system']) {
         if (!want[ch]) continue;
@@ -116,7 +125,7 @@ class RecordingManager {
           } else throw e;
         }
       }
-      if (!Object.keys(a.channels).length) throw new RecordingError('no-source', 'No audio source could be started.');
+      if (!Object.keys(a.channels).length && !a.discord) throw new RecordingError('no-source', 'No audio source could be started.');
       this.notes.update(noteId, { status: 'recording', startedAt: note.startedAt || Date.now() });
       for (const src of Object.values(a.channels)) src.start();
       this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec });
@@ -227,7 +236,8 @@ class RecordingManager {
     a.fed[ch] += buf.length / 2;
     this.engine.feed(ch, buf);
     spool?.write(buf); // after the engine: capturing and transcribing always come first
-    a.level[ch] = Math.max(a.level[ch], rms(buf));
+    const lk = ch === 'mic' ? 'mic' : 'system'; // a person on Discord counts towards the "them" level
+    a.level[lk] = Math.max(a.level[lk], rms(buf));
     const now = Date.now();
     if (now - a.lastLevel >= 120) {
       a.lastLevel = now;
@@ -244,10 +254,12 @@ class RecordingManager {
   }
 
   saveSegment(a, { ch, startMs, endMs, text, embedding, words, logProbMean, logProbMin }) {
-    const speaker = SPEAKER[ch] || ch;
+    const remote = a.remote.get(ch);
+    const kind = remote ? 'system' : ch; // a person on Discord is "them", handled like the system channel
+    const speaker = remote ? 'them' : (SPEAKER[ch] || ch);
     const seg = { speaker, startMs: Math.max(0, a.epoch[ch] + startMs), endMs: Math.max(0, a.epoch[ch] + endMs), text };
     if (this.settings.get('echoDedupe')) {
-      if (ch === 'mic') {
+      if (kind === 'mic') {
         const sys = this.notes.segments(a.noteId).filter((x) => x.speaker === 'them');
         if (sys.some((x) => isEcho(seg, x))) { a.echoDropped.text++; return; }
         if (micSegmentIsEnergyEcho(a.env.mic, a.env.system, seg)) { a.echoDropped.energy++; return; }
@@ -259,14 +271,36 @@ class RecordingManager {
         }
       }
     }
-    seg.speakerId = this.identify(a, ch, seg, embedding);
-    if (seg.speakerId) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
+    seg.speakerId = remote ? remote.speakerId : this.identify(a, ch, seg, embedding);
+    if (seg.speakerId && !remote) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
     const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, embedding, words, logProbMean, logProbMin }]);
     const spool = a.spool[ch];
-    if (spool && !spool.broken) a.refs.push({ segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) });
+    if (spool && !spool.broken) {
+      const ref = { segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) };
+      a.refs.push(ref);
+      if (this.settings.get('speakerRefine')) this.describeSoon(a, ref);
+    }
     const label = seg.speakerId ? this.speakers.label(a.noteId, seg.speakerId, speaker) : (speaker === 'me' ? 'Me' : 'Them');
-    if (ch === 'system') a.recentSystem = [...a.recentSystem.filter((x) => x.endMs > seg.endMs - 15000), { startMs: seg.startMs, endMs: seg.endMs, text }].slice(-8);
+    if (kind === 'system') a.recentSystem = [...a.recentSystem.filter((x) => x.endMs > seg.endMs - 15000), { startMs: seg.startMs, endMs: seg.endMs, text }].slice(-8);
     this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label, startMs: seg.startMs, endMs: seg.endMs, text } });
+  }
+
+  // Describe an utterance's voice (pitch, timbre: about 25 ms of work) in the gaps while recording, one at a time with
+  // a pause between, so that Stop has less left to do. Same function, same audio, same result as describing it at Stop.
+  describeSoon(a, ref) {
+    a.describeQueue.push(ref);
+    if (a.describing) return;
+    a.describing = true;
+    const step = () => {
+      const r = a.describeQueue.shift();
+      if (!r || this.active !== a || a.finalizing) { a.describing = false; return; }
+      try {
+        const f = describeUtterance((ch, from, to) => a.spool[ch]?.read(from, to) ?? null, r);
+        if (f) a.acoustic.set(r.segId, f);
+      } catch { /* Stop describes it */ }
+      setTimeout(step, 20); // capture and the screen come first
+    };
+    setTimeout(step, 50);
   }
 
   // Draft words of the utterance in progress on one channel (a 'partial' from the engine). They are published for the
@@ -316,7 +350,8 @@ class RecordingManager {
   }
 
   async settle(a) {
-    await Promise.all(Object.keys(a.channels).map(async (ch) => {
+    await Promise.all([...a.remote.values()].map((r) => r.chain)).catch(() => {}); // audio from Discord that is still queued goes in first
+    await Promise.all([...Object.keys(a.channels), ...a.remote.keys()].map(async (ch) => {
       await this.engine.flush(ch);
       this.engine.reset(ch);
       a.fed[ch] = 0;
@@ -351,6 +386,7 @@ class RecordingManager {
     a.stage = 'transcribing';
     this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
     for (const src of Object.values(a.channels)) src.stop();
+    this.leaveDiscord(a);
     try { await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
     if (this.speakers) {
       const s = this.settings.all();
@@ -362,7 +398,7 @@ class RecordingManager {
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
         if (s.speakerDiarize) diarized = await this.diarize(a, s);
         if (s.speakerRefine) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
-          try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled] }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
+          try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
       try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
@@ -413,9 +449,74 @@ class RecordingManager {
     return done;
   }
 
+  // ---- Discord ----
+  // Joins the voice channel you are in, if the bot is set up and you are in one. Never stops a recording: when it cannot
+  // join, the ordinary system audio carries the call as before. -> true when the bot is in the call.
+  async joinDiscord(a, s, micWanted) {
+    if (!this.discord || !s.discord?.enabled || !s.discord.token) return false;
+    try {
+      // your own voice is the microphone channel; the bot would only hear it a second time
+      const info = await this.discord.join({ skipUserIds: micWanted && s.discord.userId ? [s.discord.userId] : [], timeoutMs: 8000 });
+      if (!info) return false;
+      const onAudio = (ev) => this.onDiscordAudio(a, ev);
+      this.discord.on('audio', onAudio);
+      const onWarning = (w) => this.bus.publish('recording.warning', { message: w.message });
+      this.discord.on('warning', onWarning);
+      a.discord = { info, onAudio, onWarning };
+      this.bus.publish('recording.discord', { noteId: a.noteId, ...info });
+      return true;
+    } catch (e) {
+      this.bus.publish('recording.warning', { message: `Discord: ${e.message}. Recording the computer's audio instead.` });
+      return false;
+    }
+  }
+
+  leaveDiscord(a) {
+    const d = a.discord;
+    if (!d) return;
+    a.discord = null;
+    this.discord.off('audio', d.onAudio);
+    this.discord.off('warning', d.onWarning);
+    try { this.discord.leave(); } catch { /* already out */ }
+  }
+
+  // One chunk of one person's voice. Each person is an ordinary channel for the engine ('dc:<id>': its own voice-activity
+  // detector), and a speaker named from the start, so no voice guessing is needed. Chunks of one person are handled in order.
+  onDiscordAudio(a, { userId, name, pcm, ts }) {
+    if (this.active !== a || a.paused || a.finalizing) return;
+    const ch = `dc:${userId}`;
+    let r = a.remote.get(ch);
+    if (!r) {
+      r = { userId, name, speakerId: `d${userId}`, t0: null, chain: Promise.resolve() };
+      a.remote.set(ch, r);
+      a.spool[ch] = null; // no raw audio is kept for these: each person is already known, so there is nothing for the after-recording speaker pass to do
+      a.fed[ch] = 0; a.epoch[ch] = 0; a.base[ch] = 0; a.stretches[ch] = []; a.env[ch] = new EnergyEnvelope();
+      try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system'); } catch { /* the label falls back to the id */ }
+    }
+    r.chain = r.chain.then(() => this.feedDiscord(a, ch, r, pcm, ts)).catch((e) => this.bus.publish('recording.warning', { message: `Discord audio: ${e.message}` }));
+  }
+
+  async feedDiscord(a, ch, r, pcm, ts) {
+    if (this.active !== a || a.paused || a.finalizing) return;
+    const ms = pcm.length / 32;
+    if (a.fed[ch] === 0 || r.t0 === null) r.t0 = ts - ms; // the first audio of a stretch fixes where it sits on the clock
+    else {
+      const gap = (ts - ms - r.t0) - a.fed[ch] / 16;     // how long this person was silent since the last chunk
+      if (gap > REMOTE_RESET_MS) {
+        await this.engine.flush(ch);
+        this.engine.reset(ch);
+        a.fed[ch] = 0;
+        r.t0 = ts - ms;
+      } else if (gap > REMOTE_GAP_MS) {
+        for (let left = Math.round(gap * 16); left > 0; left -= 16000) this.onPcm(a, ch, Buffer.alloc(Math.min(left, 16000) * 2));
+      }
+    }
+    this.onPcm(a, ch, pcm);
+  }
+
   closeSpools(a) { for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } } }
 
-  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.closeSpools(a); }
+  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); this.closeSpools(a); }
 }
 
 module.exports = { RecordingManager, RecordingError };

@@ -25,8 +25,9 @@ const { toMeeting } = require('../knowledge/meeting');
 const { Importer } = require('../knowledge/importer');
 const { Integrations } = require('../integrations/service');
 const { GoogleCalendar } = require('../meetings/google');
+const { DiscordVoice } = require('../discord/bot');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null } = {}) {
+function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
@@ -41,7 +42,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const llm = new LlmClient(() => settings.get('llm'));
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
+  const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes });
@@ -93,11 +95,19 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     } catch (err) { bus.publish('meeting.autostart-failed', { message: err.message }); }
   });
 
-  if (detect) detector.start();
+  // Keep the bot logged in while it is switched on, so that joining a call at the start of a recording is quick; sign it
+  // out when it is switched off or the token changes. Real Discord only: skipped when a test supplies stand-in libraries.
+  const warmDiscord = () => {
+    const c = settings.get('discord');
+    if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
+    else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
+  };
+  if (detect) { detector.start(); warmDiscord(); }
+  bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   return Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
-    knowledge, analyze, openExternal, renderPdf,
+    knowledge, analyze, openExternal, renderPdf, discord,
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings }, id, opts),
     async state() {
       const caps = await plat.capabilities();
@@ -119,6 +129,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     close() {
       self.pendingGoogleAuth?.cancel?.();
       detector.stop();
+      discord.logout().catch(() => {});
       engine.stop();
       try { conn.close(); } catch { /* already closed */ }
     },
