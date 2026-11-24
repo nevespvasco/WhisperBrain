@@ -4,6 +4,10 @@ A local-first AI notepad for meetings. Type your own notes, record the call (mic
 
 Everything stays on your computer: audio is transcribed locally with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), notes live in a local SQLite file, and the only text that leaves the machine goes to the LLM server you configure.
 
+![A meeting summary with overview, key points, speakers and topics](docs/screenshots/meeting-summary.png)
+
+![The transcript with each voice labelled, the timeline of who spoke, and dark mode](docs/screenshots/transcript.png)
+
 ## Features
 
 | | |
