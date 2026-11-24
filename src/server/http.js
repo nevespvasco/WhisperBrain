@@ -237,7 +237,7 @@ function createRoutes(app) {
   add('POST', '/api/notes/:id/speakers/guess-names', async ({ params }) => {
     noteOr404(params.id);
     if (!app.ai.configured()) throw new HttpError(409, 'No AI server is set up. Add one in Settings → AI.');
-    const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.llm, userName: app.settings.get('userName') }, params.id);
+    const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.scheduler.client('background'), userName: app.settings.get('userName') }, params.id);
     if (r.error) throw new HttpError(502, `The AI server did not answer: ${r.error}`);
     if (r.named.length) app.notes.reindex(params.id);
     return { named: r.named.map(({ speakerId, name, line, quote }) => ({ speakerId, name, line, quote })), refused: r.refuted.length };
@@ -377,6 +377,8 @@ function createRoutes(app) {
   add('GET', '/api/calendar/current', async () => ({ event: await app.calendar.current() }));
 
   require('./routes-knowledge')(add, app, { HttpError, noteOr404, readBody });
+  require('./routes-briefings')(add, app, { HttpError, noteOr404, readBody });
+  require('./routes-assistant')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-meet')(add, app, { HttpError });
 
   // events (SSE)
