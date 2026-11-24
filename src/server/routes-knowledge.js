@@ -60,7 +60,8 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
 
   // ---- topics ----
   r('GET', '/api/topics', async ({ query }) => k.topics({ q: query.q }));
-  r('GET', '/api/topics/graph', async ({ query }) => k.topicGraph({ limit: Number(query.limit) || 60 }));
+  r('GET', '/api/topics/overview', async ({ query }) => k.topicOverview({ since: Math.max(0, Number(query.since) || 0), limit: Math.min(300, Number(query.limit) || 150) }));
+  r('GET', '/api/topics/graph',async ({ query }) => k.topicGraph({ limit: Number(query.limit) || 60 }));
   r('GET', '/api/topics/:id', async ({ params }) => k.topic(params.id) || (() => { throw new HttpError(404, 'topic not found'); })());
   r('PATCH', '/api/topics/:id', async ({ params, body }) => k.updateTopic(params.id, body) || (() => { throw new HttpError(404, 'topic not found'); })());
   r('POST', '/api/topics/:id/merge', async ({ params, body }) => k.mergeTopics(params.id, body.into));

@@ -122,6 +122,13 @@ test('topics connect meetings: same subject across meetings, graph, related, quo
   assert.equal(pricing.notes, 2, '"Pricing models" and "Pricing model" are one topic');
   const g = k.topicGraph();
   assert.ok(g.edges.some((e) => [e.source, e.target].includes(pricing.id)));
+  const ov = k.topicOverview();
+  assert.equal(ov.meetings, 2, 'only meetings that have topics count');
+  const op = ov.topics.find((x) => x.id === pricing.id);
+  assert.equal(op.dates.length, 2);
+  assert.ok(op.firstAt <= op.lastAt);
+  assert.equal(ov.edges.length, 2, 'pricing–discount and pricing–hiring');
+  assert.equal(k.topicOverview({ since: Date.now() + 60000 }).topics.length, 0, 'a period with no meetings has no topics');
   const rel = k.related(a.id);
   assert.equal(rel[0].id, b.id);
   assert.ok(rel[0].reasons.some((r) => /pricing/i.test(r)));

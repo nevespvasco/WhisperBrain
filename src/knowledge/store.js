@@ -254,6 +254,33 @@ class Knowledge {
     return { nodes: nodes.map((n) => ({ id: n.id, name: n.name, notes: n.notes, pinned: n.pinned })), edges };
   }
 
+  // Everything the Topics overview needs in one go, limited to meetings since `since`: each topic with the dates
+  // of its meetings (for sparklines and trends) and co-occurrence edges between the topics returned.
+  topicOverview({ since = 0, limit = 150 } = {}) {
+    const rows = this.db.prepare(`SELECT nt.topic_id AS id, n.id AS noteId, n.created_at AS at FROM note_topics nt JOIN notes n ON n.id = nt.note_id
+      JOIN topics t ON t.id = nt.topic_id WHERE t.hidden = 0 AND n.created_at >= ? ORDER BY n.created_at`).all(since);
+    const byTopic = new Map(), byNote = new Map();
+    for (const r of rows) {
+      if (!byTopic.has(r.id)) byTopic.set(r.id, []);
+      if (!byNote.has(r.noteId)) byNote.set(r.noteId, []);
+      byTopic.get(r.id).push(r.at); byNote.get(r.noteId).push(r.id);
+    }
+    // when the topic first came up at all, so "new" means new, not just new inside the period
+    const firstEver = new Map(this.db.prepare('SELECT nt.topic_id AS id, MIN(n.created_at) AS at FROM note_topics nt JOIN notes n ON n.id = nt.note_id GROUP BY nt.topic_id').all().map((r) => [r.id, r.at]));
+    const topics = this.db.prepare('SELECT id, name, description, pinned FROM topics WHERE hidden = 0').all()
+      .filter((m) => byTopic.has(m.id) || (m.pinned && !since))
+      .map((m) => { const dates = byTopic.get(m.id) || []; return { id: m.id, name: m.name, description: m.description, pinned: !!m.pinned, notes: dates.length, firstAt: dates[0] || null, lastAt: dates[dates.length - 1] || null, firstEverAt: firstEver.get(m.id) || null, dates, noteIds: [] }; })
+      .sort((a, b) => b.pinned - a.pinned || b.notes - a.notes || (b.lastAt || 0) - (a.lastAt || 0)).slice(0, limit);
+    const keep = new Map(topics.map((x) => [x.id, x])), w = new Map();
+    for (const [noteId, ids] of byNote) {
+      for (const id of ids) keep.get(id)?.noteIds.push(noteId);
+      const list = ids.filter((id) => keep.has(id)).sort();
+      for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) { const key = `${list[i]}|${list[j]}`; w.set(key, (w.get(key) || 0) + 1); }
+    }
+    const edges = [...w].map(([key, weight]) => { const [source, target] = key.split('|'); return { source, target, weight }; });
+    return { since, meetings: byNote.size, topics, edges };
+  }
+
   // Offline topics for one meeting (used when no LLM is configured, and for imported meetings).
   localTopics(noteId, { max = 6 } = {}) {
     const n = this.notes.get(noteId);
