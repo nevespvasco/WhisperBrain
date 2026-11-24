@@ -1,7 +1,8 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences } = require('electron');
+const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen } = require('electron');
+const { SIZE, shouldShow, placeWithin, defaultBounds } = require('./float');
 
 const ROOT = path.join(__dirname, '..');
 const SMOKE = process.env.WB_SMOKE === '1';
@@ -18,6 +19,12 @@ let server = null;
 let win = null;
 let tray = null;
 let pill = null;
+let float = null;           // the floating recorder window
+let floatExpanded = false;
+let floatAnchorRight = false;
+let floatKeepUntil = 0;      // keep it up briefly after Stop so "Notes saved" is seen
+let floatTimer = null;
+let floatSaveTimer = null;
 let quitting = false;
 let registeredHotkey = null;
 let origin = '';
@@ -40,6 +47,7 @@ async function start() {
   createWindow(`${url}/?token=${token}`);
   createTray();
   wireEvents();
+  wireFloat();
   registerHotkey();
 }
 
@@ -75,7 +83,8 @@ function createWindow(url) {
     if (quitting) return;
     if (core?.recording.status().active) { e.preventDefault(); win.hide(); notify('WhisperBrain', 'Still recording in the background. Use the tray icon to reopen or stop.'); }
   });
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; updateFloat(); });
+  for (const ev of ['focus', 'blur', 'minimize', 'restore', 'show', 'hide']) win.on(ev, updateFloat);
   if (SMOKE) win.webContents.once('did-finish-load', () => setTimeout(smoke, 1500));
 }
 
@@ -139,7 +148,9 @@ function wireEvents() {
     else if (e.type === 'meeting.starting') notify('Meeting starting', e.data.event.summary, () => win?.webContents.executeJavaScript(`location.hash = '#/'`).catch(() => {}));
     else if (e.type === 'dictation.state') updatePill(e.data.state);
     else if (e.type === 'dictation.result' && e.data.paste && !e.data.paste.ok && e.data.text) notify('Dictation copied', e.data.paste.reason || 'The text is on your clipboard.');
-    else if (e.type === 'settings') registerHotkey();
+    else if (e.type === 'settings') { registerHotkey(); updateFloat(); }
+    else if (e.type === 'recording.started' || e.type === 'recording.finalizing') updateFloat();
+    else if (e.type === 'recording.stopped') { floatKeepUntil = Date.now() + 4500; updateFloat(); setTimeout(updateFloat, 4700); }
   });
 }
 
@@ -172,6 +183,94 @@ function updatePill(state) {
   pill.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
 }
 
+// ---- floating recorder: a small always-on-top pill while recording and the app is out of sight ----
+const widgetFile = () => path.join(app.getPath('userData'), 'widget.json');
+const workAreas = () => screen.getAllDisplays().map((d) => d.workArea);
+
+function savedFloatBounds() {
+  try {
+    const { x, y } = JSON.parse(fs.readFileSync(widgetFile(), 'utf8'));
+    if (Number.isFinite(x) && Number.isFinite(y)) return placeWithin({ x, y, ...SIZE.collapsed }, workAreas());
+  } catch { /* first run */ }
+  return defaultBounds(screen.getPrimaryDisplay().workArea);
+}
+
+function rememberFloat() {
+  clearTimeout(floatSaveTimer);
+  floatSaveTimer = setTimeout(() => {
+    if (!float || floatExpanded) return;
+    const { x, y } = float.getBounds();
+    try { fs.writeFileSync(widgetFile(), JSON.stringify({ x, y })); } catch { /* not worth failing for */ }
+  }, 400);
+}
+
+function updateFloat() {
+  if (!core) return;
+  clearTimeout(floatTimer);
+  floatTimer = setTimeout(applyFloat, 120); // focus/blur arrive in bursts; decide once they settle
+}
+
+function applyFloat(force = false) {
+  const main = win && !win.isDestroyed() ? { minimized: win.isMinimized(), visible: win.isVisible(), focused: win.isFocused() } : null;
+  const recording = core.recording.status().active || Date.now() < floatKeepUntil;
+  if (force || shouldShow({ recording, mode: core.settings.get('floatingRecorder'), main })) showFloat(); else hideFloat();
+}
+
+function showFloat() {
+  if (float && !float.isDestroyed()) return;
+  floatExpanded = false;
+  const b = savedFloatBounds();
+  float = new BrowserWindow({
+    ...b, frame: false, transparent: true, resizable: false, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, alwaysOnTop: true, focusable: false, hasShadow: false, show: false, title: 'WhisperBrain recorder',
+    webPreferences: { preload: path.join(__dirname, 'widget-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  float.setAlwaysOnTop(true, 'floating');
+  float.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  float.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  float.webContents.on('will-navigate', (e, u) => { if (!u.startsWith(origin)) e.preventDefault(); });
+  float.once('ready-to-show', () => { if (float && !float.isDestroyed()) float.showInactive(); });
+  float.on('closed', () => { float = null; });
+  float.loadURL(`${origin}/widget.html?token=${server.token}`);
+}
+
+function hideFloat() {
+  if (float && !float.isDestroyed()) float.destroy();
+  float = null;
+}
+
+function setFloatExpanded(expanded) {
+  if (!float || float.isDestroyed() || expanded === floatExpanded) return;
+  const b = float.getBounds();
+  const wa = screen.getDisplayMatching(b).workArea;
+  let next;
+  if (expanded) {
+    floatAnchorRight = b.x + b.width / 2 > wa.x + wa.width / 2; // grow towards the middle of the screen
+    next = { ...SIZE.expanded, x: floatAnchorRight ? b.x + b.width - SIZE.expanded.width : b.x, y: b.y };
+  } else {
+    next = { ...SIZE.collapsed, x: floatAnchorRight ? b.x + b.width - SIZE.collapsed.width : b.x, y: b.y };
+  }
+  floatExpanded = expanded;
+  float.setBounds(placeWithin(next, workAreas()));
+  if (!expanded) rememberFloat();
+}
+
+function wireFloat() {
+  const mine = (e) => float && !float.isDestroyed() && e.sender === float.webContents;
+  ipcMain.on('widget:expanded', (e, expanded) => { if (mine(e)) setFloatExpanded(!!expanded); });
+  ipcMain.on('widget:move', (e, dx, dy) => {
+    if (!mine(e) || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const b = float.getBounds();
+    float.setBounds(placeWithin({ ...b, x: b.x + dx, y: b.y + dy }, workAreas()));
+    rememberFloat();
+  });
+  ipcMain.on('widget:open', (e, noteId) => {
+    if (!mine(e)) return;
+    showWindow();
+    if (/^[\w-]{1,64}$/.test(noteId)) win?.webContents.executeJavaScript(`location.hash = '#/note/${noteId}?tab=transcript'`).catch(() => {});
+  });
+}
+
 // ---- smoke test (WB_SMOKE=1): load the UI, check it rendered, exit ----
 async function smoke() {
   try {
@@ -180,10 +279,16 @@ async function smoke() {
       await wait(500);
       const state = await fetch('/api/state').then((x) => x.json());
       return { title: document.title, sidebar: document.querySelector('#sidebar')?.children.length || 0, main: document.querySelector('#main h1')?.textContent || '', platform: state.platform, version: state.version,
-               worklet: await fetch('/pcm-worklet.js').then((x) => x.status), gum: typeof navigator.mediaDevices?.getUserMedia, secure: window.isSecureContext };
+               worklet: await fetch('/pcm-worklet.js').then((x) => x.status), widget: await Promise.all(['/widget.html', '/widget.js', '/widget.css'].map((u) => fetch(u).then((x) => x.status))), gum: typeof navigator.mediaDevices?.getUserMedia, secure: window.isSecureContext };
     })()`);
     console.log('SMOKE_RESULT ' + JSON.stringify(r));
-    let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200;
+    let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200);
+    applyFloat(true); // the floating recorder must open, load its page and have its native bridge
+    await new Promise((res) => { const t0 = Date.now(); const poll = () => (float && !float.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
+    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.move, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
+    console.log('SMOKE_FLOAT ' + JSON.stringify(fl));
+    if (!fl || fl.bridge !== 'function' || !fl.pill) ok = false;
+    hideFloat();
     if (process.env.WB_SMOKE_MODELS) { // the ASR worker must run on Electron's own Node, as it does in the packaged app
       const { Models } = require('../src/asr/models');
       const { wavToPcm16 } = require('../src/audio/pcm');
@@ -209,6 +314,7 @@ async function smoke() {
 
 async function shutdown() {
   globalShortcut.unregisterAll();
+  hideFloat();
   try { if (core?.recording.status().active) await Promise.race([core.recording.stop(), new Promise((r) => setTimeout(r, 15000))]); } catch { /* best effort */ }
   try { await server?.close(); core?.close(); } catch { /* best effort */ }
 }

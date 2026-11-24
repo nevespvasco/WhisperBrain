@@ -2,12 +2,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { wavToPcm16 } = require('../audio/pcm');
+const { parseWav, resampleLinear, floatToPcm16, RATE } = require('../audio/pcm');
 
-// Decode an audio file to s16le mono 16 kHz. WAV is parsed natively; anything else goes through ffmpeg if present.
-function decodeAudio(buffer, filename = '') {
+// Decode an audio file to s16le mono 16 kHz. WAV is parsed natively (a rate other than 16 kHz is converted by the
+// running ASR engine's resampler; without one, by linear interpolation); anything else goes through ffmpeg if present.
+async function decodeAudio(buffer, filename = '', { engine } = {}) {
   const isWav = buffer.length > 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WAVE';
-  if (isWav) { try { return Promise.resolve(wavToPcm16(buffer)); } catch { /* e.g. float WAV: let ffmpeg try */ } }
+  if (isWav) {
+    try {
+      const { samples, rate } = parseWav(buffer);
+      if (rate === RATE) return floatToPcm16(samples);
+      if (engine) return floatToPcm16(await engine.resample(samples, rate));
+      return floatToPcm16(resampleLinear(samples, rate)); // no engine to ask: plain interpolation beats failing
+    } catch { /* e.g. float WAV: let ffmpeg try */ }
+  }
   return new Promise((resolve, reject) => {
     const ff = spawn('ffmpeg', ['-v', 'error', '-i', 'pipe:0', '-f', 's16le', '-ac', '1', '-ar', '16000', 'pipe:1'], { stdio: ['pipe', 'pipe', 'pipe'] });
     const out = [];
@@ -24,7 +32,7 @@ function decodeAudio(buffer, filename = '') {
 // Run decoded audio through the recognizer on a dedicated channel and return timed segments.
 async function transcribePcm(engine, pcm, { channel = 'import', chunkMs = 200, onProgress } = {}) {
   const segments = [];
-  const on = (s) => { if (s.ch === channel) segments.push({ startMs: s.startMs, endMs: s.endMs, text: s.text, embedding: s.embedding || null }); };
+  const on = (s) => { if (s.ch === channel) segments.push({ startMs: s.startMs, endMs: s.endMs, text: s.text, embedding: s.embedding || null, words: s.words || null, logProbMean: s.logProbMean ?? null, logProbMin: s.logProbMin ?? null }); };
   engine.on('segment', on);
   try {
     const size = 16 * 2 * chunkMs;

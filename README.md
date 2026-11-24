@@ -11,6 +11,8 @@ Everything stays on your computer: audio is transcribed locally with [sherpa-onn
 | Home | Start an online meeting (paste the link), an in-person one (microphone only) or upload one; recent meetings; today's calendar with per-meeting "record automatically" switches; open to-dos |
 | Record | Mic ("Me") and system audio ("Them") as separate channels, live transcript, levels, pause/resume, echo removal |
 | Who is talking | Voice prints per utterance, live clustering into *Speaker 1, 2…*, one-click naming with attendee suggestions, "remember this voice" across meetings, per-line reassignment |
+| Floating recorder | While recording and WhisperBrain is minimised, hidden or behind another window, a small always-on-top recording icon (pulsing dot, timer, level) floats in the corner. Click it to read the live transcript with names, pause or stop, or jump back to the note; drag it anywhere. Settings: when the app is in the background / always while recording / off |
+| Speaker double-check | When you press Stop, the recording is analysed again for **pitch and timbre** (MFCC voice colour, brightness) on top of the voice model: misjudged utterances are re-assigned, two people the voice model merged are split, one person it cut in two is rejoined, and pitch is kept so a saved voice is never matched to a clearly different voice. It runs only after capture ends, so live transcription is never slowed down |
 | Speaker analytics | Talk time, words per minute, turns, questions, talk % / listen %, and a timeline of who spoke when |
 | Recognise meetings | Notices Zoom, Teams, Meet (in a browser tab), Slack, Discord… using the microphone, reads meeting window titles on X11, matches the calendar event by time and meeting link. Then: ask, record automatically, or nothing; auto-stop when the call ends |
 | Calendar | Google Calendar (OAuth sign-in, read-only) or any iCal feed / `.ics` file; week view; record all calendar meetings, only selected ones, or just remind |
@@ -66,13 +68,14 @@ Each OS must build its own installer, because npm only installs the sherpa-onnx 
 ## Architecture
 
 ```
-electron/main.js        window, tray, notifications, global dictation shortcut, loopback capture handler
+electron/main.js        window, tray, notifications, global dictation shortcut, loopback capture handler, floating recorder window (electron/float.js, widget-preload.js; page in ui/widget.*)
 src/server/app.js       composition root (no HTTP): stores + services + platform adapter
 src/server/http.js      local HTTP API + SSE on 127.0.0.1 (random port, per-launch token cookie, Host/Origin checks, CSP)
 src/core/               SQLite (node:sqlite, FTS5), notes, spaces, settings, templates, account
 src/asr/                model catalog/installer, ASR worker process (VAD + recognizer + voice embeddings)
 src/recording/          recording manager (channels, timeline, echo removal, speaker labels), audio import
-src/speakers/           online voice clustering, cluster merging, voice profiles
+src/speakers/           online voice clustering, cluster merging, voice profiles, after-recording refinement (pitch + timbre, refine.js)
+src/audio/features.js   acoustic voice features: pitch, MFCC timbre, brightness
 src/llm/                OpenAI-compatible streaming client, prompts, map-reduce summary, retrieval for chat, structured insights
 src/knowledge/          tags, action items, snippets, topics + correlation graph, glossary, people, analytics, unified search,
                         offline keyphrase topics, import orchestration, export renderers (Markdown/HTML/SRT/VTT/JSON)
@@ -116,6 +119,7 @@ Tests that need a model or a device skip themselves when it is missing. `node sc
 ## Privacy
 
 - Audio is never stored; it is transcribed in memory.
+- While a recording runs, its raw audio is parked in a private temporary file (`<data>/spool`, user-only permissions) so the speaker double-check can listen again after Stop; the file is deleted as soon as that finishes, and any leftovers from a crash are removed at the next start. Turn it off with *Settings → Double-check speakers after recording*; nothing is then written.
 - Voice prints are numeric embeddings kept in the local database. Only voices you choose to remember become profiles.
 - The local server only listens on 127.0.0.1. It requires the per-launch token and refuses foreign `Host` and `Origin` headers.
 - API keys are never sent to the UI or included in exports.

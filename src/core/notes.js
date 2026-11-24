@@ -170,10 +170,12 @@ class Notes {
   // ---- transcript ----
   addSegments(noteId, segments) {
     if (!segments.length) return [];
-    const stmt = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, embedding) VALUES(?, ?, ?, ?, ?, ?, ?) RETURNING id');
+    const stmt = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, embedding, words, logprob_mean, logprob_min) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
+    // words: [[word, startMs, endMs], ...] relative to the segment start; logProbMean/Min: recognizer confidence (0 = certain). Stored only.
     const out = tx(this.db, () => segments.map((s) => {
       const { embedding, ...rest } = s;
-      return { id: stmt.get(noteId, s.speaker, s.startMs, s.endMs, s.text, s.speakerId || null, embedding ? toBlob(embedding) : null).id, ...rest, noteId };
+      const words = Array.isArray(s.words) && s.words.length ? JSON.stringify(s.words) : null;
+      return { id: stmt.get(noteId, s.speaker, s.startMs, s.endMs, s.text, s.speakerId || null, embedding ? toBlob(embedding) : null, words, s.logProbMean ?? null, s.logProbMin ?? null).id, ...rest, noteId };
     }));
     return out;
   }

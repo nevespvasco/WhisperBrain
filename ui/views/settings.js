@@ -76,6 +76,8 @@ const SECTION = {
       ${tog('set-sys', s.systemAudioEnabled, t('Record system audio'), t('The other side of the call.'))}
       ${tog('set-echo', s.echoDedupe, t('Remove echo'), t('Drops microphone text that only repeats the speakers.'))}
       ${tog('set-speakers', s.speakerDetection, t('Tell speakers apart'), t('Speaker 1, Speaker 2… or their names, using an on-device voice model.'))}
+      ${s.speakerDetection ? tog('set-refine', s.speakerRefine, t('Double-check speakers after recording'), t('When you stop, WhisperBrain listens again to pitch and timbre to fix who said what. Capture is never slowed down; the audio is deleted right after.')) : ''}
+      ${row(t('Floating recorder'), t('A small recording icon over other apps; click it to read the live transcript.'), `<select id="set-float"><option value="background" ${s.floatingRecorder === 'background' ? 'selected' : ''}>${t('When the app is in the background')}</option><option value="always" ${s.floatingRecorder === 'always' ? 'selected' : ''}>${t('Always while recording')}</option><option value="off" ${s.floatingRecorder === 'off' ? 'selected' : ''}>${t('Off')}</option></select>`)}
       ${s.speakerDetection && !S.state?.speakerModel ? `<div class="banner small">${t('Speaker recognition needs a small voice model.')}<span class="grow"></span><button class="btn sm primary" data-act="speaker-install">${t('Download')} (26 MB)</button></div>` : ''}
       ${row(t('Microphone'), '', `<select id="set-device"><option value="">${t('System default')}</option>${mics.map((m) => `<option value="${esc(m.id)}" ${s.micDevice === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
       ${caps?.notes?.length ? `<div class="banner warn small">${caps.notes.map(esc).join('<br>')}</div>` : ''}</section>
@@ -120,7 +122,7 @@ function bind(main, sec, body) {
   const map = {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-capture': (v) => ({ captureCalendar: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
-    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }),
+    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }),
     'set-collapsed': (v) => ({ sidebarCollapsed: v }),
   };
   body.addEventListener('change', async (e) => {

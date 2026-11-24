@@ -3,6 +3,8 @@ const { PushSource } = require('../audio/source');
 const { rms } = require('../audio/pcm');
 const { isEcho } = require('../audio/echo');
 const { SpeakerTracker } = require('../speakers/cluster');
+const { refineNote } = require('../speakers/refine');
+const { Spool } = require('./spool');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
 const CARRY_MS = 3000;        // a short utterance without a usable embedding inherits the previous speaker within this gap
@@ -16,19 +18,25 @@ class RecordingError extends Error {
 // Owns the one active recording: wires capture sources -> ASR engine -> transcript store, and keeps the
 // timeline correct across pauses. Channels are 'mic' (speaker "me") and 'system' (speaker "them").
 class RecordingManager {
-  constructor({ notes, engine, models, settings, platform, bus, speakers = null }) {
-    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers });
+  // spoolDir: where raw audio is parked for the after-recording speaker pass (omit to skip that pass).
+  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null }) {
+    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir });
+    if (spoolDir) Spool.sweep(spoolDir);
     this.active = null;
     this.engine.on('segment', (s) => this.onSegment(s));
     this.engine.on('error', (e) => this.bus.publish('recording.warning', { message: e.message }));
     this.engine.on('exit', (e) => { if (this.active) this.bus.publish('recording.warning', { message: e.message }); });
+    this.engine.on('warning', (e) => { if (this.active) this.bus.publish('recording.warning', { message: e.message }); });
+    // The worker holds this recording's VAD buffers: nobody else (dictation, a settings change) may replace it while
+    // the recording runs. Their options are kept and applied by the first start() after it stops.
+    this.engine.holdRestart = () => !!this.active;
   }
 
   status() {
     const a = this.active;
     if (!a) return { active: false };
     return {
-      active: true, noteId: a.noteId, paused: a.paused, finalizing: a.finalizing,
+      active: true, noteId: a.noteId, paused: a.paused, finalizing: a.finalizing, stage: a.stage || null,
       elapsedMs: this.elapsed(a), channels: Object.keys(a.channels), needsRenderer: a.rendererChannels,
     };
   }
@@ -43,8 +51,11 @@ class RecordingManager {
     const model = this.models.resolve(s.asrModel);
     if (!model) throw new RecordingError('no-model', 'No speech model is installed. Download one in Settings → Transcription.');
     if (!this.models.vadInstalled()) throw new RecordingError('no-model', 'The voice-activity model is missing. Re-download a speech model in Settings.');
-    const speakerModel = s.speakerDetection && this.speakers && this.models.speakerInstalled?.() ? this.models.speakerPath() : null;
-    await this.engine.start(model, { vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage, speakerModel });
+    // The voice model is loaded whenever it is installed, so the worker is the same whoever starts it; this recording
+    // only decides whether embeddings are computed. Nothing is flowing yet, so it may replace a worker with other options.
+    const speakerModel = this.models.speakerInstalled?.() ? this.models.speakerPath() : null;
+    this.engine.configure?.({ embeddings: !!(s.speakerDetection && this.speakers) });
+    await this.engine.start(model, { vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage, speakerModel, allowRestart: true });
     return model;
   }
 
@@ -60,7 +71,7 @@ class RecordingManager {
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
       noteId, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
-      fed: { mic: 0, system: 0 }, rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
+      fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
     };
     try {
       await this.ensureEngine();
@@ -144,11 +155,27 @@ class RecordingManager {
     return true;
   }
 
+  // The spool for a channel, created on first audio; null when the after-recording speaker pass is off or unavailable.
+  spoolFor(a, ch) {
+    if (a.spool[ch] !== undefined) return a.spool[ch];
+    a.spool[ch] = null;
+    const s = this.settings.all();
+    if (this.spoolDir && this.speakers && s.speakerDetection && s.speakerRefine) {
+      try { a.spool[ch] = new Spool(this.spoolDir, a.noteId, ch); } catch { /* no disk: embeddings alone still work */ }
+    }
+    return a.spool[ch];
+  }
+
   onPcm(a, ch, buf) {
     if (this.active !== a || a.paused || a.finalizing) return;
-    if (a.fed[ch] === 0) a.epoch[ch] = Math.max(0, this.elapsed(a) - Math.round((buf.length / 2 / 16000) * 1000));
+    const spool = this.spoolFor(a, ch);
+    if (a.fed[ch] === 0) {
+      a.epoch[ch] = Math.max(0, this.elapsed(a) - Math.round((buf.length / 2 / 16000) * 1000));
+      a.base[ch] = spool ? spool.samples : 0; // where this stretch of audio starts in the spool
+    }
     a.fed[ch] += buf.length / 2;
     this.engine.feed(ch, buf);
+    spool?.write(buf); // after the engine: capturing and transcribing always come first
     a.level[ch] = Math.max(a.level[ch], rms(buf));
     const now = Date.now();
     if (now - a.lastLevel >= 120) {
@@ -158,7 +185,7 @@ class RecordingManager {
     }
   }
 
-  onSegment({ ch, startMs, endMs, text, embedding }) {
+  onSegment({ ch, startMs, endMs, text, embedding, words, logProbMean, logProbMin }) {
     const a = this.active;
     if (!a) return;
     const speaker = SPEAKER[ch] || ch;
@@ -177,7 +204,9 @@ class RecordingManager {
     }
     seg.speakerId = this.identify(a, ch, seg, embedding);
     if (seg.speakerId) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
-    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, embedding }]);
+    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, embedding, words, logProbMean, logProbMin }]);
+    const spool = a.spool[ch];
+    if (spool && !spool.broken) a.refs.push({ segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) });
     const label = seg.speakerId ? this.speakers.label(a.noteId, seg.speakerId, speaker) : (speaker === 'me' ? 'Me' : 'Them');
     this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label, startMs: seg.startMs, endMs: seg.endMs, text } });
   }
@@ -215,20 +244,33 @@ class RecordingManager {
     if (a.finalizing) return this.status();
     if (!a.paused) a.accMs += Date.now() - a.resumedAt;
     a.finalizing = true;
-    this.bus.publish('recording.finalizing', { noteId: a.noteId });
+    a.stage = 'transcribing';
+    this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
     for (const src of Object.values(a.channels)) src.stop();
     try { await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
-    this.active = null;
     if (this.speakers) {
-      try { this.speakers.consolidate(a.noteId, this.settings.get('speakerThreshold')); this.speakers.autoMatch(a.noteId, VOICE_MATCH); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      const threshold = this.settings.get('speakerThreshold');
+      try {
+        // The capture is over, so the heavy listening happens now: pitch and timbre of every utterance, on top of the voice model.
+        if (a.refs.length) {
+          a.stage = 'speakers';
+          this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
+          await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold });
+        }
+      } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
+      try { this.speakers.consolidate(a.noteId, threshold); this.speakers.autoMatch(a.noteId, VOICE_MATCH); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
     }
+    this.closeSpools(a);
+    this.active = null;
     const note = this.notes.update(a.noteId, { status: 'done', endedAt: Date.now() });
     this.notes.reindex(a.noteId);
     this.bus.publish('recording.stopped', { noteId: a.noteId, durationMs: a.accMs });
     return { noteId: a.noteId, durationMs: a.accMs, note };
   }
 
-  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } }
+  closeSpools(a) { for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } } }
+
+  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.closeSpools(a); }
 }
 
 module.exports = { RecordingManager, RecordingError };

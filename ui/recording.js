@@ -46,7 +46,7 @@ export function renderRecbar() {
   recbar.hidden = false;
   const bars = (v) => { const n = Math.min(5, Math.round(Math.sqrt(v || 0) * 14)); return `<span class="meter">${[0, 1, 2, 3, 4].map((i) => `<b style="height:${4 + i * 3}px;${i < n ? '' : 'background:var(--line-2)'}"></b>`).join('')}</span>`; };
   recbar.innerHTML = `<span class="dot-rec"></span><span class="time">${fmtTimer(S.rec.elapsedMs || 0)}</span>
-    <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? t('Finishing transcription…') : S.rec.paused ? t('Paused') : esc(S.liveText || t('Listening…'))}</a>
+    <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? (S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…')) : S.rec.paused ? t('Paused') : esc(S.liveText || t('Listening…'))}</a>
     <span class="lvl" title="${t('Microphone')}">${icon('mic', 'sm')}${bars(S.level.mic)}</span><span class="lvl" title="${t('System audio')}">${icon('waves', 'sm')}${bars(S.level.system)}</span>
     <button class="btn sm icon" data-rec="pause" ${S.rec.finalizing ? 'disabled' : ''} title="${S.rec.paused ? t('Resume') : t('Pause')}" aria-label="${S.rec.paused ? t('Resume') : t('Pause')}">${icon(S.rec.paused ? 'play' : 'pause')}</button>
     <button class="btn sm danger" data-rec="stop" ${S.rec.finalizing ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`;
@@ -64,7 +64,7 @@ setInterval(() => {
 }, 500);
 
 export function syncRec(st) {
-  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs };
+  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs };
   else S.rec = { active: false };
   renderRecbar(); renderTop();
 }
@@ -85,7 +85,7 @@ export function recEvents({ renderTopbar }) {
     'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0 }; S.liveText = ''; renderRecbar(); renderTopbar(); bump(); },
     'recording.paused': () => { S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; renderRecbar(); },
     'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); renderRecbar(); },
-    'recording.finalizing': () => { S.rec.finalizing = true; renderRecbar(); },
+    'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d?.stage || null; renderRecbar(); },
     'recording.stopped': () => { S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),

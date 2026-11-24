@@ -44,7 +44,7 @@ class Importer {
       if (app.recording.status().active) throw new Error('A recording is in progress; the import will need to be retried after it stops.');
       bus.publish('import.progress', { noteId, stage: 'decode', progress: 0 });
       const model = await app.recording.ensureEngine();
-      const pcm = await decodeAudio(buffer, filename);
+      const pcm = await decodeAudio(buffer, filename, { engine: app.engine });
       bus.publish('import.progress', { noteId, stage: 'transcribe', progress: 0 });
       const segs = await transcribePcm(app.engine, pcm, { onProgress: (p) => bus.publish('import.progress', { noteId, stage: 'transcribe', progress: p }) });
       const labelled = assignSpeakers(noteId, segs, app.speakers, { threshold: app.settings.get('speakerThreshold') });

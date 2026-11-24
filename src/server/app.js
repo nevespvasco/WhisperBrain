@@ -35,12 +35,12 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const templates = new Templates(conn);
   const speakers = new Speakers(conn, bus);
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
-  const engine = new AsrEngine();
+  const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
   const llm = new LlmClient(() => settings.get('llm'));
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, spoolDir: path.join(dataDir, 'spool') });
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes });

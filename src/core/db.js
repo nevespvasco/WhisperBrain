@@ -188,6 +188,18 @@ const MIGRATIONS = [
   END;
   INSERT INTO seg_fts(seg_fts) VALUES ('rebuild');
   `,
+  // v4: pitch (median fundamental frequency, Hz) of each speaker and saved voice, measured after a recording
+  `
+  ALTER TABLE note_speakers ADD COLUMN pitch REAL;
+  ALTER TABLE voices ADD COLUMN pitch REAL;
+  `,
+  // v5: what the recognizer knew about each segment: word timings (JSON [[word, startMs, endMs], ...] relative to the
+  // segment start) and the mean / minimum token log-probability (0 = certain). Stored for later use; nothing reads them yet.
+  `
+  ALTER TABLE segments ADD COLUMN words TEXT;
+  ALTER TABLE segments ADD COLUMN logprob_mean REAL;
+  ALTER TABLE segments ADD COLUMN logprob_min REAL;
+  `,
 ];
 
 function open(file) {

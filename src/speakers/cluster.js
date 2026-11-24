@@ -52,14 +52,14 @@ class SpeakerTracker {
 }
 
 // Greedy agglomerative merge of speaker clusters. Returns { merged: Map(fromId -> intoId), speakers }.
-function mergeClusters(speakers, threshold = 0.6) {
+function mergeClusters(speakers, threshold = 0.6, canMerge = null) {
   let list = speakers.map((s) => ({ ...s, centroid: norm(s.centroid) }));
   const merged = new Map();
   for (;;) {
     let bi = -1, bj = -1, best = threshold;
     for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
       const c = cosine(list[i].centroid, list[j].centroid);
-      if (c >= best) { best = c; bi = i; bj = j; }
+      if (c >= best && (!canMerge || canMerge(list[i], list[j]))) { best = c; bi = i; bj = j; }
     }
     if (bi < 0) break;
     // keep the speaker heard more often (ties: the earlier id), fold the other into it
@@ -74,9 +74,10 @@ function mergeClusters(speakers, threshold = 0.6) {
 }
 
 // One-to-one assignment of meeting speakers to saved voices, best pairs first. -> Map(speakerId -> {voiceId, score})
-function matchVoices(speakers, voices, threshold = 0.65) {
+function matchVoices(speakers, voices, threshold = 0.65, allowed = null) {
   const pairs = [];
   for (const s of speakers) for (const v of voices) {
+    if (allowed && !allowed(s, v)) continue;
     const c = cosine(s.centroid, v.embedding);
     if (c >= threshold) pairs.push({ s: s.id, v: v.id, c });
   }

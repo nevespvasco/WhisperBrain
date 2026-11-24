@@ -15,24 +15,26 @@ const CATALOG = [
     id: 'parakeet-tdt-0.6b-v3', name: 'Parakeet TDT 0.6B v3', kind: 'transducer', languages: ['multi'],
     note: '25 European languages incl. Portuguese. Best accuracy; needs ~1.5 GB RAM.',
     url: `${REL}/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2`, sizeMB: 465, sha256: '1495e91b59d7fc53ddca91f3431758ec99f8fa253fdb0e1e851be0f72b14b0f9',
-    maxSegmentSec: 20,
+    maxSegmentSec: 30,
   },
   {
     id: 'parakeet-tdt-110m-en', name: 'Parakeet TDT 110M (English)', kind: 'transducer', languages: ['en'],
     note: 'English only. Very fast and light.',
     url: `${REL}/sherpa-onnx-nemo-parakeet_tdt_transducer_110m-en-36000-int8.tar.bz2`, sizeMB: 110,
     sha256: 'f628312e9fdf8686374cb01a69425c41732529d540860311f16f37cbc32cfe9b',
-    maxSegmentSec: 20,
+    maxSegmentSec: 30,
   },
   {
     id: 'whisper-small', name: 'Whisper small (multilingual)', kind: 'whisper', languages: ['multi'],
     note: '99 languages. Slower than Parakeet on CPU.',
+    // TODO(sha256): the asr-models release publishes no digest for the Whisper archives (the Parakeet ones have one), so
+    // pin these by hashing a verified download: sha256sum sherpa-onnx-whisper-small.tar.bz2
     url: `${REL}/sherpa-onnx-whisper-small.tar.bz2`, sizeMB: 610, sha256: null, maxSegmentSec: 25,
   },
   {
     id: 'whisper-base', name: 'Whisper base (multilingual)', kind: 'whisper', languages: ['multi'],
     note: '99 languages. Small and quick, lower accuracy.',
-    url: `${REL}/sherpa-onnx-whisper-base.tar.bz2`, sizeMB: 160, sha256: null, maxSegmentSec: 25,
+    url: `${REL}/sherpa-onnx-whisper-base.tar.bz2`, sizeMB: 160, sha256: null, maxSegmentSec: 25, // TODO(sha256): see whisper-small
   },
 ];
 
@@ -49,8 +51,9 @@ const SPEAKER = {
   sizeMB: 26, sha256: 'e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012',
 };
 
-// Preference when settings say "auto": the most capable model that is installed.
-const AUTO_ORDER = ['parakeet-tdt-0.6b-v3', 'whisper-small', 'parakeet-tdt-110m-en', 'whisper-base'];
+// Preference when settings say "auto": the most capable model that is installed. Whisper invents text on silence and
+// has no checksum, so the Parakeet models come first; it is used only when nothing else is installed.
+const AUTO_ORDER = ['parakeet-tdt-0.6b-v3', 'parakeet-tdt-110m-en', 'whisper-small', 'whisper-base'];
 
 class Models {
   constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, bus } = {}) {

@@ -44,8 +44,8 @@ function pcm16ToFloat(buf) {
   return out;
 }
 
-function wavToPcm16(wav) {
-  // Minimal RIFF parser: 16-bit PCM mono/stereo at any rate -> mono 16 kHz Int16 Buffer.
+// Minimal RIFF parser: 16-bit PCM mono/stereo at any rate -> { samples: mono Float32, rate }, not resampled.
+function parseWav(wav) {
   if (wav.toString('ascii', 0, 4) !== 'RIFF' || wav.toString('ascii', 8, 12) !== 'WAVE') throw new Error('not a WAV file');
   let pos = 12, fmt = null, data = null;
   while (pos + 8 <= wav.length) {
@@ -58,13 +58,20 @@ function wavToPcm16(wav) {
   if (!fmt || !data) throw new Error('malformed WAV');
   if (fmt.format !== 1 || fmt.bits !== 16) throw new Error('only 16-bit PCM WAV is supported');
   const frames = Math.floor(data.length / (2 * fmt.channels));
-  const mono = new Float32Array(frames);
+  const samples = new Float32Array(frames);
   for (let i = 0; i < frames; i++) {
     let s = 0;
     for (let c = 0; c < fmt.channels; c++) s += data.readInt16LE((i * fmt.channels + c) * 2);
-    mono[i] = s / fmt.channels / 32768;
+    samples[i] = s / fmt.channels / 32768;
   }
-  return floatToPcm16(resampleLinear(mono, fmt.rate));
+  return { samples, rate: fmt.rate };
+}
+
+// WAV -> mono 16 kHz Int16 Buffer. Other rates go through resampleLinear (no anti-alias filter), so the import path
+// uses parseWav and the ASR worker's resampler instead; this is for callers that need the result synchronously.
+function wavToPcm16(wav) {
+  const { samples, rate } = parseWav(wav);
+  return floatToPcm16(resampleLinear(samples, rate));
 }
 
 function pcm16ToWav(pcm, rate = RATE) {
@@ -75,4 +82,4 @@ function pcm16ToWav(pcm, rate = RATE) {
   return Buffer.concat([h, pcm]);
 }
 
-module.exports = { RATE, rms, resampleLinear, floatToPcm16, pcm16ToFloat, wavToPcm16, pcm16ToWav };
+module.exports = { RATE, rms, resampleLinear, floatToPcm16, pcm16ToFloat, parseWav, wavToPcm16, pcm16ToWav };

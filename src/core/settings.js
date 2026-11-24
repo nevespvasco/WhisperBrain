@@ -1,18 +1,26 @@
 'use strict';
 // Typed settings stored as JSON rows. Unknown keys are rejected; values are coerced/validated per key.
+const os = require('node:os');
+
+// Speech-model threads: about half the logical CPUs (they are usually SMT siblings), 2..8. Decoding stops scaling near 8.
+function defaultAsrThreads(cpus = os.availableParallelism()) {
+  return Math.max(2, Math.min(8, Math.round(cpus / 2)));
+}
 
 const DEFAULTS = {
   language: 'en',               // UI language: en | pt
   theme: 'system',              // system | light | dark
   asrModel: 'auto',             // model id, or 'auto' = best installed
   asrLanguage: 'auto',          // hint for multilingual models
-  asrThreads: 2,
+  asrThreads: defaultAsrThreads(), // speech-model threads; the user's value (1..16) overrides this
   micEnabled: true,
   systemAudioEnabled: true,
   micDevice: '',                // '' = system default
   echoDedupe: true,             // drop mic text that merely echoes the system channel
   speakerDetection: true,       // tell voices apart ("Speaker 1", "Ana"…) with an on-device voice model
   speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
+  speakerRefine: true,          // after a recording, re-check who spoke using pitch and timbre as well as the voice model
+  floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
     provider: 'ollama',         // ollama | openai
     baseUrl: 'http://127.0.0.1:11434/v1',
@@ -68,6 +76,7 @@ function validate(key, value) {
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
+  if (key === 'floatingRecorder' && !['off', 'background', 'always'].includes(value)) throw new Error('floatingRecorder must be off, background or always');
   if (key === 'autoRecord' && !['off', 'ask', 'always'].includes(value)) throw new Error('autoRecord must be off, ask or always');
   if (key === 'captureCalendar' && !['off', 'selected', 'all'].includes(value)) throw new Error('captureCalendar must be off, selected or all');
   if (key === 'webhooks') {
@@ -134,4 +143,4 @@ class Settings {
   }
 }
 
-module.exports = { Settings, DEFAULTS, MASK };
+module.exports = { Settings, DEFAULTS, MASK, defaultAsrThreads };
