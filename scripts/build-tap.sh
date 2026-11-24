@@ -4,6 +4,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build/tap
-swiftc -O -o build/tap/whisperbrain-tap native/macos/whisperbrain-tap.swift \
-  -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework Foundation
+# one binary for Apple silicon and Intel, built for macOS 14.2 (the first with process taps) so that it also loads there
+for arch in arm64 x86_64; do
+  swiftc -O -target "$arch-apple-macos14.2" -o "build/tap/whisperbrain-tap-$arch" native/macos/whisperbrain-tap.swift \
+    -framework AVFoundation -framework AudioToolbox -framework CoreAudio -framework Foundation
+done
+lipo -create -output build/tap/whisperbrain-tap build/tap/whisperbrain-tap-arm64 build/tap/whisperbrain-tap-x86_64
+rm build/tap/whisperbrain-tap-arm64 build/tap/whisperbrain-tap-x86_64
 echo "built build/tap/whisperbrain-tap"

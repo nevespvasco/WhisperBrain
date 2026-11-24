@@ -20,6 +20,7 @@ async function pcmOf(src, ms = 1500) {
 }
 // which tone is in the samples: 440 (followed the app) or 1000 (the whole output)
 function dominant(pcm) {
+  assert.ok(pcm.length >= 8000, `audio arrived (${pcm.length} bytes)`);   // nothing at all must not look like an answer
   const power = (hz) => { let re = 0, im = 0; const n = pcm.length >> 1; for (let i = 0; i < n; i++) { const x = pcm.readInt16LE(i * 2); re += x * Math.cos(2 * Math.PI * hz * i / 16000); im += x * Math.sin(2 * Math.PI * hz * i / 16000); } return re * re + im * im; };
   return power(440) > power(1000) ? 440 : 1000;
 }

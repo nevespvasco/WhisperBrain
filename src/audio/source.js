@@ -71,14 +71,15 @@ class FallbackSource extends AudioSource {
     this.primary.on('error', () => {});                       // an ending stream is not an error: 'end' follows and decides
     this.primary.once('end', () => {
       if (this.stopping) { this.emit('end'); return; }
-      const next = this.makeFallback();
+      let next;
+      try { next = this.makeFallback(); } catch (e) { this.emit('error', e); this.emit('end'); return; }   // nothing to fall back to
       this.current = next;
       this.capture = this.fallbackCapture;
       next.on('pcm', (b) => this.emit('pcm', b));
       next.on('error', (e) => this.emit('error', e));
       next.once('end', () => this.emit('end'));
       this.emit('capture', this.capture);
-      next.start();
+      try { next.start(); } catch (e) { this.emit('error', e); this.emit('end'); }
     });
     this.primary.start();
   }

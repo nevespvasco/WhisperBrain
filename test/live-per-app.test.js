@@ -102,7 +102,7 @@ test('when the application\'s stream goes away the capture carries on with the w
   const cli = nullSink(sinkName);
   const players = [];
   t.after(() => { for (const p of players) p.kill(); cli.stdin.end('quit\n'); cli.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
-  wav(path.join(dir, 'a.wav'), 440, 2);     // the application stops after 2 s
+  wav(path.join(dir, 'a.wav'), 440, 12);    // the application is stopped below, mid-capture
   wav(path.join(dir, 'b.wav'), 1000, 12);
   await wait(800);
   const a = playTone(sinkName, 'wb-tone-a', path.join(dir, 'a.wav'));
@@ -112,7 +112,9 @@ test('when the application\'s stream goes away the capture carries on with the w
   const src = await createPlatform().createSystemSource({ sink: sinkName, app: { name: 'wb-tone-a', appId: 'other' } });
   const modes = [];
   src.on('capture', (c) => modes.push(c.mode));
-  const got = await capture(src, 6000);
+  const got = await capture(src, 1500);
+  a.kill();                                  // the application quits mid-call
+  await wait(4500);
   src.stop();
   assert.deepEqual(modes, ['output'], 'it noticed the stream was gone and widened the capture');
   assert.ok(toneShare(got.pcm().subarray(got.pcm().length - RATE * 2), 1000) > 0.5, 'afterwards the other application is heard (the output)');

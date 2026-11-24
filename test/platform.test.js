@@ -190,7 +190,7 @@ test('linux: pickOutputStream says why it did not pick, and never picks the wron
   assert.match(none(null), /no application/i);
   assert.match(none({ pid: 4300, appId: 'slack' }), /not playing/i, 'an idle stream is not the call');
   assert.match(none({ pid: 1, appId: 'teams' }), /no playback stream/i);
-  assert.match(none({ pid: 999, appId: 'other' }, { selfPids: [999] }), /ourselves|no playback stream/i, 'never our own capture or playback');
+  assert.match(none({ pid: 999, appId: 'other' }, { selfPids: [999] }), /no playback stream/i, 'never our own capture or playback');
   // two Chrome streams and nothing says which one is the call: stay with the whole output rather than guess
   const two = { ...d, outputStreams: d.outputStreams.filter((s) => s.serial !== 702) .concat([{ ...d.outputStreams.find((s) => s.serial === 703), serial: 799, title: 'Another tab' }]) };
   const r = linux.pickOutputStream(two, { pid: 5000, binary: 'chrome', appId: 'browser' });
@@ -267,4 +267,33 @@ test('linux: stopping a per-app capture on purpose does not start the fallback',
   src.start(); src.stop();
   assert.equal(made.length, 1);
   assert.equal(ended, 1);
+});
+
+test('linux: pickOutputStream never settles for another stream when the call\'s own is only quiet', () => {
+  const d = PW();
+  const withState = (serial, running) => ({ ...d, outputStreams: d.outputStreams.map((s) => (s.serial === serial ? { ...s, running } : s)) });
+  // the Meet tab is quiet (nobody is talking), a YouTube tab of the same browser is playing: not the YouTube tab
+  const quietCall = linux.pickOutputStream(withState(702, false), { pid: 5000, binary: 'chrome', appId: 'browser' });
+  assert.equal(quietCall.stream, null);
+  assert.match(quietCall.reason, /not playing/i);
+  // the app's own process is quiet, a second process of the same program is playing a notification sound
+  const sibling = { ...d, outputStreams: [...withState(701, false).outputStreams, { serial: 11, nodeName: 'n', running: true, name: 'zoom', binary: 'zoom', pid: 4243, title: 'Notification' }] };
+  const r = linux.pickOutputStream(sibling, { pid: 4242, binary: 'zoom', appId: 'zoom' });
+  assert.equal(r.stream, null);
+  assert.match(r.reason, /not playing/i);
+});
+
+test('linux: if the whole output cannot be captured as the fallback either, the source ends with an error instead of crashing', async () => {
+  const { record, made } = fakeRecorder();
+  const noSink = { ...PW(), defaultSink: null };
+  const p = linux.create({ env: {}, pwDump: dumpOf(noSink), record });
+  const src = await p.createSystemSource({ app: { pid: 4242, appId: 'zoom' } });
+  const errors = [], ended = [];
+  src.on('error', (e) => errors.push(e.message));
+  src.on('end', () => ended.push(1));
+  src.start();
+  made[0].emit('end');                                   // the stream is gone and there is no output to fall back to
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /output/i);
+  assert.equal(ended.length, 1);
 });

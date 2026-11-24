@@ -25,10 +25,13 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
 static const double kOutRate = 16000.0;
+// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, spelled out so that ksmedia.h (and INITGUID) is not needed
+static const GUID kFloatSubtype = {0x00000003, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
 
 [[noreturn]] static void Fail(const std::string& message, int code = 1) {
     fprintf(stderr, "%s\n", message.c_str());
@@ -39,7 +42,10 @@ static const double kOutRate = 16000.0;
 
 class Converter {
 public:
-    Converter(int rate, int channels, bool isFloat, int bits) : rate_(rate), channels_(channels), isFloat_(isFloat), bits_(bits) {}
+    Converter(int rate, int channels, bool isFloat, int bits) : rate_(rate), channels_(channels), isFloat_(isFloat), bits_(bits) {
+        taps_ = rate >= 24000 ? (int)lround(rate / kOutRate) : 1;     // a moving average over one output period: keeps 8-24 kHz from folding into speech
+        window_.assign((size_t)taps_, 0.0f);
+    }
 
     // One packet of interleaved frames in, samples appended to `out`. Linear interpolation between mono frames.
     void Convert(const uint8_t* data, size_t frames, std::vector<int16_t>& out) {
@@ -47,6 +53,8 @@ public:
             float mono = 0;
             for (int c = 0; c < channels_; c++) mono += Sample(data, i * channels_ + c);
             mono /= (float)channels_;
+            sum_ += mono - window_[at_]; window_[at_] = mono; at_ = (at_ + 1) % window_.size();
+            mono = sum_ / (float)taps_;
             // output samples whose position falls between the previous mono frame and this one
             while (pos_ < 1.0) {
                 float v = prev_ + (mono - prev_) * (float)pos_;
@@ -70,6 +78,10 @@ private:
     int rate_, channels_; bool isFloat_; int bits_;
     double pos_ = 0;
     float prev_ = 0;
+    int taps_ = 1;
+    std::vector<float> window_;
+    size_t at_ = 0;
+    float sum_ = 0;
 };
 
 static void Write(const std::vector<int16_t>& samples) {
@@ -85,16 +97,23 @@ static DWORD FindMainProcess(const std::string& exe) {
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     PROCESSENTRY32 e; e.dwSize = sizeof(e);
-    std::vector<PROCESSENTRY32> same;
-    if (Process32First(snap, &e)) do { if (_stricmp(e.szExeFile, exe.c_str()) == 0) same.push_back(e); } while (Process32Next(snap, &e));
+    std::vector<PROCESSENTRY32> all;
+    if (Process32First(snap, &e)) do { all.push_back(e); } while (Process32Next(snap, &e));
     CloseHandle(snap);
-    // the main process is the one whose parent is not another process of the same program (the rest are its helpers)
-    for (const auto& p : same) {
+    auto isExe = [&](const PROCESSENTRY32& p) { return _stricmp(p.szExeFile, exe.c_str()) == 0; };
+    // the main process is a root (its parent is not another process of the same program) with the most processes below it;
+    // with several instances running (two browser profiles) the biggest one is taken, and only that one is followed
+    std::function<int(DWORD)> size = [&](DWORD pid) { int n = 1; for (const auto& p : all) if (p.th32ParentProcessID == pid && p.th32ProcessID != pid) n += size(p.th32ProcessID); return n; };
+    DWORD best = 0; int bestSize = 0;
+    for (const auto& p : all) {
+        if (!isExe(p)) continue;
         bool childOfSame = false;
-        for (const auto& q : same) if (q.th32ProcessID == p.th32ParentProcessID) childOfSame = true;
-        if (!childOfSame) return p.th32ProcessID;
+        for (const auto& q : all) if (isExe(q) && q.th32ProcessID == p.th32ParentProcessID) childOfSame = true;
+        if (childOfSame) continue;
+        int n = size(p.th32ProcessID);
+        if (n > bestSize) { best = p.th32ProcessID; bestSize = n; }
     }
-    return 0;
+    return best;
 }
 
 static DWORD BuildNumber() {
@@ -137,15 +156,16 @@ private:
 
 // ---- capture loop shared by both routes ----
 
-static void Capture(IAudioClient* client, const WAVEFORMATEX* wf, DWORD followedPid) {
+// event: set by the client when data is ready (process loopback is event driven, as in Microsoft's sample); null = poll
+static void Capture(IAudioClient* client, const WAVEFORMATEX* wf, HANDLE followed, HANDLE event) {
     bool isFloat = wf->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
-    if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE) isFloat = IsEqualGUID(reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wf)->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT);
+    if (wf->wFormatTag == WAVE_FORMAT_EXTENSIBLE) isFloat = IsEqualGUID(reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(wf)->SubFormat, kFloatSubtype);
     Converter converter((int)wf->nSamplesPerSec, wf->nChannels, isFloat, wf->wBitsPerSample);
     IAudioCaptureClient* capture = nullptr;
     if (FAILED(client->GetService(__uuidof(IAudioCaptureClient), reinterpret_cast<void**>(&capture)))) Fail("could not get the capture service", 2);
+    if (event && FAILED(client->SetEventHandle(event))) Fail("could not set the capture event", 2);
     if (FAILED(client->Start())) Fail("could not start capturing", 2);
 
-    HANDLE followed = followedPid ? OpenProcess(SYNCHRONIZE, FALSE, followedPid) : nullptr;
     LARGE_INTEGER freq, t0; QueryPerformanceFrequency(&freq); QueryPerformanceCounter(&t0);
     uint64_t emitted = 0;
     std::vector<int16_t> out;
@@ -165,8 +185,8 @@ static void Capture(IAudioClient* client, const WAVEFORMATEX* wf, DWORD followed
         // Windows delivers nothing while nothing plays; the recording's clock counts samples, so the quiet is sent as zeros
         LARGE_INTEGER now; QueryPerformanceCounter(&now);
         uint64_t due = (uint64_t)((double)(now.QuadPart - t0.QuadPart) / freq.QuadPart * kOutRate);
-        if (due > emitted + 320) { out.assign((size_t)(due - emitted), 0); emitted += out.size(); Write(out); }
-        Sleep(10);
+        if (due > emitted + 1600) { out.assign((size_t)(due - emitted), 0); emitted += out.size(); Write(out); }
+        if (event) WaitForSingleObject(event, 20); else Sleep(10);
     }
 }
 
@@ -174,6 +194,10 @@ static void Capture(IAudioClient* client, const WAVEFORMATEX* wf, DWORD followed
 
 static void CaptureProcess(DWORD pid) {
     if (BuildNumber() < 20348) Fail("per-process capture needs Windows build 20348 or later", 2);
+    // watched for the whole capture: when the process ends, so do we. If it cannot be opened (it does not exist, or belongs to
+    // someone with more rights) there would be no way to notice that, so it is refused here and the caller falls back.
+    HANDLE followed = OpenProcess(SYNCHRONIZE, FALSE, pid);
+    if (!followed) Fail("cannot watch process " + std::to_string(pid) + " (not running, or not allowed)", 2);
     AUDIOCLIENT_ACTIVATION_PARAMS params = {};
     params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
     params.ProcessLoopbackParams.TargetProcessId = pid;
@@ -188,9 +212,9 @@ static void CaptureProcess(DWORD pid) {
     WAVEFORMATEX wf = {};
     wf.wFormatTag = WAVE_FORMAT_PCM; wf.nChannels = 1; wf.nSamplesPerSec = 16000; wf.wBitsPerSample = 16;
     wf.nBlockAlign = wf.nChannels * wf.wBitsPerSample / 8; wf.nAvgBytesPerSec = wf.nSamplesPerSec * wf.nBlockAlign;
-    hr = handler->client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 2000000, 0, &wf, nullptr);
-    if (FAILED(hr)) Fail("could not start the process capture (0x" + std::to_string((unsigned)hr) + ")", 2);
-    Capture(handler->client, &wf, pid);
+    hr = handler->client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, 2000000, 0, &wf, nullptr);
+    if (FAILED(hr)) { char code[16]; snprintf(code, sizeof(code), "%08lx", (unsigned long)hr); Fail(std::string("could not start the process capture (0x") + code + ")", 2); }
+    Capture(handler->client, &wf, followed, CreateEventW(nullptr, FALSE, FALSE, nullptr));
 }
 
 static void CaptureEndpoint() {
@@ -203,7 +227,7 @@ static void CaptureEndpoint() {
     WAVEFORMATEX* mix = nullptr;
     if (FAILED(client->GetMixFormat(&mix))) Fail("could not read the output format", 2);
     if (FAILED(client->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 2000000, 0, mix, nullptr))) Fail("could not capture the output device", 2);
-    Capture(client, mix, 0);
+    Capture(client, mix, nullptr, nullptr);
 }
 
 // ---- self test: a 48 kHz stereo float tone must come out as 16 kHz mono s16 with the same pitch ----

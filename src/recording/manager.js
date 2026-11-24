@@ -220,9 +220,19 @@ class RecordingManager {
       this.bus.publish('recording.warning', { message: `${ch}: ${e.message}` });
     });
     src.on('end', () => {
-      if (this.active === a && !a.finalizing && !(src instanceof PushSource)) {
-        this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
+      if (this.active !== a || a.finalizing || a.channels[ch] !== src || src instanceof PushSource) return;
+      // Where the platform can also capture in the renderer (macOS, Windows), the channel moves there rather than go silent
+      if (this.platform.renderer?.[ch]) {
+        const push = new PushSource();
+        a.channels[ch] = push;
+        this.attach(a, ch, push);
+        push.start();
+        if (!a.rendererChannels.includes(ch)) a.rendererChannels.push(ch);
+        this.bus.publish('recording.warning', { message: `${ch}: the native capture stopped, so the audio is now captured by the window instead` });
+        this.bus.publish('capture.request', { noteId: a.noteId, channels: [ch] });
+        return;
       }
+      this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
     });
   }
 

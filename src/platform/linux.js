@@ -82,15 +82,16 @@ function pickOutputStream(parsed, app, { selfPids = [process.pid] } = {}) {
   };
   const found = (parsed.outputStreams || []).filter(mine).map((s) => ({ s, rel: related(s) })).filter((x) => x.rel > 0);
   if (!found.length) return { stream: null, reason: `no playback stream of ${app.name || app.appId || 'that application'}` };
-  const playing = found.filter((x) => x.s.running);
-  if (!playing.length) return { stream: null, reason: 'its playback stream is not playing yet' };
-  const best = Math.max(...playing.map((x) => x.rel));
-  let top = playing.filter((x) => x.rel === best).map((x) => x.s);
+  // choose among all its streams first, playing or not, and only then ask whether the choice is playing: a quiet call stream
+  // must not lose to a notification sound or another tab of the same program
+  const best = Math.max(...found.map((x) => x.rel));
+  let top = found.filter((x) => x.rel === best).map((x) => x.s);
   if (top.length > 1) {
     const call = top.filter((s) => { const c = classifyWindowTitle(s.title); return c && (['browser', 'other'].includes(app.appId) || c.id === app.appId); });
-    if (call.length === 1) top = call;
+    if (call.length >= 1) top = call;
   }
-  return top.length === 1 ? { stream: top[0], reason: '' } : { stream: null, reason: 'several streams of this application are playing and none is marked as the call' };
+  if (top.length !== 1) return { stream: null, reason: 'several streams of this application could be the call and none is marked as it' };
+  return top[0].running ? { stream: top[0], reason: '' } : { stream: null, reason: 'its playback stream is not playing yet' };
 }
 
 async function pwDump() {
@@ -261,7 +262,7 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump
       const primary = record([...base, '-P', 'node.dont-reconnect=true', '-P', 'node.dont-fallback=true', '--target', String(stream.serial), '-'], `pw-record (${stream.name || 'application'} audio)`);
       return new FallbackSource({
         primary,
-        makeFallback: () => { const t = sink || dump.defaultSink; return record([...base, '-P', 'stream.capture.sink=true', '--target', t, '-'], 'pw-record (system audio)'); },
+        makeFallback: () => { const t = sink || dump.defaultSink; if (!t) throw new Error('no default audio output to fall back to'); return record([...base, '-P', 'stream.capture.sink=true', '--target', t, '-'], 'pw-record (system audio)'); },
         capture: { mode: 'app', app: stream.name || app.name || app.appId, reason: '' },
         fallbackCapture: { mode: 'output', reason: 'the application stopped playing: capturing the whole output' },
       });

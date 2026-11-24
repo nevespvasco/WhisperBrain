@@ -83,6 +83,7 @@ function create({ clipboard, captureHelper = null } = {}) {
     id: 'win32',
     session: 'desktop',
     capture: { mic: 'renderer', system: captureHelper ? 'native' : 'renderer' },
+    renderer: { system: true },   // the window can capture it too, if the helper stops (an error)
     async capabilities() {
       return { platform: 'win32', session: 'desktop', mic: true, systemAudio: true, micActivity: true, paste: true, notes: [] };
     },

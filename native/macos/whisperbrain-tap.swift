@@ -1,7 +1,7 @@
 // whisperbrain-tap: captures audio for WhisperBrain and writes it to stdout as raw PCM (s16le, 16 kHz, mono).
 //
 //   whisperbrain-tap system [--pid N]   the audio of process N and its children (a Core Audio process tap, macOS 14.2+);
-//                                       without --pid, everything that plays except this program
+//                                       until N plays anything, and without --pid, everything that plays except WhisperBrain
 //   whisperbrain-tap mic                the microphone through the system's voice processing (echo cancellation)
 //   whisperbrain-tap probe              one line of JSON: what this Mac can do
 //   whisperbrain-tap selftest           converts a synthetic tone and checks the result; needs no audio hardware
@@ -99,7 +99,7 @@ func processTree(of root: pid_t) -> Set<pid_t> {
 }
 
 func defaultOutputUID() -> String? {
-    guard let device = property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultSystemOutputDevice, as: AudioObjectID.self, default: 0), device != 0 else { return nil }
+    guard let device = property(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice, as: AudioObjectID.self, default: 0), device != 0 else { return nil }
     var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
     var uid: Unmanaged<CFString>?
     var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
@@ -119,20 +119,39 @@ final class Tap {
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var procID: AudioDeviceIOProcID?
     private let queue = DispatchQueue(label: "whisperbrain.tap")
+    private var tapped: Set<AudioObjectID> = []   // the processes the tap was built from; empty = everything except WhisperBrain
 
-    // pid nil: every process except this one.
-    func start(pid: pid_t?) {
+    // The processes that count as the followed program: itself and everything it started that plays audio. An app's helper
+    // processes come and go (Chrome's audio service restarts, Teams starts a renderer for each call), so this is asked again.
+    private func objects(following pid: pid_t) -> Set<AudioObjectID> {
+        let tree = processTree(of: pid)
+        return Set(audioProcesses().filter { tree.contains($0.pid) }.map { $0.object })
+    }
+
+    // WhisperBrain itself (the program that started this one, and its helpers) is never part of "everything".
+    private func ownObjects() -> [AudioObjectID] {
+        let mine = processTree(of: getppid()).union([getpid()])
+        return audioProcesses().filter { mine.contains($0.pid) }.map { $0.object }
+    }
+
+    // pid nil: everything. With a pid whose audio has not started yet: everything for now, and the program as soon as it plays,
+    // so a call that starts a moment after the recording is not lost (see rescan).
+    func start(following pid: pid_t?) {
         guard osVersionAtLeast(14, 2) else { fail("the process tap needs macOS 14.2 or later", code: 2) }
-        let description: CATapDescription
-        if let pid = pid {
-            let tree = processTree(of: pid)
-            let objects = audioProcesses().filter { tree.contains($0.pid) }.map { $0.object }
-            guard !objects.isEmpty else { fail("process \(pid) is not playing audio (yet)", code: 2) }
-            description = CATapDescription(stereoMixdownOfProcesses: objects)
-        } else {
-            let mine = audioProcesses().filter { $0.pid == getpid() }.map { $0.object }
-            description = CATapDescription(stereoGlobalTapButExcludeProcesses: mine)
-        }
+        build(Set(pid.map { objects(following: $0) } ?? []))
+    }
+
+    // Called every couple of seconds: when the followed program has new audio processes, tap them too. If it has none (a
+    // pause in the call) the tap stays as it is.
+    func rescan(following pid: pid_t) {
+        let now = objects(following: pid)
+        if !now.isEmpty && now != tapped { teardown(); build(now) }
+    }
+
+    private func build(_ objects: Set<AudioObjectID>) {
+        let description = objects.isEmpty
+            ? CATapDescription(stereoGlobalTapButExcludeProcesses: ownObjects().map { NSNumber(value: $0) })
+            : CATapDescription(stereoMixdownOfProcesses: objects.map { NSNumber(value: $0) })
         description.uuid = UUID()
         description.muteBehavior = .unmuted   // listen, never change what the person hears
         description.isPrivate = true
@@ -165,13 +184,16 @@ final class Tap {
         guard status == noErr else { fail("could not read from the capture device (status \(status))", code: 2) }
         status = AudioDeviceStart(aggregateID, procID)
         guard status == noErr else { fail("could not start capturing (status \(status))", code: 2) }
+        tapped = objects
     }
 
-    func stop() {
-        if let p = procID { AudioDeviceStop(aggregateID, p); AudioDeviceDestroyIOProcID(aggregateID, p) }
-        if aggregateID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(aggregateID) }
-        if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID) }
+    private func teardown() {
+        if let p = procID { AudioDeviceStop(aggregateID, p); AudioDeviceDestroyIOProcID(aggregateID, p); procID = nil }
+        if aggregateID != kAudioObjectUnknown { AudioHardwareDestroyAggregateDevice(aggregateID); aggregateID = AudioObjectID(kAudioObjectUnknown) }
+        if tapID != kAudioObjectUnknown { AudioHardwareDestroyProcessTap(tapID); tapID = AudioObjectID(kAudioObjectUnknown) }
     }
+
+    func stop() { teardown() }
 }
 
 // MARK: - microphone with voice processing (echo cancellation)
@@ -254,13 +276,20 @@ case "system", "mic":
     if mode == "system" {
         var followed: pid_t?
         if let text = value(of: "--pid") { guard let p = pid_t(text), p > 0 else { fail("bad --pid", code: 2) }; followed = p }
-        tap.start(pid: followed)
         if let p = followed {
-            // when the followed process ends, so do we: WhisperBrain then carries on with the whole output
+            // watched before the tap exists, so an exit in between cannot be missed: WhisperBrain then carries on with the whole output
             let exitWatch = DispatchSource.makeProcessSource(identifier: p, eventMask: .exit, queue: .main)
             exitWatch.setEventHandler { FileHandle.standardError.write("process \(p) ended\n".data(using: .utf8)!); shutdown(3) }
             exitWatch.resume()
             keepAlive.append(exitWatch)
+        }
+        tap.start(following: followed)
+        if let p = followed {
+            let rescan = DispatchSource.makeTimerSource(queue: .main)
+            rescan.schedule(deadline: .now() + 2, repeating: 2)
+            rescan.setEventHandler { tap.rescan(following: p) }
+            rescan.resume()
+            keepAlive.append(rescan)
         }
     } else {
         microphone.start()

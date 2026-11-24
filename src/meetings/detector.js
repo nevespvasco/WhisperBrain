@@ -2,7 +2,7 @@
 // Watches for "a call app is using the microphone" (helped by meeting window titles) and for calendar meetings
 // about to start. Emits 'meeting.detected' / 'meeting.autostarted' / 'meeting.ended' / 'meeting.starting', and can
 // start/stop a recording on its own (settings.autoRecord / autoStop). Pure state machine; `tick()` is timer-driven.
-const { BROWSERS, classify, classifyWindowTitle, platformFromUrl, appName } = require('../platform/apps');
+const { BROWSERS, classify, classifyWindowTitle, platformFromUrl, appName, pickTargetApp } = require('../platform/apps');
 
 const AUTO_MODES = ['off', 'ask', 'always'];
 const isBrowser = (a) => a.appId === 'browser' || (!a.appId && BROWSERS.test(a.name || ''));
@@ -107,7 +107,9 @@ class MeetingDetector {
         title: event?.summary || `${label} meeting`, eventUid: event?.uid || null, eventStart: event?.start || null,
         attendees: event?.attendees || [], source: 'recorded', platform,
       });
-      await this.recording.start(note.id);
+      // the recording is told which application the call is, so that its system audio can follow it alone where possible
+      const app = pickTargetApp(apps);
+      await this.recording.start(note.id, app ? { app } : undefined);
       s.autoNoteId = note.id;
       this.bus.publish('meeting.autostarted', { noteId: note.id, platform });
     } catch (e) {

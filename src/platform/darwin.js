@@ -62,6 +62,7 @@ function create({ clipboard, windowsHelper = null, captureHelper = null, osRelea
     id: 'darwin',
     session: 'aqua',
     capture: { mic: 'renderer', system: nativeSystem ? 'native' : 'renderer' },
+    renderer: { system: true },   // the window can capture it too, if the helper stops (permission, an error)
     async capabilities() {
       return {
         platform: 'darwin', session: 'aqua', mic: true, systemAudio: true, micActivity: true, paste: true,

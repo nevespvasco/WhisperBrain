@@ -54,7 +54,7 @@ const DEFAULTS = {
   autoRecord: 'ask',            // when a meeting is detected: off | ask | always
   autoStop: true,               // stop an auto-started recording when the meeting app releases the microphone
   captureCalendar: 'off',       // start recording when a calendar meeting starts: off | selected | all
-  perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux); off = everything the computer plays
+  perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux, macOS 14.2+, Windows with the helper); off = everything the computer plays
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)

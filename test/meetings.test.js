@@ -95,12 +95,12 @@ test('detector: announces a calendar meeting about to start exactly once', async
 function detRig({ apps = [], windows = [], supported = true, cands = [], current = null, over = {}, notes = true } = {}) {
   const e = env();
   const settings = { get: (k) => (k in over ? over[k] : e.settings.get(k)) };
-  const state = { apps, windows, supported, recordingNote: null, started: [], stopped: 0, created: [] };
+  const state = { apps, windows, supported, recordingNote: null, started: [], startOpts: [], stopped: 0, created: [] };
   const platform = { micActivity: async () => ({ supported: state.supported, active: state.apps.length > 0, apps: state.apps }), meetingWindows: async () => state.windows };
   const calendar = { sources: () => [], events: async () => ({ events: [] }), candidates: async () => cands, current: async () => current };
   const recording = {
     status: () => (state.recordingNote ? { active: true, noteId: state.recordingNote } : { active: false }),
-    start: async (id) => { state.started.push(id); state.recordingNote = id; },
+    start: async (id, opts) => { state.started.push(id); state.startOpts.push(opts); state.recordingNote = id; },
     stop: async () => { state.stopped++; state.recordingNote = null; },
   };
   const notesApi = notes && { create: (input) => { const n = { id: `n${state.created.length + 1}`, ...input }; state.created.push(n); return n; } };
@@ -175,6 +175,7 @@ test('detector: autoRecord always starts a note+recording and autoStop stops onl
   assert.equal(a.state.created.length, 1);
   assert.deepEqual(a.state.created[0], { id: 'n1', title: 'Weekly sync', eventUid: 'e9', eventStart: ev.start, attendees: ev.attendees, source: 'recorded', platform: 'teams' });
   assert.deepEqual(a.state.started, ['n1']);
+  assert.deepEqual(a.state.startOpts, [{ app: { name: 'Microsoft Teams', appId: 'teams', weak: false } }], 'the recording is told which application the call is');
   assert.deepEqual(a.of('meeting.autostarted'), [{ noteId: 'n1', platform: 'teams' }]);
   assert.equal(a.of('meeting.detected').length, 1);
   assert.equal(a.det.status().autoNoteId, 'n1');

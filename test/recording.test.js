@@ -199,3 +199,42 @@ test('what the system channel is capturing is reported, and so is a change (the 
   assert.ok(r.events.some((e) => e.type === 'recording.warning' && /whole output/.test(e.data.message)), 'and the person is told');
   await r.mgr.stop();
 });
+
+// ---- a native system capture that dies: the renderer takes over where the platform has one ----
+class DyingNative extends EventEmitter { start() { this.started = true; } stop() { this.emit('end'); } }
+function dyingRig(extra) {
+  const native = new DyingNative();
+  const rig = setup({ capture: { mic: 'renderer', system: 'native' }, platform: { createSystemSource: async () => native, ...extra } });
+  return { ...rig, native };
+}
+
+test('native system capture ends by itself: where the platform has a renderer path the channel moves to it, and the UI is asked to capture', async () => {
+  const r = dyingRig({ renderer: { system: true } });
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false });
+  assert.equal(r.mgr.pushPcm(n.id, 'system', pcm(100)), false, 'native: nothing is pushed in');
+  r.native.emit('end');
+  const req = r.events.filter((e) => e.type === 'capture.request').map((e) => e.data.channels);
+  assert.deepEqual(req, [['system']], 'the UI is asked to capture the system audio');
+  assert.equal(r.mgr.pushPcm(n.id, 'system', pcm(100)), true, 'and its audio is accepted');
+  assert.ok(r.events.some((e) => e.type === 'recording.warning' && /renderer|browser|window/i.test(e.data.message)), 'the person is told');
+  await r.mgr.stop();
+});
+
+test('native system capture ends by itself with no renderer path (Linux): a warning, nothing swapped', async () => {
+  const r = dyingRig({});
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false });
+  r.native.emit('end');
+  assert.equal(r.events.filter((e) => e.type === 'capture.request').length, 0);
+  assert.ok(r.events.some((e) => e.type === 'recording.warning' && /ended unexpectedly/.test(e.data.message)));
+  await r.mgr.stop();
+});
+
+test('stopping a recording on purpose does not swap anything', async () => {
+  const r = dyingRig({ renderer: { system: true } });
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false });
+  await r.mgr.stop();
+  assert.equal(r.events.filter((e) => e.type === 'capture.request').length, 0);
+});
