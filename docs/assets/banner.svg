@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 400" role="img" aria-label="WhisperBrain: local-first AI notepad for meetings">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1b1640"/><stop offset="1" stop-color="#0f0c26"/></linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#9b8cff"/><stop offset="1" stop-color="#5a45c4"/></linearGradient>
+    <linearGradient id="w" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#9b8cff" stop-opacity="0"/><stop offset=".5" stop-color="#b3a8ff" stop-opacity=".55"/><stop offset="1" stop-color="#9b8cff" stop-opacity="0"/></linearGradient>
+    <radialGradient id="glow" cx=".5" cy=".42" r=".5"><stop offset="0" stop-color="#6450cb" stop-opacity=".45"/><stop offset="1" stop-color="#6450cb" stop-opacity="0"/></radialGradient>
+  </defs>
+  <rect width="1280" height="400" rx="28" fill="url(#bg)"/>
+  <rect width="1280" height="400" rx="28" fill="url(#glow)"/>
+  <!-- waveform backdrop -->
+  <g stroke="url(#w)" stroke-width="6" stroke-linecap="round">
+    <path d="M44 156v88M66 142v116M88 180v40M110 160v80M132 174v52M154 170v60M176 180v40M198 180v40M220 188v24"/>
+    <path d="M1050 160v80M1072 142v116M1094 188v24M1116 156v88M1138 128v144M1160 142v116M1182 170v60M1204 180v40M1226 142v116"/>
+  </g>
+  <!-- mark -->
+  <g transform="translate(560 56)">
+    <rect width="160" height="160" rx="38" fill="url(#g)"/>
+    <g stroke="#fff" stroke-width="10" stroke-linecap="round" transform="translate(16 16) scale(.75)">
+      <path d="M28 56v16" opacity=".65"/><path d="M46 44v40" opacity=".85"/><path d="M64 28v72"/><path d="M82 40v48" opacity=".85"/><path d="M100 54v20" opacity=".65"/>
+    </g>
+  </g>
+  <text x="640" y="288" text-anchor="middle" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="64" font-weight="700" letter-spacing="-1.5" fill="#fff">WhisperBrain</text>
+  <text x="640" y="336" text-anchor="middle" font-family="Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#c9c2ff">The local-first AI notepad for meetings. Your calls never leave your computer.</text>
+</svg>
