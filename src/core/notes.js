@@ -197,6 +197,7 @@ class Notes {
   // Each segment carries its channel speaker ('me' | 'them'), the identified voice (speakerId, e.g. "s2") and a
   // display label (speakers/display.js): the name the user gave, else a saved voice profile's name, else "Speaker 2" / "Them" / "Me"
   // (which of them depends on whether the note is being recorded), with labelKind and displayNo for a screen to write it its own way.
+  hasSegments(noteId) { return !!this.db.prepare('SELECT 1 FROM segments WHERE note_id = ? LIMIT 1').get(noteId); }
   segments(noteId) {
     const rows = this.db.prepare(`SELECT s.id, s.speaker, s.channel, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
         CASE WHEN s.words IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM json_each(s.words) w WHERE json_extract(w.value, '$[3]') = 1) END AS overlap,

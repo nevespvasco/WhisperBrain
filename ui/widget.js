@@ -7,6 +7,7 @@ import { esc } from './md.js';
 import { icon } from './icons.js';
 import { speakerColor, fmtTimer, speakerText, lineText } from './lib.js';
 import { getConsent, setConsent, copyNotice } from './consent.js';
+import { follow } from './follow.js';
 
 const root = document.getElementById('w');
 const bridge = window.wbWidget || null; // present only inside the desktop app
@@ -103,7 +104,7 @@ function buildShell(want) {
     <header data-drag><span class="title"><span class="dot"></span><span class="time"></span><span class="sub"></span></span>
       <button class="btn sm icon ghost" data-act="open" title="${esc(t('Open WhisperBrain'))}" aria-label="${esc(t('Open WhisperBrain'))}">${icon('external', 'sm')}</button>
       <button class="btn sm icon ghost" data-act="collapse" title="${esc(t('Minimise'))}" aria-label="${esc(t('Minimise'))}">${icon('chevdown', 'sm')}</button></header>
-    <div class="lines"></div>
+    <div class="lines-wrap"><div class="lines" tabindex="0"></div><button type="button" class="jump-latest" hidden title="${esc(t('Back to the live transcript'))}" aria-label="${esc(t('Back to the live transcript'))}">${icon('chevdown', 'sm')}<span>${esc(t('Latest'))}</span></button></div>
     <div class="slot-consent"></div>
     <footer data-drag></footer></section>`;
 }
@@ -121,9 +122,10 @@ function render() {
     const busy = state === 'finalizing' || state === 'saved';
     put(root.querySelector('.sub'), esc(statusText()));
     const box = root.querySelector('.lines');
-    const stick = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    // follows the newest line; scrolling up stops that and shows the arrow back (ui/follow.js)
+    if (!box.follow) box.follow = follow(box, root.querySelector('.jump-latest'));
     syncLines(box);
-    if (stick) box.scrollTop = box.scrollHeight;
+    box.follow.update();
     put(root.querySelector('.slot-consent'), consentStrip());
     put(root.querySelector('footer'), `${S.rec.micAvailable === false ? '' : `<button class="btn sm ${S.rec.micMuted ? 'danger' : ''}" data-act="mute" ${busy ? 'disabled' : ''} aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic', 'sm')} ${S.rec.micMuted ? t('Unmute') : t('Mute')}</button>`}<button class="btn sm" data-act="pause" ${busy ? 'disabled' : ''}>${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button>
       <button class="btn sm stop" data-act="stop" ${busy ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`);

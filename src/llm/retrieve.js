@@ -30,7 +30,9 @@ function rank(query, wins) {
 }
 
 // Pick the best windows within a char budget, returned in chronological order.
+// With nothing to look for (a summary of the whole meeting) the windows are spread evenly from start to end.
 function pick(query, lines, budget, size = 1200) {
+  if (!words(query).length) return spread(windows(lines, size), budget);
   const wins = rank(query, windows(lines, size));
   const ordered = [...wins].sort((a, b) => b.score - a.score || a.idx - b.idx);
   const chosen = [];
@@ -41,6 +43,22 @@ function pick(query, lines, budget, size = 1200) {
     if (used >= budget) break;
   }
   return chosen.sort((a, b) => a.idx - b.idx);
+}
+
+function spread(wins, budget) {
+  const total = wins.reduce((n, w) => n + w.text.length, 0);
+  if (total <= budget) return wins;
+  const avg = total / wins.length;
+  const count = Math.max(1, Math.floor(budget / avg));
+  const step = wins.length / count;
+  const chosen = [];
+  let used = 0;
+  for (let i = 0; i < count; i++) {
+    const w = wins[Math.min(wins.length - 1, Math.floor(i * step + step / 2))];
+    if (chosen.includes(w) || (used + w.text.length > budget && chosen.length)) continue;
+    chosen.push(w); used += w.text.length;
+  }
+  return chosen;
 }
 
 module.exports = { words, windows, rank, pick };

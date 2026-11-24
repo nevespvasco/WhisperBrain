@@ -146,6 +146,60 @@ test('global chat retrieves matching meetings and reports sources', async (t) =>
   assert.equal(notes.chatHistory(a.id).length, 0, 'global chat is separate from note chat');
 });
 
+test('global chat: "the last meeting" is picked by date, not by searching for the words "summarise" or "meeting"', async (t) => {
+  const srv = await startFakeLlm(() => 'ok');
+  t.after(srv.close);
+  const { ai, notes } = setup({ baseUrl: srv.url, model: 'm' });
+  const old = notes.create({ title: 'Meeting about meetings', body: 'we summarised the meeting cadence', createdAt: Date.now() - 3 * 86400e3 });
+  const last = notes.create({ title: 'Design review', body: 'tokens and dark mode', createdAt: Date.now() - 3600e3 });
+  notes.create({ title: '', createdAt: Date.now() }); // just created, still empty: not "the last meeting"
+  for (const q of ['summarize last meeting', 'Resume a última reunião em 3 pontos']) {
+    const r = await ai.chat(null, q);
+    assert.deepEqual(r.sources.map((s) => s.id), [last.id], q);
+    assert.match(srv.requests.at(-1).messages.at(-1).content, /### Design review/);
+    assert.doesNotMatch(srv.requests.at(-1).messages.at(-1).content, /### Meeting about meetings/);
+  }
+  const two = await ai.chat(null, 'recap my last 2 meetings');
+  assert.deepEqual(two.sources.map((s) => s.id), [last.id, old.id]);
+});
+
+test('global chat: nothing matching gives no sources and says so, instead of citing unrelated meetings', async (t) => {
+  const srv = await startFakeLlm(() => 'ok');
+  t.after(srv.close);
+  const { ai, notes } = setup({ baseUrl: srv.url, model: 'm' });
+  notes.create({ title: 'Design review', body: 'tokens and dark mode' });
+  const r = await ai.chat(null, 'Summarise everything about pricing');
+  assert.deepEqual(r.sources, []);
+  const sent = srv.requests[0].messages.at(-1).content;
+  assert.match(sent, /No meeting mentions/);
+  assert.match(sent, /Design review/, 'the list of recent meetings is still there');
+  assert.doesNotMatch(sent, /### Design review/);
+});
+
+test('chat scope: time words and leftover search terms', () => {
+  const { chatScope } = require('../src/llm/scope');
+  const now = new Date(2026, 10, 25, 15, 0).getTime(); // a Wednesday
+  assert.deepEqual(chatScope('summarize last meeting', now), { latest: 1, when: null, terms: '' });
+  assert.equal(chatScope('what did the last call say about pricing?', now).terms, 'pricing');
+  assert.equal(chatScope('as últimas reuniões', now).latest, 3);
+  assert.equal(chatScope('a reunião anterior', now).latest, 1);
+  const week = chatScope('What did we decide this week?', now);
+  assert.equal(week.when.label, 'this week');
+  assert.equal(new Date(week.when.from).getDay(), 1, 'weeks start on Monday');
+  assert.equal(week.terms, 'decide');
+  assert.equal(chatScope('o que falámos ontem sobre o orçamento', now).when.label, 'yesterday');
+  assert.equal(chatScope('o que falámos ontem sobre o orçamento', now).terms, 'orçamento');
+  assert.equal(chatScope('Summarise everything about pricing', now).terms, 'pricing');
+  assert.equal(chatScope('last week', now).latest, 0);
+});
+
+test('retrieval with nothing to look for spreads the excerpts over the whole meeting', () => {
+  const lines = Array.from({ length: 100 }, (_, i) => `line ${i} ${'x'.repeat(100)}`);
+  const wins = retrieve.pick('', lines, 2000, 500);
+  assert.ok(wins.length >= 2);
+  assert.ok(wins[0].from < 20 && wins.at(-1).from > 70, `${wins.map((w) => w.from)}`);
+});
+
 test('retrieval ranks windows by query terms and keeps chronological order', () => {
   const lines = Array.from({ length: 60 }, (_, i) => (i === 5 ? 'we discussed hiring plans' : i === 50 ? 'hiring budget is fixed' : `noise line ${i} unrelated content here`));
   const wins = retrieve.pick('hiring budget', lines, 700, 300);

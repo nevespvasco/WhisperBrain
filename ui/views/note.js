@@ -6,6 +6,7 @@ import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
 import { openExport } from './transfer.js';
 import { renderChat } from './chat.js';
+import { follow } from '../follow.js';
 
 const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', 'waves'], ['notes', 'Notes', 'edit'], ['snippets', 'Snippets', 'star'], ['chat', 'Chat', 'chat']];
 let N = null; // the open meeting's state
@@ -203,19 +204,53 @@ function actionsHtml() {
   const rows = N.actions.map((a) => `<div class="act-row ${a.done ? 'done' : ''}" data-aid="${a.id}">
     <input type="checkbox" class="cbx" ${a.done ? 'checked' : ''} aria-label="${t('Done')}">
     <div class="txt"><div class="t" contenteditable="true" spellcheck="true" data-field="text">${esc(a.text)}</div>
-      <div class="meta"><button class="linkish" data-act="a-owner">${icon('user', 'sm')} ${a.owner ? esc(a.owner) : `<span class="faint">${t('Owner')}</span>`}</button>
+      <div class="meta"><button class="linkish" data-act="a-owner">${icon('user', 'sm')} ${a.owner ? esc(a.owner) : `<span class="faint">${t('Unassigned')}</span>`}</button>
       <label class="row" style="gap:4px;cursor:pointer">${icon('calendar', 'sm')}<input type="date" required value="${esc(a.due)}" data-field="due" title="${t('Due date')}" style="height:22px;padding:0 4px;border:0;background:transparent;width:auto;font-size:12px;color:inherit"></label>
       ${a.extUrl ? `<a href="${esc(a.extUrl)}" target="_blank" rel="noopener noreferrer" class="badge accent">${icon('link', 'sm')} ${esc(a.extId || 'Linear')}</a>` : ''}</div></div>
     <div class="tools">${!a.extUrl && S.integrations?.linear?.configured ? `<button class="btn ghost icon xs" data-act="a-linear" title="${t('Create a Linear issue')}">${icon('checksq', 'sm')}</button>` : ''}<button class="btn ghost icon xs" data-act="a-del" title="${t('Delete')}">${icon('trash', 'sm')}</button></div></div>`).join('');
   return `<div id="actlist">${rows || `<div class="muted small" style="padding:4px 0 8px">${t('No action items yet. Enhancing or analysing the meeting finds them; you can also add your own.')}</div>`}</div>
-    <form class="row mt-s" id="a-add"><input id="a-new" placeholder="${t('Add an action item…')}" aria-label="${t('Add an action item… (use @name for the owner)')}" title="${t('Add an action item… (use @name for the owner)')}"><button class="btn icon soft" aria-label="${t('Add')}">${icon('plus', 'sm')}</button></form>`;
+    ${addActionHtml()}`;
+}
+// Adding one by hand: the task, then who owns it and when it is due, all visible before it is created. Nothing is assigned
+// unless chosen ("Unassigned" is said plainly); the owner picked stays for the next task, so several can go to one person.
+function addActionHtml() {
+  const ow = N.addOwner || '';
+  const chips = actionPeople().map(({ value, label }) => `<button type="button" class="chip${value === ow ? ' on' : ''}" data-aowner="${esc(value)}">${esc(label)}</button>`).join('');
+  return `<form class="act-add mt-s" id="a-add">
+      <input id="a-new" autocomplete="off" placeholder="${t('What needs to be done?')}" aria-label="${t('New action item')}" title="${t('Add an action item… (use @name for the owner)')}">
+      <div class="act-add-bar">
+        <button type="button" class="chip${ow ? ' on' : ''}" data-act="a-pick" aria-expanded="false" aria-controls="a-people">${icon('user', 'sm')}<span class="ellipsis">${ow ? esc(ow) : t('Unassigned')}</span>${icon('chevdown', 'sm')}</button>
+        <label class="chip act-due" title="${t('Due date')}">${icon('calendar', 'sm')}<input type="date" id="a-due" aria-label="${t('Due date')}"></label>
+        <span class="spacer"></span>
+        <button class="btn sm primary" id="a-submit" disabled>${icon('plus', 'sm')} ${t('Add')}</button>
+      </div>
+      <div class="chips act-people" id="a-people" hidden>${chips}<button type="button" class="chip${ow ? '' : ' on'}" data-aowner="">${t('Unassigned')}</button><input id="a-other" autocomplete="off" placeholder="${t('Someone else…')}" aria-label="${t('Someone else…')}"></div>
+    </form>`;
+}
+// Who can own a task here: me, everyone who spoke, everyone invited (each once)
+function actionPeople() {
+  const me = S.settings?.userName || '';
+  const out = new Map();
+  if (me) out.set(me.toLowerCase(), { value: me, label: `${me} (${t('Me')})` });
+  for (const name of [...N.analytics.speakers.map((s) => s.label), ...(N.note.attendees || []).map((x) => x.name)]) {
+    const v = String(name || '').trim();
+    if (v && !out.has(v.toLowerCase())) out.set(v.toLowerCase(), { value: v, label: v });
+  }
+  return [...out.values()];
+}
+function setAddOwner(v) {
+  N.addOwner = String(v || '').trim();
+  const pick = $('[data-act="a-pick"]'), box = $('#a-people');
+  if (pick) { pick.classList.toggle('on', !!N.addOwner); $('.ellipsis', pick).textContent = N.addOwner || t('Unassigned'); pick.setAttribute('aria-expanded', 'false'); }
+  if (box) { box.hidden = true; $$('[data-aowner]', box).forEach((c) => c.classList.toggle('on', c.dataset.aowner === N.addOwner)); }
+  $('#a-new')?.focus();
 }
 
 function transcriptTab(body) {
   const total = N.analytics.durationMs || 1;
   // drawn again (a speaker renamed, the voices relabelled after Stop): stay where the reader was, unless following the newest line
   const prev = $('#segs');
-  N.restoreTop = !prev ? null : prev.classList.contains('live') && N.follow !== false ? 'end' : prev.scrollTop;
+  N.restoreTop = !prev ? null : N.follow ? 'end' : prev.scrollTop;
   body.innerHTML = `<div class="tb">${recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
       ${trControls()}
@@ -225,11 +260,11 @@ function transcriptTab(body) {
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
-    ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div><button type="button" class="btn sm jump-latest" id="jump-latest" hidden>${icon('chevdown', 'sm')} ${t('Latest')}</button></div>`;
+    ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
   if (N.trq) filterTranscript();
   if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); N.restoreTop = null; setTimeout(() => centreLine(el), 60); } N.seg = null; }
-  else if (recHere() && N.restoreTop === null) requestAnimationFrame(() => scrollLatest());
   wireLiveBox(N.restoreTop !== null);
+  if (recHere() && N.restoreTop === null) requestAnimationFrame(() => N.fol?.end());
 }
 // Scroll the transcript box (never the page) so a line sits in its middle
 function centreLine(el) { const box = $('#segs'); if (box) box.scrollTop = el.offsetTop - (box.clientHeight - el.offsetHeight) / 2; }
@@ -294,20 +329,23 @@ function showDraft(d) {
   box.insertAdjacentHTML('beforeend', draftHtml(d));
   keepInView();
 }
-// The transcript is a fixed-height box with its own scrollbar, while recording and after. While recording here it follows the
-// newest line: scrolling up to re-read pauses the following (and offers "Latest"); reaching the bottom again, or pressing it,
-// resumes it. No scrolling of the whole page.
-const nearEnd = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
-function scrollLatest() { const box = $('#segs'); if (!box) return; box.scrollTop = box.scrollHeight; N.follow = true; const j = $('#jump-latest'); if (j) j.hidden = true; }
-// On the transcript tab the page itself does not scroll: the transcript box is sized to end above the bottom of the window (and
+// The transcript is a fixed-height box with its own scrollbar, while recording and after (ui/follow.js). It follows the newest
+// line while recording here; scrolling up to re-read stops that and shows a floating arrow, which (like reaching the bottom again)
+// goes back to following. Outside a recording the box starts at the top and the same arrow jumps to the end. Never the page.
+const jumpHtml = () => `<button type="button" class="jump-latest${recHere() ? ' live' : ''}" id="jump-latest" hidden title="${esc(recHere() ? t('Back to the live transcript') : t('Go to the end'))}" aria-label="${esc(recHere() ? t('Back to the live transcript') : t('Go to the end'))}">${icon('chevdown', 'sm')}${recHere() ? `<span>${t('Latest')}</span>` : ''}</button>`;
+// On the transcript and chat tabs the page itself does not scroll: the box is sized to end above the bottom of the window (and
 // the recording bar while it shows) and the side cards scroll inside their own column, so there is exactly one scrollbar for the
 // lines. Any other tab leaves the page to scroll as usual.
 const BAR_CLEARANCE = 100;   // the floating recording bar (20px off the bottom, ~46px tall) plus the card's own padding
 const EDGE_CLEARANCE = 30;   // no recording bar: the card's own padding and a little air
+let fitWired = false;
 function fitLive() {
-  const main = $('#main'), box = $('#segs'), aside = $('#aside');
+  if (!fitWired) { fitWired = true; window.addEventListener('resize', () => { if ($('#segs') || $('#chatlog')) fitLive(); }); }
+  const main = $('#main'), aside = $('#aside');
   if (!main) return;
-  const fit = !!N && N.tab === 'transcript' && !!box;
+  const body = $('#tabbody'); // only on the meeting page (the Ask AI page has a #chatlog of its own, laid out by CSS)
+  const box = !body ? null : N?.tab === 'transcript' ? $('#segs', body) : N?.tab === 'chat' ? $('#chatlog', body) : null;
+  const fit = !!N && !!box;
   const grid = $('.note-grid'), sideBySide = !!grid && getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length > 1;
   main.classList.toggle('fit', fit && sideBySide);   // stacked (narrow window): the side cards come below, so the page must scroll to reach them
   if (box) box.style.height = '';
@@ -315,21 +353,23 @@ function fitLive() {
   if (!fit) return;
   if (sideBySide) main.scrollTop = 0;
   const top = (el) => el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
-  box.style.height = `${Math.max(140, main.clientHeight - top(box) - (S.rec.active ? BAR_CLEARANCE : EDGE_CLEARANCE))}px`;
+  // the chat keeps its question box (and the suggestions above it) under the answers
+  const wrap = box.parentElement;
+  const below = box.id === 'chatlog' ? [...wrap.parentElement.children].filter((el) => el !== wrap && top(el) > top(wrap)).reduce((h, el) => h + el.offsetHeight + (parseFloat(getComputedStyle(el).marginTop) || 0), 0) : 0;
+  box.style.height = `${Math.max(box.id === 'chatlog' ? 220 : 140, main.clientHeight - top(box) - below - (S.rec.active ? BAR_CLEARANCE : EDGE_CLEARANCE))}px`;
   if (aside && sideBySide) aside.style.maxHeight = `${Math.max(200, main.clientHeight - top(aside) - 40)}px`;
+  if (box.id !== 'segs') { box.follow?.update(); return; }
   if (N.restoreTop != null) { box.scrollTop = N.restoreTop === 'end' ? box.scrollHeight : N.restoreTop; N.restoreTop = null; }
-  else if (box.classList.contains('live') && N.follow !== false) box.scrollTop = box.scrollHeight;
+  N.fol?.update();
 }
-let fitWired = false;
 // restoring: the box was drawn again where the reader had scrolled to, so whether it follows the newest line is kept as it was
 function wireLiveBox(restoring = false) {
-  if (!fitWired) { fitWired = true; window.addEventListener('resize', () => { if ($('#segs')) fitLive(); }); }
-  const box = $('#segs'), jump = $('#jump-latest');
-  if (!box || !jump) return;
-  if (!restoring) N.follow = true;
-  jump.hidden = !box.classList.contains('live') || N.follow !== false;
-  box.addEventListener('scroll', () => { if (!box.classList.contains('live')) return; N.follow = nearEnd(box); jump.hidden = N.follow; }, { passive: true });
-  jump.addEventListener('click', scrollLatest);
+  const box = $('#segs');
+  N.fol = null;
+  if (!box) return;
+  N.fol = follow(box, $('#jump-latest'), { onChange: (v) => { N.follow = v; } });
+  N.fol.set(restoring ? !!N.follow : box.classList.contains('live'));
+  N.follow = N.fol.following;
 }
 function syncLiveBox() {
   const box = $('#segs');
@@ -337,14 +377,12 @@ function syncLiveBox() {
   const live = !!N && recHere();
   const was = box.classList.contains('live');
   box.classList.toggle('live', live);
+  const j = $('#jump-latest');
+  if (j && live !== was) { const n = Object.assign(document.createElement('div'), { innerHTML: jumpHtml() }).firstElementChild; j.className = n.className; j.title = n.title; j.setAttribute('aria-label', n.getAttribute('aria-label')); j.innerHTML = n.innerHTML; }
   fitLive();
-  if (live && !was) scrollLatest(); else if (!live) { const j = $('#jump-latest'); if (j) j.hidden = true; }
+  if (live && !was) N.fol?.end();
 }
-function keepInView() {
-  const box = $('#segs');
-  if (!box) return;
-  if (box.classList.contains('live') ? N.follow !== false : nearEnd(box)) box.scrollTop = box.scrollHeight;
-}
+const keepInView = () => N.fol?.update();
 function filterTranscript() {
   const q = N.trq.toLowerCase();
   let hits = 0;
@@ -374,10 +412,26 @@ function snippetsTab(body) {
 }
 
 function chatTab(body) {
-  renderChat(body, N.chat, { noteId: N.id, suggestions: [t('Summarise in 3 bullets'), t('List the action items with owners'), t('What was decided?'), t('Draft a follow-up email'), t('What did each person care about?')], placeholder: t('Ask about this meeting…') });
+  renderChat(body, N.chat, { noteId: N.id, suggestions: [t('Summarise in 3 bullets'), t('List the action items with owners'), t('What was decided?'), t('Draft a follow-up email'), t('What did each person care about?')], placeholder: t('Ask about this meeting…'), onLayout: fitLive });
 }
 
 // ---------- aside ----------
+// What this meeting is linked to: issues and pages it was exported to or that were linked by hand, as cards that open them.
+const LINK_KIND = { notion: ['doc', 'Notion'], linear: ['checksq', 'Linear'], obsidian: ['book', 'Obsidian'], calendar: ['calendar', 'Calendar'], webhook: ['webhook', 'Webhook'], url: ['link', 'Link'] };
+function linkHost(url) { try { const u = new URL(url); return u.protocol.startsWith('http') ? u.hostname.replace(/^www\./, '') : ''; } catch { return ''; } }
+function linkRow(l) {
+  const [ic, kind] = LINK_KIND[l.kind] || LINK_KIND.url;
+  const host = linkHost(l.url);
+  const title = l.title && l.title !== l.url ? l.title : host || l.url;
+  return `<div class="link-row" data-kind="${esc(l.kind)}"><a class="link-main" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer" title="${esc(l.url)}">
+      <span class="srcicon">${icon(ic)}</span><span class="link-txt"><b class="ellipsis">${esc(title)}</b><span class="xsmall muted ellipsis">${esc(l.kind === 'url' ? host || t('Link') : kind)}${l.kind !== 'url' && host ? ` · ${esc(host)}` : ''}</span></span></a>
+    <div class="link-tools"><button class="btn ghost icon xs" data-copy-link="${esc(l.url)}" title="${t('Copy link')}" aria-label="${t('Copy link')}">${icon('copy', 'sm')}</button><button class="btn ghost icon xs" data-unlink="${l.id}" title="${t('Remove')}" aria-label="${t('Remove')}">${icon('x', 'sm')}</button></div></div>`;
+}
+const linkedPanel = () => `<section class="panel linked"><div class="panel-head"><h3>${icon('link')} ${t('Linked')}${N.links.length ? ` <span class="badge">${N.links.length}</span>` : ''}</h3><button class="btn ghost icon xs" data-act="add-link" title="${t('Link to…')}" aria-label="${t('Link to…')}">${icon('plus', 'sm')}</button></div>
+    ${N.links.length ? `<div class="link-list">${N.links.map(linkRow).join('')}</div>`
+    : `<div class="linked-empty"><div class="small muted">${t('Nothing linked yet. Add a link to a doc or issue, or export the meeting to Notion, Obsidian or Linear: it shows up here.')}</div>
+      <div class="row wrap" style="gap:6px"><button class="btn soft xs" data-act="add-link">${icon('plus', 'sm')} ${t('Add link')}</button><button class="btn ghost xs" data-act="share">${icon('share', 'sm')} ${t('Export…')}</button></div></div>`}
+  </section>`;
 function renderAside() {
   const box = $('#aside');
   if (!box) return;
@@ -401,9 +455,7 @@ function renderAside() {
       ${N.topics.length ? `<div class="stack">${N.topics.map((tp) => `<div><div class="row"><a class="chip" href="#/topic/${tp.id}">${icon('hash', 'sm')}<span class="ellipsis">${esc(tp.name)}</span></a><span class="grow"></span>${tp.auto ? '' : `<span class="badge" title="${t('Added by you')}">${icon('user', 'sm')}</span>`}<button class="btn ghost icon xs" data-untopic="${tp.id}" aria-label="${t('Remove')}">${icon('x', 'sm')}</button></div>${tp.summary ? `<div class="xsmall muted" style="margin:4px 0 0 4px">${esc(tp.summary)}</div>` : ''}</div>`).join('')}</div>` : `<div class="small muted">${t('Topics are found automatically after a recording or import. Press “Analyse” to refresh them.')}</div>`}
     </section>
     ${N.glossary.length ? `<section class="panel"><div class="panel-head"><h3>${icon('book')} ${t('Glossary')}</h3><a class="link" href="#/glossary">${t('All')}</a></div><div class="stack tight">${N.glossary.slice(0, 8).map((g) => `<a class="quote" href="#/term/${g.id}"><b>${esc(g.term)}</b><span class="xsmall muted clamp2">${esc(g.definition || t('No definition yet'))}</span></a>`).join('')}</div></section>` : ''}
-    <section class="panel"><div class="panel-head"><h3>${icon('link')} ${t('Linked')}</h3><button class="btn ghost icon xs" data-act="add-link" title="${t('Link to…')}" aria-label="${t('Link to…')}">${icon('plus', 'sm')}</button></div>
-      ${N.links.length ? `<div class="stack tight">${N.links.map((l) => `<div class="row"><span class="srcicon">${icon({ notion: 'doc', linear: 'checksq', obsidian: 'book', calendar: 'video', webhook: 'webhook' }[l.kind] || 'link')}</span><a class="grow ellipsis small" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.title || l.url)}</a><button class="btn ghost icon xs" data-unlink="${l.id}" aria-label="${t('Remove')}">${icon('x', 'sm')}</button></div>`).join('')}</div>` : `<div class="small muted">${t('Export to Notion, Obsidian or Linear — or link an issue — and it shows up here.')}</div>`}
-    </section>
+    ${linkedPanel()}
     ${N.related.length ? `<section class="panel"><div class="panel-head"><h3>${icon('layers')} ${t('Related meetings')}</h3></div><div class="list">${N.related.map((r) => meetingRow(r, { snippet: esc(r.reasons.join(' · ')) })).join('')}</div></section>` : ''}`;
   fitLive();
 }
@@ -416,6 +468,7 @@ function bind(main) {
     else if (e.target.matches('.editor')) { N.note.body = e.target.value; saveNote({ body: e.target.value }); }
     else if (e.target.matches('#summary-edit')) { N.note.summary = e.target.value; saveNote({ summary: e.target.value }); }
     else if (e.target.matches('#tr-q')) { N.trq = e.target.value.trim(); filterTranscript(); }
+    else if (e.target.matches('#a-new')) { const b = $('#a-submit'); if (b) b.disabled = !e.target.value.trim(); }
   };
   main.onchange = async (e) => {
     try {
@@ -439,19 +492,28 @@ function bind(main) {
     if (!text) { e.target.textContent = a.text; return; }
     try { await api('PATCH', `/api/actions/${a.id}`, { text }); a.text = text; } catch (err) { fail(err); }
   });
-  main.addEventListener('keydown', (e) => { if (e.target.matches?.('.act-row [data-field="text"]') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); } });
+  main.addEventListener('keydown', (e) => {
+    if (e.target.matches?.('.act-row [data-field="text"]') && e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    else if (e.target.id === 'a-other' && e.key === 'Enter') { e.preventDefault(); if (e.target.value.trim()) setAddOwner(e.target.value); }
+    else if (e.key === 'Escape' && e.target.closest?.('#a-add') && !$('#a-people')?.hidden) { e.preventDefault(); setAddOwner(N.addOwner); }
+  });
   main.addEventListener('submit', async (e) => {
     if (e.target.id !== 'a-add') return;
     e.preventDefault();
     const raw = $('#a-new').value.trim();
     if (!raw) return;
-    const owner = /@([\p{L}][\p{L}.-]*(?:\s[\p{Lu}][\p{L}.-]*)?)/u.exec(raw)?.[1] || '';
-    try { const a = await api('POST', `/api/notes/${N.id}/actions`, { text: raw.replace(/@\S+(\s\p{Lu}\S*)?/u, '').trim() || raw, owner }); N.actions.push(a); rerenderActions(); $('#a-new')?.focus(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
+    // "@name" in the text still works as a shortcut and wins over the picker for this one task
+    const owner = /@([\p{L}][\p{L}.-]*(?:\s[\p{Lu}][\p{L}.-]*)?)/u.exec(raw)?.[1] || N.addOwner || '';
+    try { const a = await api('POST', `/api/notes/${N.id}/actions`, { text: raw.replace(/@\S+(\s\p{Lu}\S*)?/u, '').trim() || raw, owner, due: $('#a-due')?.value || '' }); N.actions.push(a); rerenderActions(); $('#a-new')?.focus(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
   });
   main.onclick = async (e) => {
     const tab = e.target.closest('[data-tab]');
     if (tab) { N.tab = tab.dataset.tab; history.replaceState(null, '', `#/note/${N.id}?tab=${N.tab}`); renderTab(); return; }
     if (e.target.closest('[data-merge-speakers]')) { mergeSpeakers(); return; }
+    const ao = e.target.closest('[data-aowner]');
+    if (ao) { setAddOwner(ao.dataset.aowner); return; }
+    const pick = e.target.closest('[data-act="a-pick"]');
+    if (pick) { const box = $('#a-people'); box.hidden = !box.hidden; pick.setAttribute('aria-expanded', String(!box.hidden)); if (!box.hidden) $('[data-aowner].on', box)?.focus(); return; }
     const tv = e.target.closest('[data-tr-view]');
     if (tv) { N.tr.view = tv.dataset.trView; renderTab(); return; }
     if (e.target.closest('[data-tr-cancel]')) { const j = N.tr.job; N.tr.job = null; if (j) await api('POST', `/api/notes/${N.id}/translate/cancel`, { lang: j.lang }).catch(() => {}); renderTab(); return; }
@@ -467,6 +529,8 @@ function bind(main) {
     if (un) { e.preventDefault(); await setTags(N.tags.map((x) => x.name).filter((x) => x !== un.dataset.untag)); return; }
     const ut = e.target.closest('[data-untopic]');
     if (ut) { N.topics = await api('DELETE', `/api/notes/${N.id}/topics/${ut.dataset.untopic}`); renderAside(); window.dispatchEvent(new Event('wb:refresh')); return; }
+    const cl = e.target.closest('[data-copy-link]');
+    if (cl) { e.preventDefault(); await navigator.clipboard.writeText(cl.dataset.copyLink).then(() => toast(t('Link copied'), { ok: true }), fail); return; }
     const ul = e.target.closest('[data-unlink]');
     if (ul) { await api('DELETE', `/api/links/${ul.dataset.unlink}`); N.links = N.links.filter((l) => l.id !== ul.dataset.unlink); renderAside(); return; }
     const btn = e.target.closest('[data-act]');
@@ -491,7 +555,7 @@ function bind(main) {
       else if (a === 'copy-seg') { const s = N.segs.find((x) => x.id === Number(btn.closest('.seg').dataset.id)); await navigator.clipboard.writeText(`“${s.text}” — ${label(s)}`); done(t('Copied')); }
       else if (a === 'star') await toggleStar(btn.closest('.seg'));
       else if (a === 'a-del') { const id = btn.closest('.act-row').dataset.aid; await api('DELETE', `/api/actions/${id}`); N.actions = N.actions.filter((x) => x.id !== id); rerenderActions(); window.dispatchEvent(new Event('wb:refresh')); }
-      else if (a === 'a-owner') { const row = btn.closest('.act-row'), it = N.actions.find((x) => x.id === row.dataset.aid); const people = [...new Set([...N.analytics.speakers.map((s) => s.label), ...(N.note.attendees || []).map((x) => x.name).filter(Boolean)])]; const r = await promptDialog(t('Who owns this?'), it.owner, { extra: people.length ? `<div class="chips">${people.map((p) => `<button type="button" class="chip" data-suggest="${esc(p)}">${esc(p)}</button>`).join('')}</div>` : '' }); const v = typeof r === 'string' ? r : r?.value; if (v !== undefined && v !== null) { Object.assign(it, await api('PATCH', `/api/actions/${it.id}`, { owner: v })); rerenderActions(); } }
+      else if (a === 'a-owner') { const row = btn.closest('.act-row'), it = N.actions.find((x) => x.id === row.dataset.aid); const people = actionPeople().map((p) => p.value); const r = await promptDialog(t('Who owns this?'), it.owner, { extra: people.length ? `<div class="chips">${people.map((p) => `<button type="button" class="chip" data-suggest="${esc(p)}">${esc(p)}</button>`).join('')}</div>` : '' }); const v = typeof r === 'string' ? r : r?.value; if (v !== undefined && v !== null) { Object.assign(it, await api('PATCH', `/api/actions/${it.id}`, { owner: v })); rerenderActions(); } }
       else if (a === 'a-linear') { btn.disabled = true; const id = btn.closest('.act-row').dataset.aid; const r = await api('POST', `/api/notes/${N.id}/send`, { target: 'linear', mode: 'actions', itemIds: [id] }); toast(t('Created {id}', { id: r.issues[0].identifier }), { ok: true }); await reloadOverview(main); }
       else if (a === 'add-topic') { const name = await promptDialog(t('Add a topic'), '', { placeholder: t('e.g. Pricing') }); if (name) { N.topics = await api('POST', `/api/notes/${N.id}/topics`, { name }); renderAside(); window.dispatchEvent(new Event('wb:refresh')); } }
       else if (a === 'add-link') await addLink();
@@ -531,36 +595,60 @@ async function addTag() {
   if (v) await setTags([...N.tags.map((x) => x.name), ...v.split(',').map((s) => s.trim()).filter(Boolean)]);
 }
 
+// Link this meeting to a web page, or (when connected) a Linear issue, Notion page or Obsidian note found by searching.
 async function addLink() {
   const ints = S.integrations || (S.integrations = await api('GET', '/api/integrations'));
+  const kinds = [['url', 'link', t('Web link')], ...[['linear', 'checksq', 'Linear'], ['notion', 'doc', 'Notion'], ['obsidian', 'book', 'Obsidian']].filter(([k]) => ints?.[k]?.configured)];
+  const added = (link) => { const i = N.links.findIndex((l) => l.id === link.id); if (i >= 0) N.links[i] = link; else N.links.push(link); renderAside(); toast(t('Linked'), { ok: true }); };
   await modal({
     title: t('Link to…'),
-    body: `<div class="seg-ctl full" role="tablist"><button type="button" role="tab" data-lk="url" aria-selected="true">${icon('link', 'sm')} URL</button>${ints.linear?.configured ? `<button type="button" role="tab" data-lk="linear" aria-selected="false">${icon('checksq', 'sm')} Linear</button>` : ''}${ints.notion?.configured ? `<button type="button" role="tab" data-lk="notion" aria-selected="false">${icon('doc', 'sm')} Notion</button>` : ''}${ints.obsidian?.configured ? `<button type="button" role="tab" data-lk="obsidian" aria-selected="false">${icon('book', 'sm')} Obsidian</button>` : ''}</div><div id="lk-body"></div>`,
+    cls: 'link-dlg',
+    body: `${kinds.length > 1 ? `<div class="seg-ctl full" role="tablist">${kinds.map(([k, ic, name], i) => `<button type="button" role="tab" data-lk="${k}" aria-selected="${i === 0}">${icon(ic, 'sm')} ${esc(name)}</button>`).join('')}</div>` : ''}<div id="lk-body"></div>
+      ${kinds.length < 4 ? `<div class="hint">${icon('plug', 'sm')} ${t('Connect Linear, Notion or Obsidian in Integrations to search their issues and pages here.')} <a href="#/integrations" data-close>${t('Integrations')}</a></div>` : ''}`,
     onMount: (d, close) => {
       const body = $('#lk-body', d);
       const show = (k) => {
         $$('[data-lk]', d).forEach((b) => b.setAttribute('aria-selected', String(b.dataset.lk === k)));
         if (k === 'url') {
-          body.innerHTML = `<div class="field"><label for="lk-u">URL</label><input id="lk-u" type="url" placeholder="https://…"></div><div class="field"><label for="lk-t">${t('Title')}</label><input id="lk-t"></div><div class="row" style="justify-content:flex-end"><button class="btn primary" id="lk-go">${t('Add link')}</button></div>`;
-          $('#lk-go', d).onclick = async () => { try { N.links.push(await api('POST', `/api/notes/${N.id}/links`, { kind: 'url', url: $('#lk-u', d).value.trim(), title: $('#lk-t', d).value.trim() })); renderAside(); close(); } catch (e) { fail(e); } };
+          body.innerHTML = `<form class="stack" id="lk-form" novalidate>
+              <div class="field"><label for="lk-u">${t('Address')}</label><input id="lk-u" type="url" inputmode="url" placeholder="https://…" autocomplete="off" required></div>
+              <div class="field"><label for="lk-t">${t('Title')} <span class="faint">(${t('optional')})</span></label><input id="lk-t" placeholder="${t('Shown instead of the address')}" autocomplete="off"></div>
+              <div class="banner danger small" id="lk-err" hidden></div>
+              <div class="row" style="justify-content:flex-end;gap:8px"><button type="button" class="btn" data-close>${t('Cancel')}</button><button class="btn primary" id="lk-go" disabled>${icon('link', 'sm')} ${t('Add link')}</button></div></form>`;
+          const u = $('#lk-u', d), ti = $('#lk-t', d), go = $('#lk-go', d), err = $('#lk-err', d);
+          // "notion.so/x" works too: an address without a scheme is taken as https
+          const normal = () => { const v = u.value.trim(); if (!v) return ''; const full = /^[a-z][a-z0-9+.-]*:/i.test(v) ? v : `https://${v}`; try { const x = new URL(full); return /^(https?|obsidian|notion|linear):$/i.test(x.protocol) && (x.protocol.startsWith('http') ? x.hostname.includes('.') || x.hostname === 'localhost' : true) ? x.href : ''; } catch { return ''; } };
+          u.addEventListener('input', () => { go.disabled = !normal(); err.hidden = true; ti.placeholder = linkHost(normal()) || t('Shown instead of the address'); });
+          u.addEventListener('paste', () => setTimeout(() => u.dispatchEvent(new Event('input'))));
+          $('#lk-form', d).onsubmit = async (e) => {
+            e.preventDefault();
+            const url = normal();
+            if (!url) { err.textContent = t('That does not look like a web address.'); err.hidden = false; u.focus(); return; }
+            go.disabled = true;
+            try { added(await api('POST', `/api/notes/${N.id}/links`, { kind: 'url', url, title: ti.value.trim() || linkHost(url) })); close(); } catch (e2) { err.textContent = e2.message; err.hidden = false; go.disabled = false; }
+          };
+          u.focus();
           return;
         }
-        body.innerHTML = `<div class="search-in" style="max-width:none">${icon('search', 'sm')}<input id="lk-q" placeholder="${t('Search…')}"></div><div class="picklist" id="lk-list"></div>`;
+        body.innerHTML = `<div class="search-in" style="max-width:none">${icon('search', 'sm')}<input id="lk-q" placeholder="${esc(k === 'linear' ? t('Search Linear issues…') : k === 'notion' ? t('Search Notion pages…') : t('Search Obsidian notes…'))}" autocomplete="off"></div><div class="picklist" id="lk-list"><div class="empty"><p class="muted small">${t('Searching…')}</p></div></div>`;
         const list = $('#lk-list', body);
         const search = debounce(async (q) => {
           try {
             const items = k === 'linear' ? await api('GET', `/api/integrations/linear/search?q=${encodeURIComponent(q)}`) : k === 'notion' ? await api('GET', `/api/integrations/notion/search?q=${encodeURIComponent(q)}`) : await api('GET', `/api/integrations/obsidian/notes?q=${encodeURIComponent(q)}`);
-            list.innerHTML = items.slice(0, 30).map((it, i) => `<label data-i="${i}"><span class="grow ellipsis">${esc(k === 'linear' ? `${it.identifier} ${it.title}` : it.title || it.relPath)}</span>${icon('plus', 'sm')}</label>`).join('') || `<div class="empty"><p>${t('Nothing found.')}</p></div>`;
+            const linked = new Set(N.links.map((l) => l.ref).filter(Boolean));
+            const ref = (it) => (k === 'linear' ? it.identifier : k === 'notion' ? it.id : it.relPath);
+            list.innerHTML = items.slice(0, 30).map((it, i) => `<label data-i="${i}" class="${linked.has(ref(it)) ? 'is-linked' : ''}"><span class="grow ellipsis">${k === 'linear' ? `<b>${esc(it.identifier)}</b> ${esc(it.title)}` : esc(it.title || it.relPath)}</span>${linked.has(ref(it)) ? `<span class="badge accent">${icon('check', 'sm')} ${t('Linked')}</span>` : icon('plus', 'sm')}</label>`).join('') || `<div class="empty"><p>${t('Nothing found.')}</p></div>`;
             list.onclick = async (ev) => {
               const row = ev.target.closest('[data-i]'); if (!row) return;
               const it = items[Number(row.dataset.i)];
               const vault = encodeURIComponent((S.settings.obsidian.vaultPath || '').split(/[\\/]/).filter(Boolean).pop() || '');
               const link = k === 'linear' ? { kind: 'linear', ref: it.identifier, url: it.url, title: `${it.identifier} ${it.title}` } : k === 'notion' ? { kind: 'notion', ref: it.id, url: it.url, title: it.title } : { kind: 'obsidian', ref: it.relPath, url: `obsidian://open?vault=${vault}&file=${encodeURIComponent(it.relPath.replace(/\.md$/, ''))}`, title: it.relPath };
-              try { N.links.push(await api('POST', `/api/notes/${N.id}/links`, link)); renderAside(); close(); } catch (e) { fail(e); }
+              try { added(await api('POST', `/api/notes/${N.id}/links`, link)); close(); } catch (e) { fail(e); }
             };
           } catch (e) { list.innerHTML = `<div class="banner danger">${esc(e.message)}</div>`; }
         }, 300);
         $('#lk-q', body).addEventListener('input', (ev) => search(ev.target.value.trim()));
+        $('#lk-q', body).focus();
         search('');
       };
       d.addEventListener('click', (e) => { const b = e.target.closest('[data-lk]'); if (b) show(b.dataset.lk); });

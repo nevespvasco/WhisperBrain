@@ -347,6 +347,15 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .act-row input[type=date]:invalid:not(:focus) { width: 26px !important; }
 .act-row .tools { display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .act-row:hover .tools, .act-row:focus-within .tools { opacity: 1; }
+.act-add { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; background: var(--card); transition: border-color .12s; }
+.act-add:focus-within { border-style: solid; border-color: var(--accent-line); }
+.act-add #a-new { border: 0; background: transparent; box-shadow: none; padding: 2px 0; height: 28px; font-size: 14px; }
+.act-add-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.act-add-bar .chip > .ellipsis { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.act-due { cursor: pointer; }
+.act-due input[type=date] { border: 0; background: transparent; box-shadow: none; height: 24px; padding: 0; width: auto; font-size: 13px; color: inherit; }
+.act-people { padding-top: 8px; border-top: 1px solid var(--line); }
+.act-people input { height: 28px; width: 160px; padding: 0 10px; border-radius: 999px; font-size: 13px; }
 
 .timeline { position: relative; height: 10px; border-radius: 99px; background: var(--line); overflow: hidden; margin: 4px 0 6px; }
 .timeline i { position: absolute; top: 0; bottom: 0; min-width: 2px; }
@@ -354,7 +363,12 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .segs { display: grid; gap: 2px; }
 .segs-wrap { position: relative; }
 .segs.boxed { height: clamp(260px, calc(100vh - 440px), 680px); overflow-y: auto; align-content: start; overscroll-behavior: contain; padding-right: 4px; }
-.jump-latest { position: absolute; right: 18px; bottom: 12px; box-shadow: var(--shadow-lg); }
+.jump-latest { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; min-width: 36px; padding: 0 10px; border-radius: 999px; border: 0; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; box-shadow: 0 6px 20px rgba(20, 14, 50, .35), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); animation: jump-in .16s ease-out; }
+.jump-latest[hidden] { display: none; }
+.jump-latest:hover { filter: brightness(1.08); }
+.jump-latest .ic { width: 18px; height: 18px; }
+.jump-latest.live { padding: 0 14px 0 10px; }
+@keyframes jump-in { from { opacity: 0; transform: translate(-50%, 6px); } }
 .seg { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 10px; padding: 9px 10px; border-radius: 12px; position: relative; }
 .seg:hover { background: var(--accent-softer); }
 .seg.hl { background: color-mix(in srgb, var(--mark) 55%, transparent); }
@@ -396,6 +410,19 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .ratio i { display: block; height: 100%; }
 
 .chat { display: grid; gap: 12px; }
+.chat-wrap { position: relative; }
+.chat.boxed { height: clamp(280px, calc(100vh - 400px), 720px); overflow-y: auto; align-content: start; overscroll-behavior: contain; padding: 2px 6px 2px 2px; outline: none; }
+.chat-empty { display: grid; justify-items: center; align-content: center; gap: 12px; text-align: center; min-height: 100%; padding: 20px; }
+.chat-empty .ic-wrap { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; background: var(--accent-softer); color: var(--accent); }
+.chat-empty .chips { justify-content: center; max-width: 620px; }
+/* Ask AI: the page fills the window; the answers take whatever height is left above the question box */
+.page.chat-page { height: 100%; display: flex; flex-direction: column; padding-bottom: 24px; }
+body:has(.recbar:not([hidden])) .page.chat-page { padding-bottom: 86px; }
+.page.chat-page > .page-head { flex: none; }
+.page.chat-page > .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; width: 100%; margin: 0 auto; }
+.page.chat-page .chat-wrap { flex: 1; min-height: 0; }
+.page.chat-page .chat.boxed { height: 100%; }
+.page.chat-page .chat-input, .page.chat-page .banner { flex: none; }
 .bubble { max-width: 86%; padding: 11px 15px; border-radius: 16px; line-height: 1.55; overflow-wrap: anywhere; }
 .bubble.user { justify-self: end; background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, #fff), var(--accent)); color: var(--accent-ink); border-bottom-right-radius: 6px; white-space: pre-wrap; }
 .bubble.assistant { background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 6px; }
@@ -561,6 +588,22 @@ dialog[open] { animation: dlgin .16s ease; }
 .picklist label { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); cursor: pointer; min-width: 0; }
 .picklist label:first-child { border-top: 0; }
 .picklist label:hover { background: var(--accent-softer); }
+.picklist label.is-linked { color: var(--muted); }
+/* Linked card on the meeting page, and the "Link to…" dialog */
+.link-list { display: grid; gap: 6px; }
+.link-row { position: relative; display: flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); transition: border-color .12s, background-color .12s; min-width: 0; }
+.link-row:hover, .link-row:focus-within { border-color: var(--accent-line); background: var(--accent-softer); }
+.link-main { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 8px 4px 8px 9px; color: inherit; text-decoration: none; }
+.link-main:hover { text-decoration: none; }
+.link-txt { display: grid; min-width: 0; line-height: 1.3; }
+.link-txt b { font-size: 13.5px; font-weight: 600; }
+.link-row[data-kind="linear"] .srcicon, .link-row[data-kind="notion"] .srcicon, .link-row[data-kind="obsidian"] .srcicon { background: var(--accent-soft); color: var(--accent); }
+.link-tools { display: flex; gap: 2px; padding-right: 6px; opacity: 0; transition: opacity .12s; }
+.link-row:hover .link-tools, .link-row:focus-within .link-tools { opacity: 1; }
+@media (hover: none) { .link-tools { opacity: 1; } }
+.linked-empty { display: grid; gap: 10px; padding: 12px; border: 1px dashed var(--line-2); border-radius: 12px; }
+dialog.link-dlg .search-in { max-width: none; }
+dialog.link-dlg .hint { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-top: 10px; border-top: 1px solid var(--line); }
 
 .menu { position: fixed; z-index: 150; min-width: 200px; max-width: min(320px, calc(100vw - 16px)); background: var(--surface-solid); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg); padding: 6px; display: grid; gap: 1px; animation: dlgin .12s ease; max-height: 70vh; overflow-y: auto; }
 .menu button, .menu a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; background: none; border: 0; cursor: pointer; text-align: left; color: var(--text); font-size: 13.5px; text-decoration: none !important; white-space: nowrap; }
@@ -698,7 +741,7 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   body { overflow: visible; background: #fff; }
   .app { display: block; height: auto; }
   .main { overflow: visible; }
-  .segs.boxed { height: auto !important; overflow: visible; }
+  .segs.boxed, .chat.boxed { height: auto !important; overflow: visible; }
   .jump-latest { display: none; }
   .tabcard, .panel { box-shadow: none; border: 0; background: none; }
 }

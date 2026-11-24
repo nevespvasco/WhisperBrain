@@ -4,8 +4,12 @@ const retrieve = require('./retrieve');
 const ins = require('./insights');
 const { fmtClock } = require('../core/notes');
 const { isLanguage } = require('./languages');
+const { chatScope } = require('./scope');
 
 const HISTORY_TURNS = 10;
+// Across all meetings each question brings its own meetings: older turns are kept only so a follow-up makes sense, and fewer of
+// them keep a small local model from answering an earlier question again
+const GLOBAL_HISTORY_TURNS = 3;
 // Output caps for the enhanced notes: the condensed notes of one part, and the final notes
 const PARTIAL_MAX_TOKENS = 1024;
 const SUMMARY_MAX_TOKENS = 4096;
@@ -135,7 +139,7 @@ class AiService {
     const q = String(question || '').trim();
     if (!q) throw new Error('Empty question');
     const { context, sources } = noteId ? this.noteContext(noteId, q) : this.globalContext(q);
-    const history = this.notes.chatHistory(noteId).slice(-HISTORY_TURNS * 2);
+    const history = this.notes.chatHistory(noteId).slice(-(noteId ? HISTORY_TURNS : GLOBAL_HISTORY_TURNS) * 2);
     const messages = prompts.chatMessages({ history, question: q, context });
     let answer = '';
     for await (const d of this.llm.stream(messages, { signal })) { answer += d; onDelta?.(d); }
@@ -167,25 +171,54 @@ class AiService {
     return { context: parts.join('\n\n'), sources: [{ id: note.id, title: note.title }] };
   }
 
-  globalContext(question) {
+  // The meetings a question across all meetings is about (src/llm/scope.js): "the last meeting" / "this week" pick them by date,
+  // the words left over search their text. Sources are only meetings that were picked for the question; when nothing matched,
+  // the model gets the list of recent meetings (titles and dates) and says so, instead of guessing from unrelated ones.
+  globalContext(question, now = Date.now()) {
     const budget = this.budget();
-    const hits = this.notes.search(question, 6, { any: true }).map((h) => h.note);
-    const recent = this.notes.list({ limit: 25 });
-    const chosen = hits.length ? hits : recent.slice(0, 4);
-    const per = Math.floor((budget * 0.8) / Math.max(1, chosen.length));
+    const scope = chatScope(question, now);
+    const hasContent = (n) => !!(n.summary.trim() || n.body.trim() || this.notes.hasSegments(n.id));
+    const recent = this.notes.list({ limit: 40 }).filter(hasContent);
+    const hits = scope.terms ? this.notes.search(scope.terms, 8, { any: true }).map((h) => h.note).filter(hasContent) : [];
+    const hitIds = new Set(hits.map((n) => n.id));
+    let chosen, why;
+    if (scope.latest) {
+      // "the last meeting about pricing": the newest meetings that match, else just the newest
+      const pool = scope.terms && hits.length ? recent.filter((n) => hitIds.has(n.id)) : recent;
+      chosen = (pool.length ? pool : recent).slice(0, scope.latest);
+      why = scope.latest === 1 ? 'the most recent meeting' : `the ${chosen.length} most recent meetings`;
+    } else if (scope.when) {
+      const inRange = recent.filter((n) => n.createdAt >= scope.when.from && n.createdAt < scope.when.to);
+      const matching = inRange.filter((n) => hitIds.has(n.id));
+      chosen = (matching.length ? matching : inRange).slice(0, 6);
+      why = `meetings from ${scope.when.label}`;
+    } else if (hits.length) { chosen = hits.slice(0, 6); why = 'meetings that mention the question\'s words'; }
+    else if (!scope.terms) { chosen = recent.slice(0, 4); why = 'the most recent meetings'; }
+    else { chosen = []; why = ''; }
+
+    const day = (ms) => new Date(ms).toISOString().slice(0, 10);
+    const when = (n) => { const d = new Date(n.startedAt || n.createdAt); return `${day(d.getTime())} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
     const terms = this.knowledge ? this.knowledge.glossary().filter((g) => new RegExp(`\\b${g.term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(question)) : [];
     const parts = [];
     if (terms.length) parts.push(`Glossary:\n${terms.map((g) => `- ${g.term}: ${g.definition}`).join('\n')}`);
-    parts.push(`Recent meetings (newest first):\n${recent.map((n) => `- ${n.title || '(untitled)'} — ${new Date(n.createdAt).toISOString().slice(0, 10)}`).join('\n')}`);
+    parts.push(`All recent meetings (newest first):\n${recent.slice(0, 25).map((n, i) => `- ${n.title || '(untitled)'} — ${when(n)}${i === 0 ? ' (the most recent)' : ''}`).join('\n') || '- (none yet)'}`);
+    if (!chosen.length) {
+      parts.push(scope.when ? `No meeting was recorded ${scope.when.label}.` : 'No meeting mentions what the question asks about. Say so plainly; do not answer from other meetings.');
+      return { context: parts.join('\n\n'), sources: [] };
+    }
+    parts.push(`The question is about ${why}; their content follows.`);
+    const per = Math.floor((budget * 0.85) / chosen.length);
     for (const n of chosen) {
+      let block = `### ${n.title || '(untitled)'} (${when(n)})\n`;
+      const notes = [n.summary.trim() && `Enhanced notes:\n${n.summary.trim()}`, n.body.trim() && `The user's own notes:\n${n.body.trim()}`].filter(Boolean).join('\n\n');
+      if (notes) block += `${notes.slice(0, Math.floor(per * (scope.terms ? 0.4 : 0.5)))}\n`;
       const lines = prompts.formatTranscript(this.notes.segments(n.id)).split('\n').filter(Boolean);
-      let block = `### ${n.title || '(untitled)'} (${new Date(n.createdAt).toISOString().slice(0, 10)})\n`;
-      const head = (n.summary || n.body || '').slice(0, Math.floor(per * 0.5));
-      if (head) block += `${head}\n`;
       if (lines.length) {
-        const room = per - block.length;
-        const wins = retrieve.pick(question, lines, Math.max(500, room));
-        block += `Transcript excerpts:\n${wins.map((w) => w.text).join('\n…\n')}`;
+        const room = Math.max(500, per - block.length);
+        const full = lines.join('\n');
+        if (full.length <= room) block += `Transcript:\n${full}`;
+        // a summary of a whole meeting wants all of it, so with no words to look for the excerpts are spread over the meeting
+        else block += `Transcript excerpts:\n${retrieve.pick(scope.terms || '', lines, room).map((w) => w.text).join('\n…\n')}`;
       }
       parts.push(block);
     }

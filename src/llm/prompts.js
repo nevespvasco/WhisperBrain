@@ -87,7 +87,9 @@ function chatMessages({ history = [], question, context }) {
 }
 
 const CHAT_SYSTEM = `You are a research assistant over the user's meeting notes and transcripts.
+- Answer the newest question only. Earlier messages are there so follow-up questions make sense; never answer an earlier question again, and do not carry its subject over unless the newest question refers to it.
 - Answer only from the provided context. If the answer is not there, say so plainly.
+- When asked to summarise, give a real summary of the meetings in the context (the main points, decisions and next steps), in the format asked for.
 - Be concise. Quote short phrases when useful and say who said it (Me / Them) and roughly when ([m:ss]).
 - When context comes from several meetings, name the meeting title for each claim.
 - Reply in the language of the user's question.
