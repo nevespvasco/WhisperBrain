@@ -48,7 +48,7 @@ export async function stream(path, body, { onDelta, onStage, signal } = {}) {
 // Live events from the server. Reconnects automatically (EventSource does) and re-announces on reconnect.
 export function events(handlers) {
   const es = new EventSource('/api/events');
-  const types = ['settings', 'note.created', 'note.updated', 'note.deleted', 'note.summarizing', 'note.summarize-failed', 'recording.started', 'recording.paused', 'recording.resumed', 'recording.finalizing', 'recording.stopped', 'recording.level', 'recording.warning', 'capture.request', 'transcript.segment', 'transcript.removed', 'speakers.updated', 'meeting.detected', 'meeting.starting', 'model.progress', 'model.installed', 'model.removed', 'model.error', 'dictation.state', 'dictation.result', 'dictation.error'];
+  const types = ['settings', 'note.created', 'note.updated', 'note.deleted', 'note.summarizing', 'note.summarize-failed', 'recording.started', 'recording.paused', 'recording.resumed', 'recording.finalizing', 'recording.stopped', 'recording.level', 'recording.warning', 'capture.request', 'transcript.segment', 'transcript.partial', 'transcript.removed', 'speakers.updated', 'meeting.detected', 'meeting.starting', 'model.progress', 'model.installed', 'model.removed', 'model.error', 'dictation.state', 'dictation.result', 'dictation.error'];
   for (const t of types) es.addEventListener(t, (e) => { try { handlers[t]?.(JSON.parse(e.data)); handlers['*']?.(t, JSON.parse(e.data)); } catch (err) { console.error(err); } });
   es.addEventListener('open', () => handlers.open?.());
   return es;

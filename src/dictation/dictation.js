@@ -31,7 +31,7 @@ class Dictation {
     const s = this.settings.all();
     const model = this.models.resolve(s.asrModel);
     if (!model) throw new Error('No speech model is installed. Download one in Settings → Transcription.');
-    await this.engine.start(model, { vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage });
+    await this.engine.start(model, { role: 'dictation', vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage });
     const src = this.platform.capture.mic === 'native' ? this.platform.createMicSource({ device: s.micDevice }) : new PushSource();
     this.source = src;
     this.chunks = [];

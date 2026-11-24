@@ -16,7 +16,7 @@ export async function render(main, { parts, params }) {
   offEvents?.();
   const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`), api('GET', `/api/notes/${id}/transcript`), api('GET', `/api/notes/${id}/speakers`), api('GET', `/api/chat?noteId=${id}`), api('GET', '/api/integrations').catch(() => null)]);
   if (ints) S.integrations = ints;
-  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '' };
+  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
@@ -113,7 +113,7 @@ function transcriptTab(body) {
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${t('Name this speaker')}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
-    <div class="segs" id="segs">${N.segs.length ? N.segs.map(segHtml).join('') : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
+    <div class="segs" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
   if (N.trq) filterTranscript();
   if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); setTimeout(() => el.scrollIntoView({ block: 'center' }), 60); } N.seg = null; }
   else if (recHere()) requestAnimationFrame(() => { const m = $('#main'); m.scrollTop = m.scrollHeight; });
@@ -140,10 +140,31 @@ function segHtml(s) {
       ${N.speakers.length > 1 && s.speakerId ? `<select class="seg-reassign" data-seg="${s.id}" aria-label="${t('Change who said this')}" title="${t('Change who said this')}">${N.speakers.map((x) => `<option value="${x.speakerId}" ${x.speakerId === s.speakerId ? 'selected' : ''}>${esc(spLabel(x))}</option>`).join('')}</select>` : ''}
       <button class="btn ghost icon xs" data-act="copy-seg" title="${t('Copy')}" aria-label="${t('Copy')}">${icon('copy', 'sm')}</button></div></div>`;
 }
+// Draft words of the utterance someone is saying right now (dimmed; the final line replaces them). Never saved.
+function draftHtml(d) {
+  const name = localLabel(null, d.speaker, null);
+  return `<div class="seg draft" data-draft="${esc(d.ch)}">${avatar(name, { color: speakerColor(null, name) })}
+    <div><div class="who"><span style="color:${speakerColor(null, name)}">${esc(name)}</span><span class="ts">${fmtClock(d.startMs)}</span></div><div class="txt">${esc(d.text)}</div></div></div>`;
+}
+const draftsHtml = () => Object.values(N.drafts).filter(Boolean).map(draftHtml).join('');
+const speakerChannel = (speaker) => (speaker === 'me' ? 'mic' : 'system');
+function showDraft(d) {
+  N.drafts[d.ch] = d.text ? d : null;
+  if (N.tab !== 'transcript') return;
+  const box = $('#segs');
+  if (!box) return;
+  const el = $(`.seg.draft[data-draft="${d.ch}"]`, box);
+  if (!d.text) { el?.remove(); return; }
+  if (el) { $('.txt', el).textContent = d.text; return; }
+  if (!$('.seg', box)) box.innerHTML = ''; // the "no transcript yet" placeholder
+  box.insertAdjacentHTML('beforeend', draftHtml(d));
+  keepInView();
+}
+function keepInView() { const m = $('#main'); if (m && m.scrollHeight - m.scrollTop - m.clientHeight < 400) m.scrollTop = m.scrollHeight; }
 function filterTranscript() {
   const q = N.trq.toLowerCase();
   let hits = 0;
-  $$('.seg', $('#segs')).forEach((el) => {
+  $$('.seg:not(.draft)', $('#segs')).forEach((el) => {
     const s = N.segs.find((x) => x.id === Number(el.dataset.id));
     const match = !q || s.text.toLowerCase().includes(q) || label(s).toLowerCase().includes(q);
     el.hidden = !match;
@@ -425,11 +446,22 @@ function updateCounts() { $$('[data-count]').forEach((b) => { const c = count(b.
 function handleEvent(main, type, d) {
   if (!N) return;
   const mine = (x) => x === N.id;
-  if (type === 'transcript.segment' && mine(d.noteId)) {
+  if (type === 'recording.stopped' || type === 'recording.paused') { N.drafts = {}; $$('.seg.draft').forEach((el) => el.remove()); } // nothing is being said any more
+  if (type === 'transcript.partial' && mine(d.noteId)) {
+    showDraft(d);
+  } else if (type === 'transcript.segment' && mine(d.noteId)) {
     N.segs.push(d.segment);
+    N.drafts[speakerChannel(d.segment.speaker)] = null; // the final text takes the draft's place
     if (N.tab === 'transcript') {
       const box = $('#segs');
-      if (box) { if (!$('.seg', box)) box.innerHTML = ''; box.insertAdjacentHTML('beforeend', segHtml(d.segment).replace('class="seg ', 'class="seg new ')); const m = $('#main'); if (m.scrollHeight - m.scrollTop - m.clientHeight < 400) m.scrollTop = m.scrollHeight; }
+      if (box) {
+        $(`.seg.draft[data-draft="${speakerChannel(d.segment.speaker)}"]`, box)?.remove();
+        if (!$('.seg', box)) box.innerHTML = '';
+        const html = segHtml(d.segment).replace('class="seg ', 'class="seg new ');
+        const open = $('.seg.draft', box); // lines still being spoken stay below the finished ones
+        if (open) open.insertAdjacentHTML('beforebegin', html); else box.insertAdjacentHTML('beforeend', html);
+        keepInView();
+      }
     }
     updateCounts();
   } else if (type === 'transcript.removed' && mine(d.noteId)) {

@@ -41,13 +41,20 @@ export async function takeNotesFor(d = {}, { record = false } = {}) {
   } catch (e) { fail(e); return null; }
 }
 
+// The recording bar shows the newest draft line, dimmed, until its final text arrives.
+function showDraft(d) {
+  S.drafts = { ...S.drafts, [d.ch]: d.text ? d : null };
+  const live = Object.values(S.drafts).filter(Boolean).sort((a, b) => b.startMs - a.startMs)[0];
+  S.liveDraft = live ? `${live.speaker === 'me' ? t('Me') : t('Them')}: ${live.text}` : '';
+}
+
 export function renderRecbar() {
   if (!S.rec.active) { recbar.hidden = true; return; }
   recbar.hidden = false;
   const bars = (v) => { const n = Math.min(5, Math.round(Math.sqrt(v || 0) * 14)); return `<span class="meter">${[0, 1, 2, 3, 4].map((i) => `<b style="height:${4 + i * 3}px;${i < n ? '' : 'background:var(--line-2)'}"></b>`).join('')}</span>`; };
   recbar.innerHTML = `<span class="dot-rec"></span><span class="time">${fmtTimer(S.rec.elapsedMs || 0)}</span>
-    <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? (S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…')) : S.rec.paused ? t('Paused') : esc(S.liveText || t('Listening…'))}</a>
-    <span class="lvl" title="${t('Microphone')}">${icon('mic', 'sm')}${bars(S.level.mic)}</span><span class="lvl" title="${t('System audio')}">${icon('waves', 'sm')}${bars(S.level.system)}</span>
+    <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? (S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…')) : S.rec.paused ? t('Paused') : S.liveDraft ? `<span class="draft">${esc(S.liveDraft)}</span>` : esc(S.liveText || t('Listening…'))}</a>
+    <span class="lvl" title="${t('Microphone')}${S.rec.aec?.active ? ` · ${t('echo cancelled')}` : ''}">${icon('mic', 'sm')}${bars(S.level.mic)}</span><span class="lvl" title="${t('System audio')}">${icon('waves', 'sm')}${bars(S.level.system)}</span>
     <button class="btn sm icon" data-rec="pause" ${S.rec.finalizing ? 'disabled' : ''} title="${S.rec.paused ? t('Resume') : t('Pause')}" aria-label="${S.rec.paused ? t('Resume') : t('Pause')}">${icon(S.rec.paused ? 'play' : 'pause')}</button>
     <button class="btn sm danger" data-rec="stop" ${S.rec.finalizing ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`;
 }
@@ -64,7 +71,7 @@ setInterval(() => {
 }, 500);
 
 export function syncRec(st) {
-  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs };
+  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs, aec: st.echo?.cancellation || null };
   else S.rec = { active: false };
   renderRecbar(); renderTop();
 }
@@ -73,7 +80,7 @@ export async function handleCaptureRequest(d) {
   if (S.state?.capture?.mic === 'native' && S.state?.capture?.system === 'native') return;
   const base = d.dictation ? '/api/dictation/pcm' : `/api/recording/pcm?noteId=${encodeURIComponent(d.noteId)}`;
   for (const ch of d.channels) {
-    try { await startCapture({ key: `${d.dictation ? 'dict' : d.noteId}:${ch}`, kind: ch, url: d.dictation ? base : `${base}&ch=${ch}`, deviceId: ch === 'mic' ? S.settings.micDevice : undefined, onError: fail }); }
+    try { await startCapture({ key: `${d.dictation ? 'dict' : d.noteId}:${ch}`, kind: ch, url: d.dictation ? base : `${base}&ch=${ch}`, deviceId: ch === 'mic' ? S.settings.micDevice : undefined, settings: S.settings, onError: fail }); }
     catch (e) { fail(new Error(`${ch === 'mic' ? t('Microphone') : t('System audio')}: ${e.message}`)); }
   }
 }
@@ -82,13 +89,15 @@ export async function handleCaptureRequest(d) {
 export function recEvents({ renderTopbar }) {
   renderTop = renderTopbar;
   return {
-    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0 }; S.liveText = ''; renderRecbar(); renderTopbar(); bump(); },
-    'recording.paused': () => { S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; renderRecbar(); },
+    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0, aec: d.echoCancellation || null }; S.liveText = ''; S.liveDraft = ''; renderRecbar(); renderTopbar(); bump(); },
+    'recording.paused': () => { S.liveDraft = ''; S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; renderRecbar(); },
     'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); renderRecbar(); },
     'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d?.stage || null; renderRecbar(); },
-    'recording.stopped': () => { S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
+    'recording.stopped': () => { S.liveDraft = ''; S.drafts = {}; S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),
-    'transcript.segment': (d) => { S.liveText = `${d.segment.label ? d.segment.label + ': ' : ''}${d.segment.text}`; if (S.rec.active) renderRecbar(); },
+    'transcript.segment': (d) => { S.liveText = `${d.segment.label ? d.segment.label + ': ' : ''}${d.segment.text}`; showDraft({ ch: d.segment.speaker === 'me' ? 'mic' : 'system', text: '' }); if (S.rec.active) renderRecbar(); },
+    // draft words: the bar shows the most recent draft line, dimmed, until the final text arrives
+    'transcript.partial': (d) => { showDraft(d); if (S.rec.active) renderRecbar(); },
   };
 }

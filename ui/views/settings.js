@@ -8,6 +8,12 @@ const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); document.documentElement.dataset.theme = S.settings.theme; return S.settings; };
 const row = (title, sub, control) => `<div class="set-row"><div class="l"><b>${esc(title)}</b>${sub ? `<span>${sub}</span>` : ''}</div>${control}</div>`;
 const tog = (id, on, title, sub) => row(title, sub, switchEl(id, on, title));
+// Live drafts need the optional streaming model; say what is missing instead of silently doing nothing.
+const draftHint = () => {
+  const m = (S.models || []).find((x) => x.role === 'draft');
+  const base = t('Grey draft words appear within about a second while someone talks, then the accurate text replaces them. Drafts are never saved.');
+  return m && !m.installed ? `${base} ${t('Needs the “{name}” download below ({mb} MB).', { name: m.name, mb: m.sizeMB })}` : `${base} ${t('Uses about 1 GB of memory and some CPU during a recording; turned off automatically on small computers.')}`;
+};
 
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
@@ -17,6 +23,18 @@ export async function render(main, { parts }) {
   const body = $('#secbody', main);
   body.innerHTML = await SECTION[sec]();
   bind(main, sec, body);
+}
+
+const enhanceSelect = (id, v) => `<select id="${id}">${[['auto', t('Automatic')], ['on', t('On')], ['off', t('Off')]].map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+
+// What echo cancellation can do on this machine, and what it is doing in the recording that is running.
+function aecHint(s, caps, rec) {
+  const live = rec?.active && rec.echo?.cancellation;
+  const now = !live ? '' : live.active ? ` ${t('Active in this recording.')}` : live.active === false ? ` ${t('Not active in this recording:')} ${esc(live.reason || '')}` : '';
+  if (caps?.echoCancel) {
+    return (caps.echoCancel.available ? t('Uses PipeWire to remove the speakers\' sound from your microphone, so the other side is not transcribed twice.') : `${t('Not available here:')} ${esc(caps.echoCancel.reason)}. ${t('The text-based echo removal still runs.')}`) + now;
+  }
+  return t('Uses the browser\'s echo cancellation. It only removes sound this app plays itself, so a Zoom or Teams call on your speakers may still leak in; the text-based echo removal catches most of it.') + now;
 }
 
 const SECTION = {
@@ -74,15 +92,21 @@ const SECTION = {
     return `<section class="panel"><div class="panel-head"><h3>${t('Capture')}</h3></div>
       ${tog('set-mic', s.micEnabled, t('Record my microphone'), '')}
       ${tog('set-sys', s.systemAudioEnabled, t('Record system audio'), t('The other side of the call.'))}
-      ${tog('set-echo', s.echoDedupe, t('Remove echo'), t('Drops microphone text that only repeats the speakers.'))}
+      ${tog('set-echo', s.echoDedupe, t('Remove echo'), t('Drops microphone text that only repeats the speakers, by matching the words and the loudness.'))}
+      ${tog('set-aec', s.echoCancel, t('Cancel echo before transcribing'), aecHint(s, caps, S.state?.recording))}
+      ${row(t('Noise suppression'), t('Can make speech recognition worse; off is safest unless the room is noisy. Automatic: off on Linux, on in macOS/Windows.'), enhanceSelect('set-ns', s.micNoiseSuppression))}
+      ${row(t('Automatic gain'), t('Evens out the microphone level. Automatic: off on Linux, on in macOS/Windows.'), enhanceSelect('set-agc', s.micAutoGain))}
       ${tog('set-speakers', s.speakerDetection, t('Tell speakers apart'), t('Speaker 1, Speaker 2… or their names, using an on-device voice model.'))}
-      ${s.speakerDetection ? tog('set-refine', s.speakerRefine, t('Double-check speakers after recording'), t('When you stop, WhisperBrain listens again to pitch and timbre to fix who said what. Capture is never slowed down; the audio is deleted right after.')) : ''}
+      ${s.speakerDetection ? tog('set-diarize', s.speakerDiarize, t('Work out who said what after recording'), t('When you stop, WhisperBrain listens to the whole meeting again and decides who spoke each word, including quick turn changes. It takes a little while on long meetings; capture is never slowed down and the audio is deleted right after.')) : ''}
+      ${s.speakerDetection ? tog('set-refine', s.speakerRefine, t('Also compare pitch and timbre (experimental)'), t('An extra acoustic check after recording. It has not been shown to help on test meetings, so it is off by default.')) : ''}
       ${row(t('Floating recorder'), t('A small recording icon over other apps; click it to read the live transcript.'), `<select id="set-float"><option value="background" ${s.floatingRecorder === 'background' ? 'selected' : ''}>${t('When the app is in the background')}</option><option value="always" ${s.floatingRecorder === 'always' ? 'selected' : ''}>${t('Always while recording')}</option><option value="off" ${s.floatingRecorder === 'off' ? 'selected' : ''}>${t('Off')}</option></select>`)}
-      ${s.speakerDetection && !S.state?.speakerModel ? `<div class="banner small">${t('Speaker recognition needs a small voice model.')}<span class="grow"></span><button class="btn sm primary" data-act="speaker-install">${t('Download')} (26 MB)</button></div>` : ''}
+      ${s.speakerDetection && !S.state?.speakerModel ? `<div class="banner small">${t('Speaker recognition needs a small voice model.')}<span class="grow"></span><button class="btn sm primary" data-act="speaker-install">${t('Download')} (${S.state?.speakerModelMB || 26} MB)</button></div>` : ''}
       ${row(t('Microphone'), '', `<select id="set-device"><option value="">${t('System default')}</option>${mics.map((m) => `<option value="${esc(m.id)}" ${s.micDevice === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
       ${caps?.notes?.length ? `<div class="banner warn small">${caps.notes.map(esc).join('<br>')}</div>` : ''}</section>
       <section class="panel"><div class="panel-head"><h3>${t('Speech model')}</h3></div>
-      ${row(t('Use'), '', `<select id="set-asr"><option value="auto">${t('Best installed')}</option>${S.models.filter((m) => m.installed).map((m) => `<option value="${m.id}" ${s.asrModel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
+      ${tog('set-hotwords', s.asrHotwords, t('Recognise names and terms from the meeting'), t('Attendees, glossary terms and saved speakers are given to the speech model as hints, so rare names are spelled right. Uses a little more CPU.'))}
+      ${tog('set-livedraft', s.liveDraft, t('Show draft words while people speak'), draftHint())}
+      ${row(t('Use'), '', `<select id="set-asr"><option value="auto">${t('Best installed')}</option>${S.models.filter((m) => m.installed && m.role !== 'draft').map((m) => `<option value="${m.id}" ${s.asrModel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
       <div class="stack mt-s">${S.models.map((m) => `<div class="card row"><div class="grow"><div class="row wrap" style="gap:6px"><b>${esc(m.name)}</b><span class="badge">${m.sizeMB} MB</span>${m.installed ? `<span class="badge ok">${t('installed')}</span>` : ''}</div><div class="small muted">${esc(m.note)}</div>
         ${m.downloading != null ? `<div class="progress mt-s"><i data-model-progress="${m.id}" style="width:${Math.round(m.downloading * 100)}%"></i></div>` : ''}</div>
         ${m.installed ? `<button class="btn sm" data-model-remove="${m.id}">${t('Remove')}</button>` : m.downloading != null ? `<button class="btn sm" data-model-cancel="${m.id}">${t('Cancel')}</button>` : `<button class="btn sm primary" data-model-install="${m.id}">${icon('download', 'sm')} ${t('Download')}</button>`}</div>`).join('')}</div></section>`;
@@ -122,7 +146,7 @@ function bind(main, sec, body) {
   const map = {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-capture': (v) => ({ captureCalendar: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
-    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }),
+    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
     'set-collapsed': (v) => ({ sidebarCollapsed: v }),
   };
   body.addEventListener('change', async (e) => {

@@ -23,4 +23,9 @@ const models = new Models(dir);
     const sha = require('node:fs').readFileSync(path.join(models.modelDir(id), '.sha256'), 'utf8').trim();
     console.log(` done\n  archive sha256: ${sha}`);
   }
+  if (!models.speakerInstalled() || !models.segmentationInstalled()) { // the voice and segmentation models tell speakers apart
+    process.stdout.write('speaker models: downloading… ');
+    await models.installSpeakerModels();
+    console.log('done');
+  }
 })().catch((e) => { console.error('\n' + e.message); process.exit(1); });

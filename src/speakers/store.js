@@ -128,6 +128,22 @@ class Speakers {
     if (assignments.size || removed.size || speakers.some((s) => s.isNew)) this.bus?.publish('speakers.updated', { noteId });
   }
 
+  // Store the outcome of the after-recording diarization of one channel: each final speaker's pooled voice print, pitch
+  // and utterance count (ids already mapped onto the live ones, so names stay put). Live speakers of the channel left
+  // with no utterance and no name are dropped.
+  adoptDiarization(noteId, channel, voices) {
+    tx(this.db, () => {
+      const known = new Map(this.forNote(noteId).map((s) => [s.speakerId, s]));
+      for (const v of voices) {
+        const old = known.get(v.speakerId);
+        this.save(noteId, { speakerId: v.speakerId, channel, centroid: v.centroid || old?.centroid || null, count: v.count, pitch: v.pitch });
+      }
+      this.db.prepare(`DELETE FROM note_speakers WHERE note_id = ? AND channel = ? AND name = '' AND voice_id IS NULL
+        AND NOT EXISTS (SELECT 1 FROM segments s WHERE s.note_id = note_speakers.note_id AND s.speaker_id = note_speakers.speaker_id)`).run(noteId, channel);
+    });
+    this.bus?.publish('speakers.updated', { noteId });
+  }
+
   // Link unnamed speakers of a note to saved voices they sound like (each voice used once per note).
   autoMatch(noteId, threshold = 0.65) {
     const all = this.forNote(noteId);

@@ -10,6 +10,7 @@ const { Settings } = require('../core/settings');
 const { Templates } = require('../core/templates');
 const { Models } = require('../asr/models');
 const { AsrEngine } = require('../asr/engine');
+const { termsForNote } = require('../asr/vocabulary');
 const { RecordingManager } = require('../recording/manager');
 const { LlmClient } = require('../llm/client');
 const { AiService } = require('../llm/service');
@@ -40,7 +41,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const llm = new LlmClient(() => settings.get('llm'));
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, spoolDir: path.join(dataDir, 'spool') });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes });
@@ -104,7 +105,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
       return {
         version, platform: plat.id, capture: plat.capture, capabilities: caps,
         recording: recording.status(), dictation: dictation.status(),
-        model: model ? { id: model.id } : null, vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled(),
+        model: model ? { id: model.id } : null, vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
+        speakerModelMB: (models.speakerInstalled() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
         llmConfigured: !!settings.get('llm').baseUrl,
         stats: { ...notes.stats(), ...knowledge.stats() },
         sources: notes.sourceCounts(),

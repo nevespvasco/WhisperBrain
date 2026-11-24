@@ -2,6 +2,8 @@
 const { execFile, spawn } = require('node:child_process');
 const { ProcessSource } = require('../audio/source');
 const { classify, classifyWindowTitle } = require('./apps');
+const { detectEchoCancel, EchoCanceller, EchoCancelledSource } = require('./pw-echo-cancel');
+const { enhancement } = require('../audio/capture-options');
 
 const run = (cmd, args, { timeout = 3000, input } = {}) => new Promise((resolve) => {
   const p = execFile(cmd, args, { timeout, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
@@ -100,11 +102,16 @@ function sessionKind(env = process.env) {
 
 const TERMINALS = /(gnome-terminal|konsole|xterm|kitty|alacritty|tilix|terminator|wezterm|foot|xfce4-terminal|st-256color|urxvt|ptyxis|terminal)/i;
 
-function create({ x11Helper, env = process.env, clipboard: hostClipboard } = {}) {
+// pwDump/aec are injectable so tests can fake PipeWire: aec = { detect(), createCanceller() }.
+function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump: dumpFn = pwDump, aec: aecDeps = {} } = {}) {
   const kind = sessionKind(env);
+  const detectAec = aecDeps.detect || (() => detectEchoCancel({ env, hasCommand: has }));
+  const createCanceller = aecDeps.createCanceller || (() => new EchoCanceller({ dump: dumpFn }));
+  let aecDetected = null;
+  const aecSupport = (refresh = false) => (refresh || !aecDetected ? (aecDetected = Promise.resolve(detectAec())) : aecDetected);
 
   async function defaultNames() {
-    const d = await pwDump();
+    const d = await dumpFn();
     return { defaultSink: d?.defaultSink || null, defaultSource: d?.defaultSource || null, parsed: d };
   }
 
@@ -145,6 +152,7 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard } = {})
       return {
         platform: 'linux', session: kind,
         mic: pw, systemAudio: pw, micActivity: pw, paste: canPaste,
+        echoCancel: pw ? await aecSupport().then(({ available, reason }) => ({ available, reason })) : { available: false, reason: 'PipeWire is not installed' },
         notes: [
           !pw && 'Install PipeWire (pw-record, pw-dump) to capture audio.',
           kind === 'x11' && !helper && 'Build the X11 helper (npm run build:x11) to enable auto-paste.',
@@ -154,15 +162,41 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard } = {})
     },
 
     async listMics() {
-      const d = await pwDump();
+      const d = await dumpFn();
       if (!d) return [];
       return d.sources.filter((s) => !/\.monitor$/.test(s.id)).map((s) => ({ id: s.id, name: s.name, default: s.id === d.defaultSource }));
     },
 
+    // The raw microphone: what pw-record gets, with no echo cancellation.
     createMicSource({ device } = {}) {
       const args = ['--rate', '16000', '--channels', '1', '--format', 's16', '--media-role', 'Communication'];
       if (device) args.push('--target', device);
       return new ProcessSource('pw-record', [...args, '-'], { label: 'pw-record (mic)' });
+    },
+
+    // The microphone for a recording: echo-cancelled by PipeWire when that is on, installed and starts; otherwise the
+    // raw microphone. The returned source carries `aec` = { requested, active, backend, reason } for the UI.
+    async openMicSource({ device, echoCancel = true, noiseSuppression = 'auto', autoGain = 'auto' } = {}) {
+      const raw = (reason) => {
+        const src = this.createMicSource({ device });
+        src.aec = { requested: !!echoCancel, active: false, backend: null, reason };
+        return src;
+      };
+      if (!echoCancel) return raw('turned off in settings');
+      const support = await aecSupport();
+      if (!support.available) return raw(support.reason);
+      const names = await defaultNames();
+      const sink = names.defaultSink;
+      if (!sink) return raw('no output device to listen to');
+      const mic = device || names.defaultSource;
+      const canceller = createCanceller();
+      let name;
+      try {
+        name = await canceller.start({ mic, sink, noiseSuppression: enhancement(noiseSuppression, false), autoGain: enhancement(autoGain, false) });
+      } catch (e) { return raw(`could not start: ${e.message}`); }
+      const aec = { requested: true, active: true, backend: 'pipewire-webrtc', reason: '', source: name, reference: sink };
+      const makeCancelled = () => new ProcessSource('pw-record', ['--rate', '16000', '--channels', '1', '--format', 's16', '--target', name, '-'], { label: 'pw-record (echo-cancelled mic)' });
+      return new EchoCancelledSource({ canceller, makeCancelled, makeRaw: () => this.createMicSource({ device }), aec });
     },
 
     // Captures whatever the default output device is playing (its monitor), without any virtual device.
@@ -174,7 +208,7 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard } = {})
     },
 
     async micActivity() {
-      const d = await pwDump();
+      const d = await dumpFn();
       if (!d) return { supported: false, active: false, apps: [] };
       const apps = micUsers(d);
       return { supported: true, active: apps.length > 0, apps };

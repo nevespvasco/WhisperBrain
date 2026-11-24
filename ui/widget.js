@@ -11,7 +11,7 @@ const root = document.getElementById('w');
 const bridge = window.wbWidget || null; // present only inside the desktop app
 const MAX_LINES = 80;
 
-const S = { rec: { active: false }, expanded: false, lines: [], level: { mic: 0, system: 0 }, saved: false };
+const S = { rec: { active: false }, expanded: false, lines: [], drafts: {}, level: { mic: 0, system: 0 }, saved: false };
 let savedTimer = 0;
 
 const stateOf = () => (S.saved ? 'saved' : !S.rec.active ? 'idle' : S.rec.finalizing ? 'finalizing' : S.rec.paused ? 'paused' : 'recording');
@@ -29,12 +29,14 @@ function bars(v) {
 }
 
 function linesHtml() {
-  if (!S.lines.length) return `<div class="empty">${bars(Math.max(S.level.mic, S.level.system))}<div>${S.rec.finalizing ? esc(statusText()) : t('Listening…')}</div></div>`;
+  const open = Object.values(S.drafts).filter(Boolean).sort((a, b) => a.startMs - b.startMs).map((d) => ({ draft: true, label: d.speaker === 'me' ? t('Me') : t('Them'), speakerId: null, text: d.text }));
+  const all = [...S.lines, ...open];
+  if (!all.length) return `<div class="empty">${bars(Math.max(S.level.mic, S.level.system))}<div>${S.rec.finalizing ? esc(statusText()) : t('Listening…')}</div></div>`;
   let prev = null;
-  return S.lines.map((l) => {
+  return all.map((l) => {
     const head = l.label !== prev ? `<div class="who" style="color:${speakerColor(l.speakerId, l.label)}">${esc(l.label)}</div>` : '';
     prev = l.label;
-    return `<div class="line">${head}<div class="txt">${esc(l.text)}</div></div>`;
+    return `<div class="line${l.draft ? ' draft' : ''}">${head}<div class="txt">${esc(l.text)}</div></div>`;
   }).join('');
 }
 
@@ -101,12 +103,13 @@ async function sync() {
 
 events({
   open: sync,
-  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0 }); S.lines = []; draw(); },
-  'recording.paused': () => { S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; draw(); },
+  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0 }); S.lines = []; S.drafts = {}; draw(); },
+  'recording.paused': () => { S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; draw(); },
   'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); draw(); },
   'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d.stage || null; draw(); },
   'recording.stopped': () => {
     S.rec = { ...S.rec, active: false, finalizing: false };
+    S.drafts = {};
     S.saved = true;
     draw();
     clearTimeout(savedTimer);
@@ -117,8 +120,10 @@ events({
     const s = d.segment;
     S.lines.push({ id: s.id, label: s.label || (s.speaker === 'me' ? t('Me') : t('Them')), speakerId: s.speakerId, text: s.text });
     if (S.lines.length > MAX_LINES) S.lines.splice(0, S.lines.length - MAX_LINES);
+    S.drafts = { ...S.drafts, [s.speaker === 'me' ? 'mic' : 'system']: null }; // the final text takes the draft's place
     draw();
   },
+  'transcript.partial': (d) => { S.drafts = { ...S.drafts, [d.ch]: d.text ? d : null }; draw(); },
   'transcript.removed': (d) => { const gone = new Set(d.ids); S.lines = S.lines.filter((l) => !gone.has(l.id)); draw(); },
   'speakers.updated': relabelSoon,
   settings: () => applySettings(),

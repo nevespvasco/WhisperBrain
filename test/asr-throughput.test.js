@@ -139,13 +139,14 @@ const hasAll = models && models.speakerInstalled() && models.isInstalled('parake
 const skip = hasAll ? false : 'needs the speaker model and parakeet-tdt-0.6b-v3 (npm run models)';
 const chunk = (pcm, ms = 100) => { const size = 16 * 2 * ms, out = []; for (let i = 0; i < pcm.length; i += size) out.push(pcm.subarray(i, i + size)); return out; };
 
-test('dictation during a recording leaves the worker alone: same process, later segments still carry voice embeddings', { skip, timeout: 240000 }, async (t) => {
+// shared: dictation uses the live worker, so its changed options must wait; split: dictation has a worker of its own
+for (const pools of ['shared', 'split']) test(`dictation during a recording leaves the live worker alone (${pools} pools): same process, later segments still carry voice embeddings`, { skip, timeout: 240000 }, async (t) => {
   const db = open(':memory:');
   const bus = new Bus();
   const notes = new Notes(db, bus);
   const settings = new Settings(db, bus);
   const speakers = new Speakers(db, bus);
-  const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
+  const engine = new AsrEngine({ pools, cpus: 16, speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   t.after(() => engine.stop());
   const warnings = [];
   engine.on('warning', (w) => warnings.push(w.message));
@@ -167,7 +168,8 @@ test('dictation during a recording leaves the worker alone: same process, later 
   await dictation.toggle();
   assert.equal(dictation.state, 'listening');
   assert.equal(engine.child.pid, pid, 'dictation must not replace the worker during a recording');
-  assert.ok(engine.deferred, 'the new options wait for the recording to end');
+  if (pools === 'shared') assert.ok(engine.deferred, 'the new options wait for the recording to end');
+  else assert.ok(engine.dictation.running && engine.dictation.child.pid !== pid, 'dictation runs in a worker of its own');
   dictation.pushPcm(hello);
   const spoken = await new Promise((resolve) => { setTimeout(() => dictation.toggle().then(resolve), 400); });
   assert.match(spoken.text.toLowerCase(), /love/, 'dictation still works on the same worker');
@@ -190,7 +192,7 @@ test('dictation during a recording leaves the worker alone: same process, later 
   // once the recording is over, the deferred options apply on the next start
   await mgr.start(n.id, { mic: false });
   assert.notEqual(engine.child.pid, pid);
-  assert.equal(engine.opts.threads, settings.get('asrThreads'));
+  assert.equal(engine.opts.threads, settings.get('asrThreads'), 'the live worker follows the setting once the recording is over');
   assert.equal(engine.deferred, null);
   await mgr.stop();
 });

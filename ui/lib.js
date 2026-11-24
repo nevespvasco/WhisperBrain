@@ -10,7 +10,7 @@ export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 export const S = {
   settings: null, state: null, models: [], templates: [], spaces: [], tags: [], counts: {}, view: { name: 'home' },
-  rec: { active: false }, level: { mic: 0, system: 0 }, liveText: '', detector: null, streaming: null, integrations: null,
+  rec: { active: false }, level: { mic: 0, system: 0 }, liveText: '', liveDraft: '', drafts: {}, detector: null, streaming: null, integrations: null,
 };
 
 // ---------- formatting ----------

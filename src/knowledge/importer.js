@@ -43,7 +43,7 @@ class Importer {
     try {
       if (app.recording.status().active) throw new Error('A recording is in progress; the import will need to be retried after it stops.');
       bus.publish('import.progress', { noteId, stage: 'decode', progress: 0 });
-      const model = await app.recording.ensureEngine();
+      const model = await app.recording.ensureEngine('batch');
       const pcm = await decodeAudio(buffer, filename, { engine: app.engine });
       bus.publish('import.progress', { noteId, stage: 'transcribe', progress: 0 });
       const segs = await transcribePcm(app.engine, pcm, { onProgress: (p) => bus.publish('import.progress', { noteId, stage: 'transcribe', progress: p }) });

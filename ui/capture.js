@@ -21,9 +21,17 @@ function resample(input, from, to = 16000) {
   return out;
 }
 
-async function openStream(kind, deviceId) {
+// Chromium's microphone processing for the speech path. Settings: echoCancel (bool) and micNoiseSuppression /
+// micAutoGain ('auto' | 'on' | 'off'). 'auto' keeps Chromium's default (on): research suggests noise suppression can raise
+// word errors, but that has to be A/B tested on a real macOS/Windows machine before the default changes.
+export function micConstraints(settings = {}) {
+  const pick = (mode) => (mode === 'off' ? false : true); // 'on' and 'auto' both enable it
+  return { echoCancellation: settings.echoCancel !== false, noiseSuppression: pick(settings.micNoiseSuppression), autoGainControl: pick(settings.micAutoGain) };
+}
+
+async function openStream(kind, deviceId, settings) {
   if (kind === 'mic') {
-    return navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    return navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, channelCount: 1, ...micConstraints(settings) } });
   }
   const s = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
   s.getVideoTracks().forEach((t) => t.stop());
@@ -31,9 +39,9 @@ async function openStream(kind, deviceId) {
   return new MediaStream(s.getAudioTracks());
 }
 
-export async function startCapture({ key, kind, url, deviceId, onError }) {
+export async function startCapture({ key, kind, url, deviceId, settings, onError }) {
   if (sessions.has(key)) return;
-  const stream = await openStream(kind, deviceId);
+  const stream = await openStream(kind, deviceId, settings);
   const ctx = new AudioContext({ sampleRate: 16000 });
   await ctx.audioWorklet.addModule('/pcm-worklet.js');
   const src = ctx.createMediaStreamSource(stream);

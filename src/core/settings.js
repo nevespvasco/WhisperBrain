@@ -13,12 +13,18 @@ const DEFAULTS = {
   asrModel: 'auto',             // model id, or 'auto' = best installed
   asrLanguage: 'auto',          // hint for multilingual models
   asrThreads: defaultAsrThreads(), // speech-model threads; the user's value (1..16) overrides this
+  asrHotwords: true,            // bias live recognition towards the meeting's attendees, glossary terms and known speakers (about 20% more CPU while the list is non-empty)
+  liveDraft: true,              // show draft words within about a second while people speak (needs the optional streaming model; it is a no-op until that is installed)
   micEnabled: true,
   systemAudioEnabled: true,
   micDevice: '',                // '' = system default
-  echoDedupe: true,             // drop mic text that merely echoes the system channel
+  echoDedupe: true,             // drop mic text that merely echoes the system channel (text match + loudness match)
+  echoCancel: true,             // cancel the speakers' sound out of the microphone before transcribing (Linux: PipeWire WebRTC AEC; macOS/Windows: Chromium's)
+  micNoiseSuppression: 'auto',  // auto | on | off. Enhancement can raise word errors, so Linux leaves it off; macOS/Windows keep Chromium's default (on)
+  micAutoGain: 'auto',          // auto | on | off, same meaning
   speakerDetection: true,       // tell voices apart ("Speaker 1", "Ana"…) with an on-device voice model
   speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
+  speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
   speakerRefine: true,          // after a recording, re-check who spoke using pitch and timbre as well as the voice model
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
@@ -76,6 +82,7 @@ function validate(key, value) {
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
+  if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);
   if (key === 'floatingRecorder' && !['off', 'background', 'always'].includes(value)) throw new Error('floatingRecorder must be off, background or always');
   if (key === 'autoRecord' && !['off', 'ask', 'always'].includes(value)) throw new Error('autoRecord must be off, ask or always');
   if (key === 'captureCalendar' && !['off', 'selected', 'all'].includes(value)) throw new Error('captureCalendar must be off, selected or all');

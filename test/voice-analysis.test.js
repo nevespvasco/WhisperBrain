@@ -240,7 +240,7 @@ test('recording: raw audio is parked while recording, analysed after Stop, and d
 
 test('recording: the analysis is skippable and never gets in the way of stopping', async () => {
   const { notes, speakers, settings, bus } = world();
-  settings.update({ speakerRefine: false });
+  settings.update({ speakerRefine: false, speakerDiarize: false });
   const spoolDir = tmpDir('wb-spool-');
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk' };
   const platform = { capture: { mic: 'renderer', system: 'renderer' }, createMicSource: () => new PushSource(), createSystemSource: async () => new PushSource() };
@@ -250,7 +250,7 @@ test('recording: the analysis is skippable and never gets in the way of stopping
   await mgr.start(n.id, { mic: false, system: true });
   mgr.pushPcm(n.id, 'system', toPcm16(utterance(MAN, { seconds: 1 })));
   engine.emit('segment', { ch: 'system', startMs: 0, endMs: 900, text: 'hello', embedding: EMB.man });
-  assert.equal(fs.readdirSync(spoolDir).length, 0, 'with the setting off nothing is written to disk');
+  assert.equal(fs.readdirSync(spoolDir).length, 0, 'with both after-recording passes off nothing is written to disk');
   await mgr.stop();
   assert.equal(notes.segments(n.id).length, 1);
   // and with a refinement that blows up, Stop still completes and the audio is still cleaned up

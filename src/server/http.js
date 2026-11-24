@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { decodeAudio, transcribePcm, assignSpeakers } = require('../recording/import');
 const { refineNote } = require('../speakers/refine');
+const { diarizeChannel } = require('../speakers/final');
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 const COOKIE = 'wb_token';
@@ -115,13 +116,19 @@ function createRoutes(app) {
     const buf = await readBody(req, MAX_AUDIO);
     if (!buf.length) throw new HttpError(400, 'empty audio');
     let model;
-    try { model = await app.recording.ensureEngine(); } catch (e) { throw new HttpError(e.code === 'no-model' ? 412 : 500, e.message, e.code); }
+    try { model = await app.recording.ensureEngine('batch'); } catch (e) { throw new HttpError(e.code === 'no-model' ? 412 : 500, e.message, e.code); }
     let pcm;
     try { pcm = await decodeAudio(buf, query.filename, { engine: app.engine }); } catch (e) { throw new HttpError(415, e.message); }
     const segs = await transcribePcm(app.engine, pcm);
     const labelled = assignSpeakers(params.id, segs, app.speakers, { threshold: app.settings.get('speakerThreshold') });
     const saved = app.notes.addSegments(params.id, labelled);
     const prefs = app.settings.all();
+    if (prefs.speakerDetection && prefs.speakerDiarize && saved.length && app.models.segmentationInstalled() && app.models.speakerInstalled()) { // who spoke when, word by word
+      try {
+        await diarizeChannel({ notes: app.notes, speakers: app.speakers, noteId: params.id, channel: 'system', source: { pcm }, stretches: [{ at: 0, ms: 0 }], segIds: saved.map((x) => x.id),
+          segmentation: app.models.segmentationPath(), embedding: app.models.speakerPath(), threads: prefs.asrThreads });
+      } catch (e) { console.warn('speaker diarization failed:', e.message); }
+    }
     if (prefs.speakerDetection && prefs.speakerRefine && saved.length) { // a second, acoustic look (pitch, timbre) at who spoke
       const refs = saved.map((x) => ({ segId: x.id, ch: 'system', from: Math.round(x.startMs * 16), to: Math.round(x.endMs * 16) }));
       try { await refineNote({ speakers: app.speakers, noteId: params.id, refs, read: (_ch, from, to) => pcm.subarray(from * 2, to * 2), threshold: prefs.speakerThreshold }); } catch (e) { console.warn('speaker analysis failed:', e.message); }
@@ -158,7 +165,7 @@ function createRoutes(app) {
   add('PATCH', '/api/voices/:id', async ({ params, body }) => ({ ok: app.speakers.renameVoice(params.id, body.name || '') }));
   add('DELETE', '/api/voices/:id', async ({ params }) => ({ ok: app.speakers.removeVoice(params.id) }));
   add('POST', '/api/speaker-model/install', async () => {
-    app.models.installSpeaker().catch((e) => app.bus.publish('model.error', { id: 'speaker-voice', message: e.message }));
+    app.models.installSpeakerModels().catch((e) => app.bus.publish('model.error', { id: 'speaker-voice', message: e.message }));
     return { started: true };
   });
 

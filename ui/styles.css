@@ -341,6 +341,11 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .seg .tools { position: absolute; right: 8px; top: 6px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; background: var(--card); border-radius: 8px; box-shadow: var(--shadow-sm); padding: 2px; align-items: center; }
 .seg:hover .tools, .seg:focus-within .tools { opacity: 1; }
 .seg.new { animation: fadein .4s ease; }
+/* draft words of an utterance still in progress: dimmed, replaced by the final line (live captions, not saved) */
+.seg.draft { opacity: .62; }
+.seg.draft .txt { font-style: italic; color: var(--muted); }
+.seg.draft:hover { background: transparent; }
+.recbar .live .draft { font-style: italic; color: var(--muted); }
 @keyframes fadein { from { opacity: 0; transform: translateY(4px); } }
 .seg-reassign { height: 26px !important; width: auto !important; font-size: 12px; padding: 0 24px 0 8px !important; }
 .tr-search { position: relative; max-width: 280px; flex: 1; min-width: 160px; }

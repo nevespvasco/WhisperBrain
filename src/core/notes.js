@@ -190,6 +190,28 @@ class Notes {
       .map((r) => ({ ...r, label: r.speakerName || defaultLabel(r.speakerId, r.speaker) }));
   }
 
+  // Utterances with their word timings ([[word, startMs, endMs], ...] relative to the utterance start), for the
+  // after-recording speaker pass.
+  segmentWords(noteId) {
+    return this.db.prepare('SELECT id, speaker, speaker_id AS speakerId, start_ms AS startMs, end_ms AS endMs, text, words FROM segments WHERE note_id = ? ORDER BY start_ms, id').all(noteId)
+      .map((r) => ({ ...r, words: r.words ? JSON.parse(r.words) : null }));
+  }
+
+  // Replace one utterance with consecutive parts [{ startMs, endMs, text, words, speakerId }] (the after-recording
+  // speaker pass cuts an utterance where the speaker changes). The first part keeps the row and its id; a cut utterance
+  // loses its voice embedding, which described the whole of it. -> the parts' ids
+  replaceSegment(noteId, id, parts) {
+    const row = this.db.prepare('SELECT speaker, logprob_mean AS mean, logprob_min AS min FROM segments WHERE id = ? AND note_id = ?').get(id, noteId);
+    if (!row || !parts.length) return [];
+    const json = (w) => (Array.isArray(w) && w.length ? JSON.stringify(w) : null);
+    const update = this.db.prepare('UPDATE segments SET start_ms = ?, end_ms = ?, text = ?, speaker_id = ?, words = ?, embedding = CASE WHEN ? THEN embedding END WHERE id = ?');
+    const insert = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, words, logprob_mean, logprob_min) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
+    return tx(this.db, () => parts.map((p, k) => {
+      if (k === 0) { update.run(p.startMs, p.endMs, p.text, p.speakerId || null, json(p.words), parts.length === 1 ? 1 : 0, id); return id; }
+      return insert.get(noteId, row.speaker, p.startMs, p.endMs, p.text, p.speakerId || null, json(p.words), row.mean, row.min).id;
+    }));
+  }
+
   removeSegments(noteId, ids) {
     if (!ids.length) return;
     const stmt = this.db.prepare('DELETE FROM segments WHERE note_id = ? AND id = ?');

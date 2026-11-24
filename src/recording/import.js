@@ -29,8 +29,12 @@ async function decodeAudio(buffer, filename = '', { engine } = {}) {
   });
 }
 
-// Run decoded audio through the recognizer on a dedicated channel and return timed segments.
+// Run decoded audio through the recognizer and return timed segments. With a batch worker the utterances are found in
+// one VAD pass and decoded in parallel there, leaving the live worker free; without one (a small machine) the audio is
+// streamed through a dedicated live channel, which gives the same segments, one after the other.
 async function transcribePcm(engine, pcm, { channel = 'import', chunkMs = 200, onProgress } = {}) {
+  const parallel = await engine.transcribeParallel?.(pcm, { onProgress });
+  if (parallel) { onProgress?.(1); return parallel; }
   const segments = [];
   const on = (s) => { if (s.ch === channel) segments.push({ startMs: s.startMs, endMs: s.endMs, text: s.text, embedding: s.embedding || null, words: s.words || null, logProbMean: s.logProbMean ?? null, logProbMin: s.logProbMin ?? null }); };
   engine.on('segment', on);

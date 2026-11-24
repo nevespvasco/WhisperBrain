@@ -2,6 +2,8 @@
 // Picks the adapter for the current OS. Each adapter exposes the same surface:
 //   id, session, capture{mic,system} ('native'|'renderer'), capabilities(), listMics(),
 //   createMicSource(opts), createSystemSource(), micActivity(), activeWindowTitle(), clipboard, paste(text)
+// A native adapter may also offer openMicSource(opts) (async): the microphone for a recording with echo cancellation applied
+// when it can be, returned with `.aec` = { requested, active, backend, reason }. Without it the recording uses createMicSource().
 const fs = require('node:fs');
 const path = require('node:path');
 

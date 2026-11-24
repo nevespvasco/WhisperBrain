@@ -25,6 +25,15 @@ const CATALOG = [
     maxSegmentSec: 30,
   },
   {
+    // Not a transcription model: it writes the grey draft words under a live caption while people are still talking
+    // (the VAD segment is then decoded by the model above, and its text replaces the draft). NVIDIA Nemotron-3.5 ASR
+    // streaming, 25 languages incl. pt-PT, exported with 320 ms chunks (first word about 0.6 s after speech starts; the
+    // 80/160 ms exports cost more CPU, the 560/1120 ms ones add delay). Optional, never picked as the main model.
+    id: 'nemotron-3.5-streaming-320ms', role: 'draft', name: 'Live draft captions (Nemotron 3.5 streaming)', kind: 'streaming-transducer', languages: ['multi'],
+    note: 'Optional. Shows words within about a second while people speak; the final text still comes from the model above. Uses ~1 GB of RAM and a little CPU during a recording.',
+    url: `${REL}/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11.tar.bz2`, sizeMB: 453, sha256: '5f311142337a5c161e92d49f7a3009d8607d3836f39d610bff5307c74d1d2c53',
+  },
+  {
     id: 'whisper-small', name: 'Whisper small (multilingual)', kind: 'whisper', languages: ['multi'],
     note: '99 languages. Slower than Parakeet on CPU.',
     // TODO(sha256): the asr-models release publishes no digest for the Whisper archives (the Parakeet ones have one), so
@@ -51,16 +60,26 @@ const SPEAKER = {
   sizeMB: 26, sha256: 'e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012',
 };
 
+// Who is speaking when, frame by frame and overlap included (pyannote segmentation-3.0, MIT licence), for the
+// after-recording diarization. Only `file` is kept from the archive.
+const SEGMENTATION = {
+  id: 'speaker-segmentation', name: 'Speaker segmentation (pyannote 3.0)',
+  url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2',
+  sizeMB: 7, sha256: '24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488', file: 'model.onnx',
+};
+
 // Preference when settings say "auto": the most capable model that is installed. Whisper invents text on silence and
-// has no checksum, so the Parakeet models come first; it is used only when nothing else is installed.
+// has no checksum, so the Parakeet models come first; it is used only when nothing else is installed. Draft (streaming)
+// models are never a candidate: they cannot produce final text.
 const AUTO_ORDER = ['parakeet-tdt-0.6b-v3', 'parakeet-tdt-110m-en', 'whisper-small', 'whisper-base'];
 
 class Models {
-  constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, bus } = {}) {
+  constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, segmentation = SEGMENTATION, bus } = {}) {
     this.dir = dir;
     this.catalog = catalog;
     this.vad = vad;
     this.speaker = speaker;
+    this.segmentation = segmentation;
     this.bus = bus;
     this.downloads = new Map(); // id -> { progress, abort }
     fs.mkdirSync(dir, { recursive: true });
@@ -70,6 +89,8 @@ class Models {
   vadPath() { return path.join(this.dir, 'silero-vad', 'silero_vad.onnx'); }
   speakerPath() { return path.join(this.dir, 'speaker', path.basename(new URL(this.speaker.url).pathname)); }
   speakerInstalled() { return fs.existsSync(this.speakerPath()); }
+  segmentationPath() { return path.join(this.dir, 'segmentation', path.basename(this.segmentation.file)); }
+  segmentationInstalled() { return fs.existsSync(this.segmentationPath()); }
 
   files(id) {
     const d = this.modelDir(id);
@@ -80,11 +101,17 @@ class Models {
   }
 
   isInstalled(id) { return !!this.files(id); }
+
+  // The streaming model for live draft captions, when one is installed (see the `role: 'draft'` catalog entry).
+  draftModel() {
+    const m = this.catalog.find((x) => x.role === 'draft' && this.isInstalled(x.id));
+    return m ? this.describe(m.id) : null;
+  }
   vadInstalled() { return fs.existsSync(this.vadPath()); }
 
   list() {
     return this.catalog.map((m) => ({
-      id: m.id, name: m.name, languages: m.languages, note: m.note, sizeMB: m.sizeMB, kind: m.kind,
+      id: m.id, name: m.name, languages: m.languages, note: m.note, sizeMB: m.sizeMB, kind: m.kind, role: m.role || 'main',
       installed: this.isInstalled(m.id),
       downloading: this.downloads.has(m.id) ? this.downloads.get(m.id).progress : null,
     }));
@@ -92,15 +119,16 @@ class Models {
 
   // Resolve the setting ('auto' or an id) to an installed model, or null.
   resolve(pref = 'auto') {
-    if (pref !== 'auto') return this.isInstalled(pref) ? this.describe(pref) : null;
+    const main = (id) => this.catalog.find((m) => m.id === id)?.role !== 'draft';
+    if (pref !== 'auto') return main(pref) && this.isInstalled(pref) ? this.describe(pref) : null;
     for (const id of AUTO_ORDER) if (this.isInstalled(id)) return this.describe(id);
-    const any = this.catalog.find((m) => this.isInstalled(m.id));
+    const any = this.catalog.find((m) => m.role !== 'draft' && this.isInstalled(m.id));
     return any ? this.describe(any.id) : null;
   }
 
   describe(id) {
     const m = this.catalog.find((x) => x.id === id);
-    return { id, kind: m.kind, languages: m.languages, maxSegmentSec: m.maxSegmentSec, files: this.files(id) };
+    return { id, kind: m.kind, role: m.role || 'main', languages: m.languages, maxSegmentSec: m.maxSegmentSec, files: this.files(id) };
   }
 
   async install(id, { onProgress } = {}) {
@@ -116,6 +144,7 @@ class Models {
       fs.mkdirSync(tmp, { recursive: true });
       if (!this.vadInstalled()) await this.installVad();
       if (!this.speakerInstalled()) await this.installSpeaker().catch((e) => this.bus?.publish('model.error', { id: this.speaker.id, message: `speaker recognition: ${e.message}` }));
+      if (!this.segmentationInstalled()) await this.installSegmentation().catch((e) => this.bus?.publish('model.error', { id: this.segmentation.id, message: `speaker segmentation: ${e.message}` }));
       const archive = path.join(tmp, 'model.tar.bz2');
       const sha = await download(m.url, archive, { signal: ctl.abort.signal, onProgress: report });
       if (m.sha256 && sha !== m.sha256) throw new Error(`checksum mismatch for ${id}: got ${sha}`);
@@ -155,6 +184,30 @@ class Models {
     this.bus?.publish('model.installed', { id: this.speaker.id });
   }
 
+  async installSegmentation() {
+    const dest = this.segmentationPath();
+    const tmp = path.join(this.dir, `.tmp-segmentation-${process.pid}`);
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.mkdirSync(tmp, { recursive: true });
+      const archive = path.join(tmp, 'seg.tar.bz2');
+      const sha = await download(this.segmentation.url, archive, {});
+      if (this.segmentation.sha256 && sha !== this.segmentation.sha256) throw new Error('checksum mismatch for the speaker segmentation model');
+      await untar(archive, tmp);
+      const found = findFile(tmp, path.basename(this.segmentation.file));
+      if (!found) throw new Error(`the speaker segmentation archive has no ${this.segmentation.file}`);
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.renameSync(found, dest);
+      this.bus?.publish('model.installed', { id: this.segmentation.id });
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  }
+
+  // The voice model and the segmentation model, whichever is missing (both are needed to tell speakers apart).
+  async installSpeakerModels() {
+    if (!this.speakerInstalled()) await this.installSpeaker();
+    if (!this.segmentationInstalled()) await this.installSegmentation();
+  }
+
   cancel(id) { this.downloads.get(id)?.abort.abort(); }
 
   remove(id) {
@@ -173,7 +226,7 @@ function resolveFiles(kind, dir) {
     return hits[0] ? path.join(dir, hits[0]) : null;
   };
   const tokens = pick(/tokens\.txt$/);
-  if (kind === 'transducer') {
+  if (kind === 'transducer' || kind === 'streaming-transducer') {
     const f = { encoder: pick(/encoder.*\.onnx$/), decoder: pick(/decoder.*\.onnx$/), joiner: pick(/joiner.*\.onnx$/), tokens };
     return Object.values(f).every(Boolean) ? f : null;
   }
@@ -184,12 +237,24 @@ function resolveFiles(kind, dir) {
   return null;
 }
 
-// sherpa-onnx OfflineRecognizer config for a resolved model.
-function recognizerConfig(model, { threads = 2, language = 'auto' } = {}) {
+function findFile(dir, name) {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) { const hit = findFile(p, name); if (hit) return hit; } else if (e.name === name) return p;
+  }
+  return null;
+}
+
+// sherpa-onnx OfflineRecognizer config for a resolved model. `beam` selects modified_beam_search, which transducer
+// models need for hotwords (about 20% more CPU than the greedy default; the decoding method is fixed when the
+// recognizer is created).
+function recognizerConfig(model, { threads = 2, language = 'auto', beam = false, hotwordsScore = 1.5 } = {}) {
   const f = model.files;
   const base = { tokens: f.tokens, numThreads: threads, provider: 'cpu', debug: 0 };
   if (model.kind === 'transducer') {
-    return { featConfig: { sampleRate: 16000, featureDim: 80 }, modelConfig: { ...base, transducer: { encoder: f.encoder, decoder: f.decoder, joiner: f.joiner }, modelType: 'nemo_transducer' } };
+    const cfg = { featConfig: { sampleRate: 16000, featureDim: 80 }, modelConfig: { ...base, transducer: { encoder: f.encoder, decoder: f.decoder, joiner: f.joiner }, modelType: 'nemo_transducer' } };
+    if (beam) Object.assign(cfg, { decodingMethod: 'modified_beam_search', maxActivePaths: 4, hotwordsScore });
+    return cfg;
   }
   if (model.kind === 'whisper') {
     return {
@@ -198,6 +263,17 @@ function recognizerConfig(model, { threads = 2, language = 'auto' } = {}) {
     };
   }
   throw new Error(`unsupported model kind: ${model.kind}`);
+}
+
+// sherpa-onnx OnlineRecognizer config for a streaming model (live draft captions). Greedy search is enough for a draft
+// and the cheapest; the model type is detected from the files. Endpointing is off: the VAD decides where utterances end.
+function onlineRecognizerConfig(model, { threads = 2 } = {}) {
+  const f = model.files;
+  return {
+    featConfig: { sampleRate: 16000, featureDim: 80 },
+    modelConfig: { tokens: f.tokens, numThreads: threads, provider: 'cpu', debug: 0, transducer: { encoder: f.encoder, decoder: f.decoder, joiner: f.joiner } },
+    decodingMethod: 'greedy_search', enableEndpoint: false,
+  };
 }
 
 async function download(url, dest, { signal, onProgress } = {}) {
@@ -228,4 +304,4 @@ function untar(archive, cwd) {
   });
 }
 
-module.exports = { Models, CATALOG, VAD, SPEAKER, AUTO_ORDER, resolveFiles, recognizerConfig, download };
+module.exports = { Models, CATALOG, VAD, SPEAKER, SEGMENTATION, AUTO_ORDER, resolveFiles, recognizerConfig, onlineRecognizerConfig, download };

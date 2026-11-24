@@ -31,6 +31,8 @@ body.widget { margin: 0; padding: 8px; user-select: none; -webkit-user-select: n
 .line { display: grid; gap: 1px; animation: fadein .2s ease; }
 .line .who { font-size: 11.5px; font-weight: 700; letter-spacing: .01em; }
 .line .txt { color: var(--text); font-size: 13.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.line.draft { opacity: .62; }
+.line.draft .txt { font-style: italic; color: var(--muted); }
 .empty { margin: auto; text-align: center; color: var(--muted); font-size: 13px; display: grid; gap: 8px; justify-items: center; }
 .card footer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--sunken); }
 .card footer .btn { flex: 1; justify-content: center; cursor: pointer; }

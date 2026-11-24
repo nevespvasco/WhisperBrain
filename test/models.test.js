@@ -43,6 +43,7 @@ function make(srv, dir, { sha256 } = {}) {
     catalog: [{ id: 'fake', name: 'Fake', kind: 'transducer', languages: ['en'], note: '', url: `${srv.base}/redirect`, sizeMB: 1, sha256: sha256 ?? srv.tarSha, maxSegmentSec: 20 }],
     vad: { id: 'vad', url: `${srv.base}/vad.onnx`, sha256: srv.vadSha },
     speaker: { id: 'spk', url: `${srv.base}/vad.onnx`, sha256: srv.vadSha },
+    segmentation: { id: 'seg', url: `${srv.base}/m.tar.bz2`, sha256: srv.tarSha, file: 'encoder.onnx' },
   });
   return { models, events };
 }
@@ -58,6 +59,7 @@ test('install: downloads (following redirects), verifies, extracts, picks int8 f
   assert.equal(models.isInstalled('fake'), true);
   assert.equal(models.vadInstalled(), true, 'the VAD model is installed alongside');
   assert.equal(models.speakerInstalled(), true, 'and the speaker-recognition model');
+  assert.equal(models.segmentationInstalled(), true, 'and the speaker-segmentation model, taken out of its archive');
   assert.equal(models.resolve('auto').id, 'fake');
   assert.equal(models.list()[0].installed, true);
   assert.ok(events.some((e) => e.type === 'model.progress'));
@@ -108,6 +110,6 @@ test('recognizer configs per model kind, and file resolution requires every file
 });
 
 test('catalog: every entry has what the installer needs; the multilingual default is pinned', () => {
-  for (const m of CATALOG) { assert.match(m.url, /^https:\/\/github\.com\/k2-fsa\/sherpa-onnx\/releases\//); assert.ok(['transducer', 'whisper'].includes(m.kind)); }
+  for (const m of CATALOG) { assert.match(m.url, /^https:\/\/github\.com\/k2-fsa\/sherpa-onnx\/releases\//); assert.ok(['transducer', 'whisper', 'streaming-transducer'].includes(m.kind)); assert.equal(m.kind === 'streaming-transducer', m.role === 'draft', 'streaming models are draft-only'); }
   assert.match(CATALOG.find((m) => m.id === 'parakeet-tdt-0.6b-v3').sha256, /^[0-9a-f]{64}$/);
 });
