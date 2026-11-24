@@ -5,6 +5,7 @@
 // when. A voice takes the name that was highlighted for most of its speech. Two voices never get one name, a voice with
 // no clear winner stays unnamed (the app then keeps "Speaker 2"), and overlapped or noisy highlights are outvoted.
 const { nameKey } = require('./protocol');
+const { hungarian } = require('../speakers/hungarian');
 
 const DEFAULTS = {
   lagMs: 500,        // the highlight appears this long after the voice starts (UI latency): events are moved back by it
@@ -13,6 +14,8 @@ const DEFAULTS = {
   minOverlapMs: 1500, // the winning name must have been highlighted at least this long over the voice's speech
   minShare: 0.6,     // ...and hold this share of all the highlighted time over the voice's speech
   minMargin: 1.5,    // ...and beat the runner-up by this factor
+  floorShare: 0.35,  // a voice only considers a name that was highlighted over at least this share of its highlighted time
+  minScore: 0.45,    // sqrt(precision x recall) a name needs to be given at all: below it the voice stays "unknown"
   soleMinMs: 4000,   // a call with one other person: their voice needs this much speech to be named without any highlight
 };
 
@@ -44,6 +47,32 @@ function rawIntervals(events, { endMs = Infinity, maxMs = DEFAULTS.maxMs } = {})
     if (stop > ev[i].t) out.push({ startMs: ev[i].t, endMs: stop, name: ev[i].name });
   }
   return out;
+}
+
+// How late this source shows a voice: the shift of its highlights that makes them fall over the speech best. Only the timing is
+// asked (any name over any voice), so who is named, right or wrong, does not matter. Searched around the usual delay (`prior`);
+// when several shifts are about equally good (one name lit for the whole call, no speech to compare with) the usual one is kept.
+// raw: rawIntervals(...); speech: Map(voice -> [[startMs, endMs]]). -> ms
+function estimateLag({ raw, speech, prior = DEFAULTS.lagMs, range = 1500, step = 100 }) {
+  const spans = [...speech.values()].flat().sort((a, b) => a[0] - b[0]);
+  const union = [];
+  for (const [a, b] of spans) { const last = union[union.length - 1]; if (last && a <= last[1]) last[1] = Math.max(last[1], b); else union.push([a, b]); }
+  if (!raw.length || !union.length) return prior;
+  const sorted = [...raw].sort((a, b) => a.startMs - b.startMs);
+  const covered = (lag) => {
+    let total = 0, j = 0;
+    for (const r of sorted) {
+      const a = r.startMs - lag, b = r.endMs - lag;
+      while (j < union.length && union[j][1] <= a) j++;
+      for (let k = j; k < union.length && union[k][0] < b; k++) total += Math.max(0, Math.min(b, union[k][1]) - Math.max(a, union[k][0]));
+    }
+    return total;
+  };
+  const scored = [];
+  for (let lag = Math.max(0, prior - range); lag <= prior + range; lag += step) scored.push([lag, covered(lag)]);
+  const best = Math.max(...scored.map((x) => x[1]));
+  if (best <= 0) return prior;
+  return scored.filter((x) => x[1] >= best * 0.99).sort((x, y) => Math.abs(x[0] - prior) - Math.abs(y[0] - prior))[0][0];
 }
 
 const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
@@ -91,26 +120,53 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], options =
     rows.push({ speakerId, speechMs: spans.reduce((n, [s, e]) => n + e - s, 0), ranked, total, per });
   }
 
-  // each voice proposes its winner when the vote is clear...
-  const picks = [];
-  const unresolved = [];
-  for (const r of rows) {
-    const [top, second] = r.ranked;
-    const share = top ? top[1] / r.total : 0;
-    const ok = top && top[1] >= o.minOverlapMs && share >= o.minShare && (!second || top[1] >= o.minMargin * second[1]);
-    if (ok) picks.push({ speakerId: r.speakerId, key: top[0], ms: top[1], share, speechMs: r.speechMs });
-    else unresolved.push({ speakerId: r.speakerId, best: top ? display.get(top[0]) : null, share, ms: top ? top[1] : 0 });
-  }
+  // How well each name fits each voice, from both sides: precision = of the time a name was lit over this voice's speech and
+  // anybody's, how much was over this voice; recall = of everything lit for the name while anybody spoke, how much was over this
+  // voice. Light in silence counts for nobody. score = sqrt(precision x recall): high only when the voice and the name are
+  // mostly each other (a person split into two voices gives the name to the bigger part).
+  const nameTotal = new Map();
+  for (const r of rows) for (const [k, ms] of r.per) nameTotal.set(k, (nameTotal.get(k) || 0) + ms);
+  const fits = rows.map((r) => {
+    const cands = [...r.per].map(([key, ms]) => ({ key, ms, share: ms / r.total, score: Math.sqrt((ms / r.total) * (ms / nameTotal.get(key))) }))
+      .filter((c) => c.ms >= o.minOverlapMs && c.share >= o.floorShare).sort((x, y) => y.score - x.score);
+    return { r, cands };
+  });
 
-  // ...and a name goes to one voice only: the one that was highlighted over it for longest
-  picks.sort((a, b) => b.ms - a.ms);
-  const taken = new Set();
+  // A voice whose best name does not clearly beat the next one is not guessed (a person lit as two names about equally).
+  const unresolved = [];
+  const eligible = fits.map(({ r, cands }) => {
+    const [top, second] = cands;
+    if (top && top.score >= o.minScore && top.share >= o.floorShare && (!second || top.score >= o.minMargin * second.score)) return { r, cands: cands.filter((c) => c.score >= o.minScore && c.score * o.minMargin >= top.score) };
+    return { r, cands: [] };
+  });
+
+  // One name to one voice, the best total: Hungarian over the voices and names, each voice with a column of its own for "unknown".
+  const keys = [...new Set(eligible.flatMap((e) => e.cands.map((c) => c.key)))];
+  const BIG = 1e6;
+  const n = eligible.length;
+  const cost = eligible.map((e, i) => [
+    ...keys.map((k) => { const c = e.cands.find((x) => x.key === k); return c ? -c.score : BIG; }),
+    ...eligible.map((_, j) => (j === i ? -o.minScore : BIG)),
+  ]);
+  const pick = n && keys.length ? hungarian(cost) : new Int32Array(n).fill(-1);
   const named = [];
-  for (const p of picks) {
-    if (taken.has(p.key)) { unresolved.push({ speakerId: p.speakerId, best: display.get(p.key), share: p.share, ms: p.ms, duplicate: true }); continue; }
-    taken.add(p.key);
-    named.push({ speakerId: p.speakerId, name: display.get(p.key), ms: p.ms, share: p.share, via: 'vote' });
+  const takenBy = new Map();
+  eligible.forEach((e, i) => {
+    const col = pick[i];
+    if (col >= 0 && col < keys.length) {
+      const c = e.cands.find((x) => x.key === keys[col]);
+      takenBy.set(c.key, e.r.speakerId);
+      named.push({ speakerId: e.r.speakerId, name: display.get(c.key), ms: c.ms, share: c.share, score: c.score, via: 'vote' });
+    }
+  });
+  for (const e of eligible) {
+    if (named.some((x) => x.speakerId === e.r.speakerId)) continue;
+    const top = e.r.ranked[0];
+    const best = e.cands[0];
+    const duplicate = !!best && takenBy.has(best.key) && takenBy.get(best.key) !== e.r.speakerId;
+    unresolved.push({ speakerId: e.r.speakerId, best: top ? display.get(top[0]) : null, share: top ? top[1] / e.r.total : 0, ms: top ? top[1] : 0, ...(duplicate ? { duplicate: true } : {}) });
   }
+  named.sort((x, y) => y.ms - x.ms);
 
   // a call with exactly one other person needs no vote: the only remote voice is theirs
   if (remotes) {
@@ -125,6 +181,14 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], options =
   // who was highlighted over each voice, for the corrections (correct.js): speakerId -> Map(name key -> ms)
   const matrix = new Map(rows.map((r) => [r.speakerId, r.per]));
   return { named, unresolved, matrix, display };
+}
+
+// Names for the voices from one source's raw events and the voices' speech. This is the whole of what a recording does at Stop
+// for the highlights: the lag taken off (priorLagMs, the source's usual delay), then the vote. -> nameSpeakers' result + active
+function nameFromEvents({ events, speech, priorLagMs = DEFAULTS.lagMs, endMs = Infinity, remotes = null, selfKeys = [], options = {} }) {
+  const lagMs = estimateLag({ raw: rawIntervals(events, { endMs }), speech, prior: priorLagMs });
+  const active = activeIntervals(events, { lagMs, endMs });
+  return { ...nameSpeakers({ speech, active, remotes, selfKeys, options }), active, lagMs };
 }
 
 // How many remote voices to expect: the people on the call other than the user, from the roster.
@@ -142,4 +206,4 @@ function remoteHeadCount(participants, { max = 6, selfKeys = [] } = {}) {
   return seen.size >= 1 && seen.size <= max ? seen.size : null;
 }
 
-module.exports = { nameSpeakers, activeIntervals, rawIntervals, speechOf, remoteHeadCount, DEFAULTS };
+module.exports = { nameSpeakers, nameFromEvents, estimateLag, activeIntervals, rawIntervals, speechOf, remoteHeadCount, DEFAULTS };

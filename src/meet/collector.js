@@ -2,7 +2,7 @@
 // What one recording learns from the meeting window: who was highlighted when, who is on the call, the captions.
 // Created when a recording starts, asked at the end (names for the voices, how many voices to expect).
 const { nameKey } = require('./protocol');
-const { activeIntervals, rawIntervals, speechOf, nameSpeakers, remoteHeadCount } = require('./names');
+const { activeIntervals, rawIntervals, estimateLag, speechOf, nameSpeakers, remoteHeadCount } = require('./names');
 const { alignCaptions, mergeIntervals } = require('./captions');
 
 const MAX_EVENTS = 20000;   // an hour of a lively call is a few thousand highlights
@@ -56,12 +56,16 @@ class MeetingCollector {
   }
 
   // The highlight intervals of the source that was highlighting longest (the sources are not mixed: their clocks and
-  // lags differ, and when two are connected they say the same thing).
-  intervals(endMs) {
+  // lags differ, and when two are connected they say the same thing). Each source's delay is its usual one (what the hub
+  // says) corrected by where its highlights really fall over the speech, when that is known (see estimateLag).
+  intervals(endMs, speech = null) {
     let best = [], bestMs = 0;
-    for (const [, list] of this.events) {
-      const lag = list.find((e) => e.lagMs != null)?.lagMs;
-      const iv = activeIntervals(list, { lagMs: lag ?? 500, endMs });
+    this.lags = {};
+    for (const [source, list] of this.events) {
+      const prior = list.find((e) => e.lagMs != null)?.lagMs ?? 500;
+      const lag = speech ? estimateLag({ raw: rawIntervals(list, { endMs }), speech, prior }) : prior;
+      this.lags[source] = lag;
+      const iv = activeIntervals(list, { lagMs: lag, endMs });
       const ms = iv.reduce((n, x) => n + x.endMs - x.startMs, 0);
       if (ms > bestMs) { best = iv; bestMs = ms; }
     }
@@ -89,15 +93,16 @@ class MeetingCollector {
   // -> { named, unresolved, active, matrix, display } (see names.js); nothing is written here.
   vote(utterances, { endMs, options } = {}) {
     const mine = this.mine(utterances);
-    const highlight = this.intervals(endMs);
+    const speech = speechOf(mine);
+    const highlight = this.intervals(endMs, speech);
     // the captions name the stretches whose words they match; where they do, they outrank the highlight
     const named = this.useCaptions && this.captions.length ? alignCaptions({ captions: this.captions.map((c) => ({ t: c.t, name: c.name, text: c.text })), utterances: mine }) : [];
     this.captionNamed = named.length;
     const active = named.length ? mergeIntervals(named, highlight) : highlight;
     const roster = this.roster();
     const remotes = roster ? roster.filter((p) => !p.self).map((p) => p.name) : null;
-    const res = nameSpeakers({ speech: speechOf(mine), active, remotes, selfKeys: this.userKeys, options });
-    return { ...res, active, captionNamed: named.length };
+    const res = nameSpeakers({ speech, active, remotes, selfKeys: this.userKeys, options });
+    return { ...res, active, captionNamed: named.length, lagMs: { ...this.lags } };
   }
 
   summary() {

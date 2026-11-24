@@ -147,3 +147,36 @@ Diarize each finished 4 minute piece while recording, merge the pieces' voice pr
 Embed every speaker turn of sherpa's output and regroup the prints: average-link, spectral clustering with an eigengap, and a variational Bayes mixture with pruning in the style of VBx, without the trained PLDA (scales estimated from an over-clustering of the same meeting). Starting from the default grouping all of them were worse than sherpa's own clustering (WDER 33 to 51 against 26.3 and 25.0); starting from an over-split at 0.4 they were 34 to 56. Feeding sherpa's own labels through the same code reproduces its score, so the harness is not the cause. Real VBx would need window-level prints cut with the segmentation model's masks (sherpa does not expose them, it would take onnxruntime in the app) and a PLDA trained for this voice model.
 
 `eval/offline.js` caches the recognized words and the diarization output under `.eval/cache`, so a new grouping idea is scored in seconds instead of a 5 minute run.
+
+
+## Naming accuracy (`naming.js`)
+
+Whether the *names* the meeting window gives to the voices are right, apart from whether the voices are right. No audio and no
+models: the voices are the reference's own speakers (perfect diarization), and the window is simulated from the reference
+turns. `node eval/naming.js [--only ami-IS1009a] [--seeds 20] [--json]`.
+
+- **Accuracy**: the share of speech time whose final name is the right person's (unnamed speech counts as not right).
+- **Precision**: of the speech that was named at all, the share named rightly. A wrong name is worse than none.
+
+| Scenario | What the window does |
+|---|---|
+| `lagged300/900/1600` | the highlight follows the speaker, late by 0.3 / 0.9 / 1.6 s (0.5 s is assumed) |
+| `noisy` | one highlight in five names somebody else; people light up now and then with nobody speaking |
+| `dominant` | only the loudest voice is shown: interjections (< 1.2 s) and the quieter side of an overlap never are |
+| `hard` | all of it together, 0.9 s late |
+
+Mean over 20 seeds (2026-11-24), aligner before and after the change in 3.2 (the delay of each source found from the data,
+sqrt(precision x recall) scores, one name to one voice by the Hungarian method with an "unknown" column):
+
+| Recording | Scenario | Accuracy before | Accuracy after | Precision (before -> after) |
+|---|---|---|---|---|
+| ami-IS1009a | lagged300 / lagged900 | 100.0 | 100.0 | 100 -> 100 |
+| ami-IS1009a | lagged1600 | 89.8 | **100.0** | 100 -> 100 |
+| ami-IS1009a | noisy | 64.8 | **97.0** | 100 -> 100 |
+| ami-IS1009a | dominant | 100.0 | 100.0 | 100 -> 100 |
+| ami-IS1009a | hard | 90.9 | **95.0** | 100 -> 100 |
+| libri-call | all six | 96.9 - 100.0 | 100.0 | 100 -> 100 |
+| **mean** | | **95.1** | **99.3** | **100 -> 100** |
+
+These are simulations of how a meeting window behaves, with perfect voices: they show that the aligner copes with late, noisy and
+partial highlights, not what a given platform does. Measuring the real delays and gaps per platform is the latency harness (4.2).

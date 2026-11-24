@@ -502,13 +502,13 @@ class RecordingManager {
       const named = [], conflicts = [];
       for (const n of res.named) {
         const source = n.via === 'sole' ? 'meeting:roster' : res.captionNamed ? 'meeting:caption' : 'meeting:highlight';
-        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.share });
+        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.score ?? n.share });
         if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
       }
       let learned = 0;
       if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
       try { this.evidence?.add(a.noteId, a.meet.toEvidence({ endMs: a.accMs })); } catch { /* a record, never a reason to fail the stop */ }
-      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, ...fixed };
+      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
   }

@@ -102,4 +102,23 @@ function score(refWords, hypWords, { collar = 5 } = {}) {
 // meeteval's SegLST (one entry per word), to cross-check with `meeteval-wer tcpwer -r ref.json -h hyp.json`.
 const toSegLst = (words, session) => words.map((w) => ({ session_id: session, speaker: String(w.speaker), start_time: w.start, end_time: w.end, words: w.word }));
 
-module.exports = { normalize, align, wder, cpwer, tcpwer, wer, score, toSegLst };
+// Naming accuracy: of all the speech, the share of time that carries the right person's name. Where WDER asks "was the right
+// voice given the words", this asks "did the voice get the right name": speech = Map(voice -> [[startMs, endMs]]),
+// truth = voice -> the person's name, assigned = Map(voice -> name) (a voice left out is unnamed). Unnamed speech is not right,
+// but it is told apart from wrongly named speech: precision = right / (right + wrong), for what was named at all.
+const { nameKey } = require('../src/meet/protocol');
+
+function namingAccuracy({ speech, truth, assigned }) {
+  let rightMs = 0, wrongMs = 0, unnamedMs = 0;
+  for (const [voice, spans] of speech) {
+    const ms = spans.reduce((n, [a, b]) => n + Math.max(0, b - a), 0);
+    const name = assigned.get(voice);
+    if (!name) unnamedMs += ms;
+    else if (nameKey(name) === nameKey(truth[voice])) rightMs += ms;
+    else wrongMs += ms;
+  }
+  const total = rightMs + wrongMs + unnamedMs;
+  return { accuracy: total ? rightMs / total : 0, precision: rightMs + wrongMs ? rightMs / (rightMs + wrongMs) : 0, rightMs, wrongMs, unnamedMs };
+}
+
+module.exports = { normalize, align, wder, cpwer, tcpwer, wer, score, toSegLst, namingAccuracy };

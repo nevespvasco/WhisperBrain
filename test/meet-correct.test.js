@@ -84,7 +84,7 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, le
   const events = [];
   bus.subscribe((e) => events.push(e));
   // turns: [name, embedding, startMs, endMs]; the highlight follows `name` unless `shown` says otherwise
-  async function call(turns, { lag = 400, shown = null } = {}) {
+  async function call(turns, { lag = 400, shown = null, claimedLag = lag } = {}) {
     await mgr.start(n.id, { mic: true, system: true });
     mgr.pushPcm(n.id, 'system', Buffer.alloc(64000));
     turns.forEach(([, emb, a, b], i) => engine.emit('segment', { ch: 'system', startMs: a, endMs: b, text: `turn ${i}`, words: speak(b - a), embedding: emb }));
@@ -92,8 +92,8 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, le
       let now = 0;
       const at = (ms) => { t.mock.timers.tick(ms - now); now = ms; };
       turns.forEach(([name, , a, b], i) => {
-        at(a + lag); hub.ingest({ type: 'speaker', name: shown ? shown(i, name) : name }, { source: 'x', kind: 'extension', lagMs: lag });
-        at(b + lag); hub.ingest({ type: 'speaker', name: null }, { source: 'x', kind: 'extension', lagMs: lag });
+        at(a + lag); hub.ingest({ type: 'speaker', name: shown ? shown(i, name) : name }, { source: 'x', kind: 'extension', lagMs: claimedLag });
+        at(b + lag); hub.ingest({ type: 'speaker', name: null }, { source: 'x', kind: 'extension', lagMs: claimedLag });
       });
     } else t.mock.timers.tick(turns.at(-1)[3] + 500);
     await mgr.stop();
@@ -153,6 +153,14 @@ test('voices: with the default settings nothing is remembered, however clearly t
   assert.deepEqual(r.labels().includes('Ana'), true, 'named for this meeting');
   assert.equal(r.speakers.voices().length, 0, 'but no voice print saved');
   assert.equal(r.events.find((e) => e.type === 'recording.meet-names').data.learned, 0);
+});
+
+test('recording: a source slower than it says it is (1.6 s late, claims 0.5 s) still names everybody, short turns and all', async (t) => {
+  const r = rig(t);
+  const turn = (name, emb, i) => [name, emb, i * 3000, i * 3000 + 2500];
+  await r.call([turn('Ana', E.ana, 0), turn('Bruno', E.bruno, 1), turn('Carla', E.carla, 2), turn('Ana', E.ana, 3), turn('Bruno', E.bruno, 4), turn('Carla', E.carla, 5), turn('Ana', E.ana, 6), turn('Bruno', E.bruno, 7), turn('Carla', E.carla, 8)], { lag: 1600, claimedLag: 500 });
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana', 'Bruno', 'Carla']);
+  assert.ok(Math.abs(r.events.find((e) => e.type === 'recording.meet-names').data.lagMs.x - 1600) <= 100, 'and the delay it really has is reported');
 });
 
 test('evidence: what the meeting window showed is kept after the recording, and each name says what it came from', async (t) => {

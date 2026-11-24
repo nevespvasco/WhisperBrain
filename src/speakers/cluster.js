@@ -1,4 +1,5 @@
 'use strict';
+const { hungarian } = require('./hungarian');
 // Speaker identification from voice embeddings (pure maths; no I/O).
 //  - SpeakerTracker: online clustering while recording: each utterance joins the closest speaker or starts a new one.
 //  - mergeClusters: after the meeting, merges speakers whose voices turned out to be the same person.
@@ -180,14 +181,23 @@ function matchVoices(speakers, voices, threshold = MATCH.threshold, allowed = nu
     const gap = scored.length > 1 ? scored[0].c - scored[1].c : Infinity;
     if (gap >= margin) pairs.push({ s: s.id, v: scored[0].v, c: scored[0].c, gap });
   }
-  pairs.sort((a, b) => b.c - a.c);
+  // A voice goes to one speaker, and the speakers that want the same voice are settled by the best total (Hungarian, with an
+  // "unknown" column of its own for each speaker: a speaker whose voice another speaker took stays unlinked).
   const out = new Map();
-  const usedV = new Set();
-  for (const p of pairs) {
-    if (out.has(p.s) || usedV.has(p.v)) continue;
-    out.set(p.s, { voiceId: p.v, score: p.c, margin: p.gap });
-    usedV.add(p.v);
-  }
+  if (!pairs.length) return out;
+  const rows = [...new Set(pairs.map((p) => p.s))], cols = [...new Set(pairs.map((p) => p.v))];
+  const BIG = 1e6;
+  const cost = rows.map((sid, i) => [
+    ...cols.map((vid) => { const p = pairs.find((x) => x.s === sid && x.v === vid); return p ? -p.c : BIG; }),
+    ...rows.map((_, j) => (j === i ? 0 : BIG)),
+  ]);
+  const pick = hungarian(cost);
+  rows.forEach((sid, i) => {
+    const col = pick[i];
+    if (col < 0 || col >= cols.length) return;
+    const p = pairs.find((x) => x.s === sid && x.v === cols[col]);
+    out.set(sid, { voiceId: p.v, score: p.c, margin: p.gap });
+  });
   return out;
 }
 

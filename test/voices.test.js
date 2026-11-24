@@ -252,3 +252,16 @@ test('Speakers.channelMeans: each channel is centred on the voices heard on it',
   assert.equal(speakers.channelMeans()('system'), VOICE_MEAN, 'adaptation off: the shipped mean for every channel');
   assert.ok(unit(callColour).length === dim);
 });
+
+test('matchVoices: speakers that want the same saved voice are settled by the best total, whatever order they come in', () => {
+  const voices = [{ id: 'ana', embedding: ANA }, { id: 'bruno', embedding: BRUNO }];
+  const strong = utter(ANA, 0.05, 3), weaker = utter(ANA, 0.45, 9), bruno = utter(BRUNO, 0.05, 4);
+  const T = 0.5;
+  const run = (speakers) => Object.fromEntries([...matchVoices(speakers, voices, T, null, { margin: 0 })].map(([s, m]) => [s, m.voiceId]));
+  const a = { id: 'strong', centroid: strong }, b = { id: 'weaker', centroid: weaker }, c = { id: 'bruno', centroid: bruno };
+  const r1 = run([a, b, c]), r2 = run([c, b, a]);
+  assert.deepEqual(r1, r2, 'the order of the speakers changes nothing');
+  assert.equal(r1.strong, 'ana');
+  assert.equal(r1.bruno, 'bruno');
+  assert.equal(r1.weaker, undefined, 'the voice went to the speaker who sounds most like it; the other stays unlinked');
+});
