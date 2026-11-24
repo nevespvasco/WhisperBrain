@@ -1,6 +1,19 @@
 # Plans: speaker ideas from Cicada, and translation
 
-Status: plan only, nothing built yet (2026-11-24).
+Status: **built 2026-11-24** (A, B, C, E; D needs no work). The sections below are the plan as written; what differs from it is here.
+
+Built as planned: A (`NEW_SPEAKER_MIN_SEC`, `Speakers.placeUnlabelled`), B (`src/speakers/display.js`, the one source of labels), C (`src/speakers/transcript-names.js`,
+setting `speakerNamesFromTranscript` = auto | on | off), E (`src/llm/translate.js`, `src/llm/languages.js`, settings `translation`, migration v11).
+Checked against the eval: AMI and libri-call are unchanged (see `eval/README.md`).
+
+Differences and what is left:
+- B: numbers never move while recording even when a voice is named late: the order voices were numbered in is kept per recording (`bus.live`, `displayFor`).
+  The API returns `labelKind` and `displayNo` per speaker and segment, not a `shown` flag.
+- C: no new fixtures for `eval/naming.js` yet (a written set of dialogues scored for precision is still to do). Names the evidence check refuses are not stored, only the ones the user turns down.
+- E: a line is skipped when it has no letters, not by language detection (no new dependency); the model returns a line already in the target language unchanged.
+  Glossary terms are not passed to the translation prompt. Live translation uses only the first language chosen. Titles are not translated (only the summary).
+  "Write notes in" is a setting, and the API takes a `language` per run, but the meeting page has no per-run choice. One request to the AI at a time covers lines, jobs and summaries.
+  The widget shows the live translation only (its layout is another change).
 
 Where the speaker ideas come from: [wquguru/cicada](https://github.com/wquguru/cicada) at `8450cb9`. Its
 `Sources/Cicada/SpeakerID.swift` uses the same voice model as we do (WeSpeaker ResNet34-LM), but it groups voices live

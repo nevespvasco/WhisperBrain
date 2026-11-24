@@ -1,7 +1,8 @@
 'use strict';
 // The evidence a meeting's names are based on (table `evidence`, see migration v10). Rows are plain objects:
 //   { kind, source, key, name, t0, t1, weight, meta }   key = the name folded for comparison; meta = anything JSON
-const KINDS = ['highlight', 'roster', 'caption', 'stream', 'transcript', 'calendar', 'mention'];
+// 'mention': a name the conversation gave a voice (speakers/transcript-names.js). 'refuted': a name somebody turned down for a voice.
+const KINDS = ['highlight', 'roster', 'caption', 'stream', 'transcript', 'calendar', 'mention', 'refuted'];
 
 class Evidence {
   constructor(db) { this.db = db; }

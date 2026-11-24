@@ -6,6 +6,8 @@ const crypto = require('node:crypto');
 const { decodeAudio, transcribePcm, assignSpeakers } = require('../recording/import');
 const { refineNote } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
+const { nameFromTranscript } = require('../speakers/transcript-names');
+const { LANGUAGES, isLanguage } = require('../llm/languages');
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 const COOKIE = 'wb_token';
@@ -108,12 +110,42 @@ function createRoutes(app) {
     if (!app.notes.remove(params.id)) throw new HttpError(404, 'note not found');
     return { ok: true };
   });
-  add('GET', '/api/notes/:id/transcript', async ({ params }) => { noteOr404(params.id); return app.notes.segments(params.id); });
+  add('GET', '/api/notes/:id/transcript', async ({ params, query }) => {
+    noteOr404(params.id);
+    const segs = app.notes.segments(params.id);
+    if (!query.lang) return segs;
+    if (!isLanguage(query.lang)) throw new HttpError(400, `Unknown language "${query.lang}".`);
+    const said = app.translator.translations(params.id, query.lang);   // each line beside its translation (null: not translated yet)
+    return segs.map((s) => ({ ...s, translation: said.get(s.id) ?? null }));
+  });
+
+  // translation (Settings → Translation): off until switched on; the work runs in the background and reports on the event stream
+  const translating = (fn) => async (ctx) => { try { return await fn(ctx); } catch (e) { throw e instanceof HttpError || !e.status ? e : new HttpError(e.status, e.message); } };
+  add('GET', '/api/languages', async () => LANGUAGES);
+  add('POST', '/api/notes/:id/translate', translating(async ({ params, body }) => {
+    noteOr404(params.id);
+    const job = app.translator.start(params.id, body.lang);
+    return job.running ? { started: false, running: true, total: job.total } : { started: job.total > 0, total: job.total };
+  }));
+  add('POST', '/api/notes/:id/translate/cancel', async ({ params, body }) => { noteOr404(params.id); app.translator.cancel(params.id, body.lang); return { ok: true }; });
+  add('GET', '/api/notes/:id/translations', async ({ params }) => { noteOr404(params.id); return { languages: app.translator.languages(params.id), running: app.translator.running(params.id) }; });
+  add('DELETE', '/api/notes/:id/translations/:lang', async ({ params }) => { noteOr404(params.id); app.translator.clear(params.id, params.lang); return { ok: true }; });
+  add('GET', '/api/notes/:id/summary-translation', async ({ params, query }) => {
+    noteOr404(params.id);
+    if (!isLanguage(query.lang)) throw new HttpError(400, `Unknown language "${query.lang}".`);
+    return { lang: query.lang, text: app.translator.summaryTranslation(params.id, query.lang)?.text ?? null };
+  });
+  add('POST', '/api/notes/:id/summary-translation', translating(async ({ params, body }) => {
+    noteOr404(params.id);
+    app.translator.check(body.lang);
+    if (!app.notes.get(params.id).summary?.trim()) throw new HttpError(409, 'There are no notes to translate yet: write them first.');
+    try { return await app.translator.translateSummary(params.id, body.lang); } catch (e) { throw new HttpError(502, `The AI server did not translate: ${e.message}`); }
+  }));
   add('DELETE', '/api/notes/:id/transcript', async ({ params }) => { noteOr404(params.id); app.notes.clearTranscript(params.id); return { ok: true }; });
   add('POST', '/api/notes/:id/summarize', async ({ params, body, req, res }) => {
     noteOr404(params.id);
     return { stream: (sse) => app.ai.summarize(params.id, {
-      templateId: body.templateId, signal: sse.signal,
+      templateId: body.templateId, language: body.language && isLanguage(body.language) ? body.language : undefined, signal: sse.signal,
       onDelta: (d) => sse.send('delta', { text: d }), onStage: (s) => sse.send('stage', s),
     }) };
   });
@@ -192,7 +224,31 @@ function createRoutes(app) {
   add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));
 
   // speakers (who is talking) and saved voices
-  add('GET', '/api/notes/:id/speakers', async ({ params }) => { noteOr404(params.id); return app.speakers.publicForNote(params.id, app.settings.get('userName')); });
+  add('GET', '/api/notes/:id/speakers', async ({ params }) => {
+    noteOr404(params.id);
+    // a name that came from the conversation says which line it was read from (evidenceQuote, evidenceMs)
+    const said = new Map(app.evidence.forNote(params.id, { kind: 'mention' }).map((r) => [r.meta?.speakerId, r]));
+    return app.speakers.publicForNote(params.id, app.settings.get('userName')).map((s) => {
+      const e = /^transcript/.test(s.nameSource || '') ? said.get(s.speakerId) : null;
+      return e ? { ...s, evidenceQuote: e.meta.quote, evidenceMs: e.t0 } : s;
+    });
+  });
+  // ask the AI who the unnamed voices are, from what people say; a name stands only with the line that shows it
+  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params }) => {
+    noteOr404(params.id);
+    if (!app.ai.configured()) throw new HttpError(409, 'No AI server is set up. Add one in Settings → AI.');
+    const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.llm, userName: app.settings.get('userName') }, params.id);
+    if (r.error) throw new HttpError(502, `The AI server did not answer: ${r.error}`);
+    if (r.named.length) app.notes.reindex(params.id);
+    return { named: r.named.map(({ speakerId, name, line, quote }) => ({ speakerId, name, line, quote })), refused: r.refuted.length };
+  });
+  // turn down a guessed name: the voice goes back to unnamed and the name is not offered for it again
+  add('POST', '/api/notes/:id/speakers/:sid/reject-name', async ({ params }) => {
+    noteOr404(params.id);
+    if (!app.speakers.rejectName(params.id, params.sid, { evidence: app.evidence })) throw new HttpError(409, 'This name was not guessed from the conversation.');
+    app.notes.reindex(params.id);
+    return { ok: true };
+  });
   add('PATCH', '/api/notes/:id/speakers/:sid', async ({ params, body }) => {
     noteOr404(params.id);
     const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember, consentSource: body.remember ? 'user' : null });

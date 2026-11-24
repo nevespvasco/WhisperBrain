@@ -48,6 +48,21 @@ export const safeSnippet = (html) => String(html || '').replace(/#{1,6}\s+|\*\*/
 // ---------- colours ----------
 const PALETTE = ['#7c5cff', '#ef6f6c', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#14b8a6', '#8b5cf6', '#f97316', '#0ea5e9', '#84cc16', '#e11d48'];
 export function hashColor(s) { let h = 0; for (const c of String(s || '?')) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
+// What a speaker or a line is called on screen. The server decides who is shown and numbered (src/speakers/display.js) and
+// says how to write it ('name' | 'me' | 'speaker' | 'room' | 'room-hidden' | 'them', plus the number); the words come from t().
+export function speakerText({ name = '', kind = 'them', n = null } = {}) {
+  if (name) return name;
+  switch (kind) {
+    case 'me': return S.settings?.userName || t('Me');
+    case 'speaker': return t('Speaker {n}', { n });
+    case 'room': return t('Room speaker {n}', { n });
+    case 'room-hidden': return t('Someone in the room');
+    default: return t('Them');
+  }
+}
+// ...of a line (a transcript segment, or the transcript.segment event) and of an entry of a note's speaker list
+export const lineText = (s) => speakerText({ name: s.speakerName || (s.labelKind === 'name' ? s.label : ''), kind: s.labelKind || (s.speaker === 'me' ? 'me' : 'them'), n: s.displayNo });
+export const speakerEntryText = (x) => speakerText({ name: x.name || x.voiceName, kind: x.labelKind || (x.channel === 'mic' ? 'me' : 'them'), n: x.displayNo });
 export function speakerColor(id, label) { if (!id || !/^[ms]\d+$/.test(id)) return hashColor(label || id); const n = id[0] === 'm' ? Number(id.slice(1)) - 1 : 2 + Number(id.slice(1)); return PALETTE[((n % PALETTE.length) + PALETTE.length) % PALETTE.length]; }
 export function initials(name) { const w = String(name || '?').trim().split(/\s+/).filter(Boolean); return ((w[0]?.[0] || '?') + (w.length > 1 ? w[w.length - 1][0] : w[0]?.[1] || '')).toUpperCase(); }
 const lum = (hex) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };

@@ -7,6 +7,7 @@ const { SpeakerTracker } = require('../speakers/cluster');
 const { refineNote, describeUtterance } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
+const { describe } = require('../speakers/display');
 const { MeetingCollector } = require('../meet/collector');
 const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
@@ -96,7 +97,7 @@ class RecordingManager {
     const prior = this.notes.segments(noteId).reduce((m, x) => Math.max(m, x.endMs), 0);
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
-      noteId, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
+      noteId, shown: '', channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
       fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
@@ -109,6 +110,7 @@ class RecordingManager {
       discord: null,                       // { info, onAudio } while the bot is in the call
       meet: null,                          // what the meeting window shows while recording: highlights, roster, captions (src/meet/collector.js)
     };
+    this.bus.live?.set(noteId, []); // while it runs, who spoke is shown cautiously, and numbers do not move (speakers/display.js)
     if (this.meet && s.meet.enabled) a.meet = new MeetingCollector({ hub: this.meet, elapsed: () => this.elapsed(a), paused: () => a.paused, originMs: a.accMs, useCaptions: s.meet.captions, selfNames: () => [this.settings.get('userName')] });
     try {
       await this.ensureEngine();
@@ -146,6 +148,7 @@ class RecordingManager {
     } catch (e) {
       this.teardown(a);
       this.active = null;
+      this.bus.live?.delete(noteId);
       throw e;
     }
   }
@@ -192,7 +195,8 @@ class RecordingManager {
     }
     const tr = a.trackers[ch];
     if (ch === 'system') tr.max = this.notes.get(a.noteId)?.speakerCount || 0; // the user may set it while recording
-    const r = tr.assign(embedding);
+    const r = tr.assign(embedding, { seconds: (seg.endMs - seg.startMs) / 1000 });
+    if (!r.id) return null; // too short to say it is somebody new, and nobody it sounds like: unlabelled until the passes after Stop
     const sp = tr.speakers.find((x) => x.id === r.id);
     this.speakers.save(a.noteId, { speakerId: r.id, channel: ch, centroid: sp.centroid, count: sp.count });
     // recognise saved voices as soon as a speaker appears, and again once we have heard them a bit more
@@ -216,6 +220,13 @@ class RecordingManager {
     if (!s.perAppCapture) return undefined;
     if (hint) return hint;
     try { return pickTargetApp((await this.platform.micActivity?.())?.apps) || undefined; } catch { return undefined; }
+  }
+
+  // The system channel follows one application's stream; when a second call turns up (Zoom and Discord at once) that would
+  // lose the other call, so it moves to the whole output. Idempotent; false when nothing needed (or could be) changed.
+  widenSystemCapture(reason) {
+    const a = this.active;
+    return !!(a && !a.finalizing && a.channels.system?.widen?.(reason));
   }
 
   attach(a, ch, src) {
@@ -317,6 +328,7 @@ class RecordingManager {
     }
     seg.speakerId = remote ? remote.speakerId : this.identify(a, ch, seg, embedding);
     if (seg.speakerId && !remote) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
+    else if (embedding && !remote) a.last[ch] = null; // a voice nobody matched: the next line without a print must not be handed to the speaker before it
     const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, channel: ch, embedding, words, logProbMean, logProbMin }]);
     const spool = a.spool[ch];
     if (spool && !spool.broken) {
@@ -324,9 +336,18 @@ class RecordingManager {
       a.refs.push(ref);
       if (this.settings.get('speakerRefine')) this.describeSoon(a, ref);
     }
-    const label = seg.speakerId ? this.speakers.label(a.noteId, seg.speakerId, speaker) : (speaker === 'me' ? 'Me' : 'Them');
+    const d = this.lineLabel(a, seg.speakerId, speaker);
     if (kind === 'system') a.recentSystem = [...a.recentSystem.filter((x) => x.endMs > seg.endMs - 15000), { startMs: seg.startMs, endMs: seg.endMs, text }].slice(-8);
-    this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label, startMs: seg.startMs, endMs: seg.endMs, text } });
+    this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label: d.label, labelKind: d.kind, displayNo: d.n, speakerName: d.kind === 'name' ? d.label : '', startMs: seg.startMs, endMs: seg.endMs, text } });
+  }
+
+  // What a line is called on screen right now (speakers/display.js). When that brings a voice on show, the lines already drawn
+  // are told to rename themselves. Without a speaker store a line is just Me or Them.
+  lineLabel(a, speakerId, speaker) {
+    if (!this.speakers) return describe(new Map(), { speaker });
+    const shown = this.speakers.display(a.noteId, this.settings.get('userName'));
+    if (shown.shown !== a.shown) { a.shown = shown.shown; this.bus.publish('speakers.updated', { noteId: a.noteId }); }
+    return shown.of(speakerId, speaker);
   }
 
   // Describe an utterance's voice (pitch, timbre: about 25 ms of work) in the gaps while recording, one at a time with
@@ -446,11 +467,12 @@ class RecordingManager {
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
-      try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      try { const open = ['mic', 'system'].filter((ch) => !diarized.includes(ch)); this.speakers.consolidate(a.noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(a.noteId, threshold, { channels: open }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
       if (a.meet) this.nameFromMeeting(a, s); // last: it must not overrule a saved voice the speaker was just matched to
     }
     this.closeSpools(a);
     this.active = null;
+    this.bus.live?.delete(a.noteId); // the voices are final now: all of them are shown
     Promise.resolve(this.engine.releaseHotwords?.()).catch(() => {}); // the next recording brings its own words
     Promise.resolve(this.engine.setDraft?.(null)).catch(() => {}); // and its own drafts: nothing streams between recordings
     const note = this.notes.update(a.noteId, { status: 'done', endedAt: Date.now() });

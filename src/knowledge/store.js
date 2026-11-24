@@ -144,7 +144,28 @@ class Knowledge {
   updateSnippet(id, { label }) { this.db.prepare('UPDATE snippets SET label = ? WHERE id = ?').run(clean(label, 120), id); return true; }
   removeSnippet(id) { const ok = this.db.prepare('DELETE FROM snippets WHERE id = ?').run(id).changes > 0; this.changed('snippets'); return ok; }
 
-  label(seg) { return seg.speakerName || defaultLabel(seg.speakerId, seg.speaker, this.settings.get('userName')); }
+  // What a line's voice is called. A line from notes.segments already carries the answer of speakers/display.js; one that came
+  // from a query of its own (a search hit) does not, so it asks its meeting how the voices are shown (`shown`: one lookup per meeting)
+  label(seg, shown = null) {
+    if (seg.speakerName) return seg.speakerName;
+    const user = this.settings.get('userName');
+    const known = seg.labelKind ? seg : shown?.(seg);
+    if (known) return known.labelKind === 'me' ? (user || 'Me') : known.label;
+    return defaultLabel(seg.speakerId, seg.speaker, user);
+  }
+  // shown(seg) for label(): the line of the same voice in notes.segments, found once per meeting
+  shownLookup() {
+    const byNote = new Map();
+    return (seg) => {
+      if (!seg.noteId || !seg.speakerId) return null;
+      if (!byNote.has(seg.noteId)) {
+        const m = new Map();
+        for (const s of this.notes.segments(seg.noteId)) if (s.speakerId && !m.has(s.speakerId)) m.set(s.speakerId, s);
+        byNote.set(seg.noteId, m);
+      }
+      return byNote.get(seg.noteId).get(seg.speakerId) || null;
+    };
+  }
 
   // ---------- topics ----------
   upsertTopic(name) {
@@ -469,7 +490,8 @@ class Knowledge {
       FROM seg_fts JOIN segments s ON s.id = seg_fts.rowid JOIN notes n ON n.id = s.note_id
       LEFT JOIN note_speakers ns ON ns.note_id = s.note_id AND ns.speaker_id = s.speaker_id LEFT JOIN voices v ON v.id = ns.voice_id
       WHERE ${where.join(' AND ')} ORDER BY rank LIMIT ?`).all(...args, Math.min(limit * (speaker ? 4 : 1), 400));
-    return rows.map((r) => ({ ...r, label: this.label(r) }))
+    const shown = this.shownLookup();
+    return rows.map((r) => ({ ...r, label: this.label(r, shown) }))
       .filter((r) => !speaker || personKey(r.label).includes(personKey(speaker))).slice(0, limit)
       .map(({ speakerName, ...r }) => ({ ...r, snippet: safeSnippet(r.snippet) }));
   }
@@ -552,10 +574,10 @@ class Knowledge {
     const group = (rows) => { const m = new Map(); for (const r of rows) { const a = m.get(r.noteId) || []; a.push(r); m.set(r.noteId, a); } return m; };
     const tg = group(tagRows), tp = group(topicRows), sp = group(spRows), lk = group(linkRows);
     const sg = new Map(segRows.map((r) => [r.noteId, r])), ac = new Map(actRows.map((r) => [r.noteId, r]));
-    const user = this.settings.get('userName');
+    const shown = this.shownLookup();   // an unnamed voice is called what the transcript calls it
     return notes.map((n) => {
       const seg = sg.get(n.id);
-      const people = (sp.get(n.id) || []).map((s) => s.name || defaultLabel(s.speakerId, s.channel === 'mic' ? 'me' : 'them', user));
+      const people = (sp.get(n.id) || []).map((s) => s.name || this.label({ noteId: n.id, speakerId: s.speakerId, speaker: s.channel === 'mic' ? 'me' : 'them' }, shown));
       const attendeeNames = (n.attendees || []).map((a) => a.name || a.email).filter(Boolean);
       return {
         ...n, insights: undefined, hasInsights: !!n.insights,

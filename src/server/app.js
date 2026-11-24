@@ -28,6 +28,10 @@ const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
+const { nameFromTranscript, isLocalServer } = require('../speakers/transcript-names');
+const { Translator } = require('../llm/translate');
+
+const NAMES_TIMEOUT_MS = 90000;   // names from the conversation must not hold the notes back if the AI hangs
 const { loadPolicy } = require('../core/policy');
 const { TranscriptService } = require('../transcripts/service');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
@@ -51,6 +55,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const llm = new LlmClient(() => settings.get('llm'));
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
+  const translator = new Translator({ notes, settings, llm, bus });
+  translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
   const meet = new MeetService({ settings, bus, version, llm, captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
   const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
@@ -66,6 +72,10 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     if (e.type !== 'recording.stopped') return;
     const id = e.data.noteId;
     if (!notes.get(id)) return;
+    // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
+    if (ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)))) {
+      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm, userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, id); if (r.named.length) notes.reindex(id); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
+    }
     if (settings.get('autoSummarize')) {
       try {
         bus.publish('note.summarizing', { id });
@@ -131,11 +141,11 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, ai, translator, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
-    meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings }, id, opts),
+    meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings, translator }, id, opts),
     async state() {
       const caps = await plat.capabilities();
       const model = models.resolve(settings.get('asrModel'));

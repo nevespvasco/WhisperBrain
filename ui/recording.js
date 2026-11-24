@@ -1,5 +1,5 @@
 // Recording state, the floating recording bar and taking notes for a meeting.
-import { S, $, api, t, esc, icon, toast, fail, go, fmtTimer, menu } from './lib.js';
+import { S, $, api, t, esc, icon, toast, fail, go, fmtTimer, menu, speakerText, lineText } from './lib.js';
 import { getConsent, setConsent, copyNotice } from './consent.js';
 import { startCapture, stopAllCapture } from './capture.js';
 
@@ -46,7 +46,7 @@ export async function takeNotesFor(d = {}, { record = false } = {}) {
 function showDraft(d) {
   S.drafts = { ...S.drafts, [d.ch]: d.text ? d : null };
   const live = Object.values(S.drafts).filter(Boolean).sort((a, b) => b.startMs - a.startMs)[0];
-  S.liveDraft = live ? `${live.speaker === 'me' ? t('Me') : t('Them')}: ${live.text}` : '';
+  S.liveDraft = live ? `${speakerText({ kind: live.speaker === 'me' ? 'me' : 'them' })}: ${live.text}` : '';
 }
 
 // Were the others on the call told? Shown on the bar for the whole recording: a warning until it is dealt with.
@@ -121,7 +121,7 @@ export function recEvents({ renderTopbar }) {
     'recording.stopped': () => { S.autoToast?.remove(); S.autoToast = null; S.liveDraft = ''; S.drafts = {}; S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),
-    'transcript.segment': (d) => { S.liveText = `${d.segment.label ? d.segment.label + ': ' : ''}${d.segment.text}`; showDraft({ ch: d.segment.speaker === 'me' ? 'mic' : 'system', text: '' }); if (S.rec.active) renderRecbar(); },
+    'transcript.segment': (d) => { S.liveText = `${lineText(d.segment)}: ${d.segment.text}`; showDraft({ ch: d.segment.speaker === 'me' ? 'mic' : 'system', text: '' }); if (S.rec.active) renderRecbar(); },
     // draft words: the bar shows the most recent draft line, dimmed, until the final text arrives
     'transcript.partial': (d) => { showDraft(d); if (S.rec.active) renderRecbar(); },
   };

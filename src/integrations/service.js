@@ -5,6 +5,7 @@ const { NotionClient } = require('./notion');
 const { LinearClient, actionItemsToIssues } = require('./linear');
 const { ObsidianVault } = require('./obsidian');
 const { postWebhook } = require('./webhook');
+const { isLanguage } = require('../llm/languages');
 const { toMarkdown } = require('../knowledge/meeting');
 
 const err = (message, status = 400, code) => Object.assign(new Error(message), { status, code });
@@ -43,9 +44,9 @@ class Integrations {
   }
 
   // ---- out ----
-  async send(noteId, { target, webhookId, teamId, mode = 'issue', transcript, itemIds } = {}) {
+  async send(noteId, { target, webhookId, teamId, mode = 'issue', transcript, itemIds, lang, translation } = {}) {
     const { app } = this;
-    const m = app.meeting(noteId);
+    const m = app.meeting(noteId, lang && ['translation', 'both'].includes(translation) && isLanguage(lang) ? { lang, mode: translation } : undefined);   // with its translation, when asked
     if (!m) throw err('note not found', 404);
     const link = (l) => app.knowledge.addLink(noteId, l);
     if (target === 'notion') {

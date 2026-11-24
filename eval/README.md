@@ -207,3 +207,17 @@ have not been measured yet; fill this table from a few recordings per platform:
 | Google Meet | accessibility reader | | | | |
 | Zoom | accessibility reader | | | | |
 | Teams | accessibility reader | | | | |
+
+## The live view and names from the conversation (2026-11-24, from the Cicada comparison; see `docs/plans.md`)
+
+`node eval/run.js --configs online,diarize+refine` after the changes below, same two recordings. Nothing moved:
+
+| Recording | Config | WDER | cpWER | tcpWER | Speakers found / true |
+|---|---|---|---|---|---|
+| ami-IS1009a | online | 34.1 | 74.6 | 77.3 | 1 / 4 |
+| ami-IS1009a | diarize+refine | 18.1 | 47.6 | 54.4 | 4 / 4 |
+| libri-call | online | 48.2 | 92.9 | 95.8 | 2 / 4 |
+| libri-call | diarize+refine | 24.9 | 57.1 | 61.3 | 3 / 4 |
+
+- **Only a line of 2 s or more can start a speaker while recording** (`NEW_SPEAKER_MIN_SEC`, `SpeakerTracker.assign`). A shorter line that matches nobody stays unlabelled, keeps its voice print, and is placed after Stop (`Speakers.placeUnlabelled`, or the diarization/refine passes). These recordings are cut into long utterances, so the harness cannot show the effect: it exists to keep a cough or a "yeah" from making a "Speaker 5" in the live view. The scores above only say it did no harm.
+- **Not measured:** the live view itself (how often a speaker is shown that is later folded away), the display rule (`src/speakers/display.js`: five substantive lines, two voices), and names from the conversation (`src/speakers/transcript-names.js`). Both AMI and libri-call have almost nobody saying names, so naming needs a small set of written dialogues (introductions, "Thanks, George", a name in an advert, a name of somebody absent) scored for precision first: a wrong name costs more than none. That set, as a `transcript` source in `eval/naming.js`, is still to do.

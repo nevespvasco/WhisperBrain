@@ -3,6 +3,7 @@ const prompts = require('./prompts');
 const retrieve = require('./retrieve');
 const ins = require('./insights');
 const { fmtClock } = require('../core/notes');
+const { isLanguage } = require('./languages');
 
 const HISTORY_TURNS = 10;
 
@@ -70,7 +71,9 @@ class AiService {
   budget() { return Math.max(2000, this.settings.get('llm').contextChars); }
 
   // Generates (and stores) the enhanced notes. Long transcripts are reduced chunk by chunk first.
-  async summarize(noteId, { templateId, onDelta, onStage, signal } = {}) {
+  // language: write the notes in it (an ISO code); left out, the language chosen in Settings → Translation (when translation is on),
+  // else the language of the meeting
+  async summarize(noteId, { templateId, onDelta, onStage, signal, language } = {}) {
     const note = this.notes.get(noteId);
     if (!note) throw new Error('Note not found');
     const template = this.templates.get(templateId || note.templateId || this.settings.get('defaultTemplate')) || this.templates.get('general');
@@ -88,7 +91,9 @@ class AiService {
       transcript = `(The transcript was long; these are condensed notes of each part, in order.)\n\n${partials.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n')}`;
     }
     onStage?.({ stage: 'write' });
-    const messages = prompts.summaryMessages({ note, transcript, template, userName: this.settings.get('userName') });
+    const tr = this.settings.get('translation');
+    const wanted = language ?? (tr.enabled ? tr.notesLanguage : '');
+    const messages = prompts.summaryMessages({ note, transcript, template, userName: this.settings.get('userName'), language: isLanguage(wanted) ? wanted : '' });
     let summary = '';
     for await (const d of this.llm.stream(messages, { signal })) { summary += d; onDelta?.(d); }
     summary = summary.trim();

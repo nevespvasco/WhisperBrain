@@ -2,6 +2,7 @@
 // HTTP routes for the knowledge layer, exports/imports and integrations. Registered by http.js.
 const { FORMATS, fileName, toHtml } = require('../knowledge/meeting');
 const { zip } = require('../core/zip-writer');
+const { isLanguage } = require('../llm/languages');
 
 const MAX_IMPORT = 1024 * 1024 * 1024;
 
@@ -15,6 +16,13 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
   };
   const r = (method, pattern, fn) => add(method, pattern, wrap(fn));
   const bool = (v) => (v === undefined ? undefined : v === '1' || v === 'true');
+  // An export (or a send) with the translation: `lang` and `translation` ('translation' = in place of the words, 'both' = under them).
+  // Without both, the meeting as it was said.
+  const withTranslation = (o = {}) => {
+    if (o.translation !== undefined && !['translation', 'both'].includes(o.translation)) throw new HttpError(400, 'translation must be "translation" or "both"');
+    if (o.lang !== undefined && !isLanguage(o.lang)) throw new HttpError(400, `Unknown language "${o.lang}".`);
+    return o.lang && o.translation ? { lang: o.lang, mode: o.translation } : {};
+  };
 
   // ---- enriched lists ----
   r('GET', '/api/meetings', async ({ query }) => {
@@ -99,7 +107,7 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
   r('GET', '/api/notes/:id/export', async ({ params, query }) => {
     noteOr404(params.id);
     const fmt = query.format || 'md';
-    const m = app.meeting(params.id);
+    const m = app.meeting(params.id, withTranslation(query));
     const opts = { transcript: query.transcript !== '0' };
     if (fmt === 'pdf') {
       if (!app.renderPdf) throw new HttpError(501, 'PDF export needs the desktop app; use Print instead.', 'no-pdf');
@@ -117,17 +125,20 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     const f = FORMATS[fmt];
     if (!f) throw new HttpError(400, 'unknown format');
     const day = new Date().toISOString().slice(0, 10);
-    const files = ids.map((id) => app.meeting(id)).filter(Boolean).map((m) => ({ name: fileName(m, f.ext), data: f.render(m, { transcript: body.transcript !== false, frontmatter: fmt === 'obsidian', wikilinks: fmt === 'obsidian' }) }));
+    const shown = withTranslation(body);
+    const files = ids.map((id) => app.meeting(id, shown)).filter(Boolean).map((m) => ({ name: fileName(m, f.ext), data: f.render(m, { transcript: body.transcript !== false, frontmatter: fmt === 'obsidian', wikilinks: fmt === 'obsidian' }) }));
     if (!files.length) throw new HttpError(400, 'nothing to export');
     return { raw: zip(files), type: 'application/zip', filename: `whisperbrain-${fmt}-${day}.zip` };
   });
 
   // ---- send to other tools ----
-  r('POST', '/api/notes/:id/send', async ({ params, body }) => { noteOr404(params.id); return app.integrations.send(params.id, body); });
+  // sending can carry the translation too; a language or mode that does not exist is refused as it is for an export
+  const sendOptions = (body) => { const shown = withTranslation(body); return { ...body, lang: shown.lang, translation: shown.mode }; };
+  r('POST', '/api/notes/:id/send', async ({ params, body }) => { noteOr404(params.id); return app.integrations.send(params.id, sendOptions(body)); });
   r('POST', '/api/send', async ({ body }) => {
-    const results = [];
+    const results = [], options = sendOptions(body);
     for (const id of (body.ids || []).slice(0, 200)) {
-      try { results.push({ id, ok: true, ...(await app.integrations.send(id, body)) }); } catch (e) { results.push({ id, ok: false, error: e.message }); }
+      try { results.push({ id, ok: true, ...(await app.integrations.send(id, options)) }); } catch (e) { results.push({ id, ok: false, error: e.message }); }
     }
     return { results };
   });

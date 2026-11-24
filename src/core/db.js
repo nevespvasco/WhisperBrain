@@ -280,6 +280,29 @@ const MIGRATIONS = [
   );
   CREATE INDEX semantic_chunks_note ON semantic_chunks(note_id);
   `,
+  // v11: translations. A line translated into a language (segment_translations) and a note's summary (note_translations; `field` leaves room for more).
+  // src_hash is a hash of the text that was translated: a translation whose source has changed since (the speaker pass cuts a line,
+  // the summary is written again) is stale and is not shown. Lines and notes take their translations with them.
+  `
+  CREATE TABLE segment_translations (
+    segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+    lang TEXT NOT NULL,
+    text TEXT NOT NULL,
+    src_hash TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (segment_id, lang)
+  );
+  CREATE TABLE note_translations (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    lang TEXT NOT NULL,
+    field TEXT NOT NULL,
+    text TEXT NOT NULL,
+    src_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, lang, field)
+  );
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

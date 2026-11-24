@@ -32,6 +32,22 @@ test('tracker: utterances of the same voice share an id; a new voice gets a new 
   assert.equal(seeded.assign(utter(BRUNO, 0.08, 9)).id, 's5');
 });
 
+test('tracker: only a line of 2 s or more can start a speaker; a short stranger stays unlabelled', () => {
+  const tr = new SpeakerTracker({ threshold: 0.8, prefix: 's' });
+  assert.equal(tr.assign(utter(ANA, 0.08, 1), { seconds: 3 }).id, 's1');
+  const cough = tr.assign(utter(BRUNO, 0.08, 2), { seconds: 0.9 });
+  assert.equal(cough.id, null, 'a short unknown voice is not a new person');
+  assert.equal(cough.isNew, false);
+  assert.equal(tr.speakers.length, 1, 'and it did not make a speaker');
+  assert.equal(tr.speakers[0].count, 1, 'nor did it change the centroid of the closest one');
+  assert.equal(tr.assign(utter(ANA, 0.08, 3), { seconds: 0.9 }).id, 's1', 'a short line that sounds like somebody still joins them');
+  assert.equal(tr.assign(utter(BRUNO, 0.08, 4), { seconds: 2 }).id, 's2', 'the same voice, long enough, is a new speaker');
+  assert.equal(tr.assign(utter(CARLA, 0.08, 5)).id, 's3', 'without a length the old rule holds (imports, eval)');
+  const capped = new SpeakerTracker({ threshold: 0.8, prefix: 's', max: 1 });
+  capped.assign(utter(ANA, 0.08, 1), { seconds: 3 });
+  assert.equal(capped.assign(utter(BRUNO, 0.08, 2), { seconds: 0.5 }).id, 's1', 'at the head count a short line joins the closest, as a long one does');
+});
+
 test('mergeClusters folds near-duplicates; matchVoices is one-to-one, best pairs first', () => {
   const { merged, speakers } = mergeClusters([{ id: 's1', centroid: utter(ANA, 0.05, 1), count: 5 }, { id: 's2', centroid: utter(ANA, 0.05, 2), count: 1 }, { id: 's3', centroid: BRUNO, count: 2 }], 0.9);
   assert.deepEqual([...merged], [['s2', 's1']]);
@@ -63,7 +79,7 @@ function rig() {
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/v', speakerInstalled: () => true, speakerPath: () => '/spk.onnx' };
   const platform = { capture: { mic: 'renderer', system: 'renderer' } };
   const mgr = new RecordingManager({ notes, engine, models, settings, platform, bus, speakers });
-  return { notes, speakers, engine, mgr, settings };
+  return { notes, speakers, engine, mgr, settings, bus };
 }
 const say = (engine, ch, startMs, text, emb) => engine.emit('segment', { ch, startMs, endMs: startMs + 2000, text, embedding: emb });
 
@@ -100,6 +116,56 @@ test('recording: who-said-what across several remote voices, naming, and recogni
   assert.deepEqual(notes.segments(n2.id).map((s) => s.label), ['Speaker 1', 'Ana'], 'Ana is recognised by voice in a new meeting');
 });
 
+test('recording: a short line nobody sounds like is left unlabelled (its voice print kept), and does not lend its guess to the next', async () => {
+  const { notes, speakers, engine, mgr } = rig();
+  const n = notes.create({ title: 'Short strangers' });
+  await mgr.start(n.id, { mic: false });
+  mgr.pushPcm(n.id, 'system', Buffer.alloc(3200));
+  const line = (startMs, ms, text, emb) => engine.emit('segment', { ch: 'system', startMs, endMs: startMs + ms, text, embedding: emb });
+  line(0, 3000, 'hello everyone thanks for joining', utter(ANA, 0.08, 1));
+  line(3500, 800, 'sneeze or cough', utter(BRUNO, 0.08, 2));      // short, and not Ana: nobody yet
+  line(4400, 800, 'ok', null);                                       // no print, 0.1 s after the unlabelled line: must not inherit Ana
+  line(5500, 3000, 'this is Bruno speaking at length', utter(BRUNO, 0.08, 3));
+  line(9000, 700, 'yes', utter(ANA, 0.08, 4));                      // short but sounds like Ana: joins her
+  assert.deepEqual(notes.segments(n.id).map((s) => s.speakerId), ['s1', null, null, 's2', 's1'], 'live');
+  assert.deepEqual(notes.segments(n.id).map((s) => s.label), Array(5).fill('Them'), 'five lines in all: nobody has the five real lines to be shown yet');
+  await mgr.stop();
+  // after Stop the sneeze, which sounds like the Bruno who has since spoken at length, goes to him; the line with no print stays open
+  assert.deepEqual(notes.segments(n.id).map((s) => s.speakerId), ['s1', 's2', null, 's2', 's1'], 'after Stop');
+  assert.deepEqual(notes.segments(n.id).map((s) => s.label), ['Speaker 1', 'Speaker 2', 'Them', 'Speaker 2', 'Speaker 1']);
+  const kept = speakers.segmentVoices(n.id);
+  assert.ok(kept[1].embedding && kept[1].embedding.length === 32, 'the short line keeps its voice print, so the passes after Stop can place it');
+});
+
+test('recording: while it runs a voice is "Them" until it has five real lines and there are two; the same everywhere; after Stop all are shown', async () => {
+  const { notes, speakers, engine, mgr, bus } = rig();
+  const n = notes.create({ title: 'Live display' });
+  const events = [];
+  bus.subscribe((e) => events.push(e));
+  await mgr.start(n.id, { mic: false });
+  mgr.pushPcm(n.id, 'system', Buffer.alloc(3200));
+  const sent = () => events.filter((e) => e.type === 'transcript.segment').map((e) => e.data.segment);
+  const talk = (who, k, at) => { for (let i = 0; i < k; i++) say(engine, 'system', at + i * 2500, `this is real line ${i} said aloud`, utter(who, 0.08, at + i + 1)); };
+  talk(ANA, 5, 0);
+  assert.deepEqual(sent().map((s) => s.label), Array(5).fill('Them'), 'Ana alone, even with five lines, is not numbered');
+  assert.deepEqual(sent().map((s) => s.labelKind), Array(5).fill('them'));
+  talk(BRUNO, 4, 20000);
+  assert.equal(sent().at(-1).label, 'Them', 'Bruno has four lines: still hidden');
+  assert.equal(notes.segments(n.id).at(-1).label, 'Them');
+  events.length = 0;
+  talk(BRUNO, 1, 40000);
+  assert.equal(sent().at(-1).label, 'Speaker 2', 'his fifth line shows him, and makes two voices');
+  assert.equal(sent().at(-1).displayNo, 2);
+  assert.ok(events.some((e) => e.type === 'speakers.updated'), 'the screens are told to redraw the lines they already show');
+  const live = notes.segments(n.id);
+  assert.deepEqual([...new Set(live.filter((s) => s.speakerId === 's1').map((s) => s.label))], ['Speaker 1'], 'Ana\'s earlier lines now say Speaker 1');
+  assert.deepEqual([...new Set(live.filter((s) => s.speakerId === 's2').map((s) => s.label))], ['Speaker 2']);
+  assert.deepEqual(speakers.publicForNote(n.id).map((s) => [s.speakerId, s.label, s.labelKind, s.displayNo]), [['s1', 'Speaker 1', 'speaker', 1], ['s2', 'Speaker 2', 'speaker', 2]]);
+  await mgr.stop();
+  assert.deepEqual([...new Set(notes.segments(n.id).map((s) => s.label))].sort(), ['Speaker 1', 'Speaker 2']);
+  assert.equal(notes.transcriptText(n.id).split('\n')[0].startsWith('Speaker 1:'), true, 'the export and the prompts read the same labels');
+});
+
 test('consolidate merges a speaker split in two, but never two people the user named differently', async () => {
   const { notes, speakers } = rig();
   const n = notes.create({});
@@ -117,6 +183,23 @@ test('consolidate merges a speaker split in two, but never two people the user n
   assert.equal(speakers.consolidate(m.id, 0.9), 0);
   assert.equal(speakers.reassignSegment(m.id, notes.segments(m.id)[1].id, 's1'), true, 'manual correction');
   assert.deepEqual(notes.segments(m.id).map((s) => s.label), ['Ana', 'Ana']);
+});
+
+test('placeUnlabelled: a short line left without a speaker goes to the one it sounds like, and only that one', () => {
+  const { notes, speakers } = rig();
+  const n = notes.create({});
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: ANA, count: 4 });
+  speakers.save(n.id, { speakerId: 's2', channel: 'system', centroid: BRUNO, count: 4 });
+  notes.addSegments(n.id, [
+    { speaker: 'them', speakerId: 's1', startMs: 0, endMs: 3000, text: 'long one', embedding: utter(ANA, 0.05, 1) },
+    { speaker: 'them', speakerId: null, startMs: 3000, endMs: 3800, text: 'yes', embedding: utter(BRUNO, 0.05, 2) },
+    { speaker: 'them', speakerId: null, startMs: 4000, endMs: 4800, text: 'cough', embedding: utter(CARLA, 0.05, 3) },
+    { speaker: 'them', speakerId: null, startMs: 5000, endMs: 5400, text: 'ok', embedding: null },
+  ]);
+  assert.equal(speakers.placeUnlabelled(n.id, 0.8), 1);
+  assert.deepEqual(notes.segments(n.id).map((s) => s.speakerId), ['s1', 's2', null, null], 'the stranger and the line with no print stay unlabelled');
+  assert.equal(speakers.placeUnlabelled(n.id, 0.8), 0, 'nothing more to place');
+  assert.equal(speakers.placeUnlabelled(n.id, 0.8, { channels: ['mic'] }), 0, 'a channel left out is left alone');
 });
 
 const models = testModels();

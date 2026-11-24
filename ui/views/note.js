@@ -1,6 +1,6 @@
 // One meeting: summary (overview, key points, decisions, action items), transcript (who said what), notes,
 // snippets and chat; the side column has speaker analytics, topics, glossary terms, links and related meetings.
-import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
@@ -18,6 +18,7 @@ export async function render(main, { parts, params }) {
   if (ints) S.integrations = ints;
   N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
+  await trInit();
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
   renderTab(); renderAside();
@@ -30,17 +31,11 @@ export async function render(main, { parts, params }) {
 
 const count = (k) => ({ transcript: N.segs.length || '', snippets: N.snippets.length || '', summary: N.actions.filter((a) => !a.done).length || '' }[k] || '');
 const recHere = () => S.rec.active && S.rec.noteId === N.id;
-const label = (s) => localLabel(s.speakerId, s.speaker, s.speakerName);
-function localLabel(speakerId, channel, name) {
-  if (name) return name;
-  if (!speakerId) return channel === 'me' ? (S.settings.userName || t('Me')) : t('Them');
-  const n = Number(speakerId.slice(1));
-  if (speakerId[0] === 'm') return n === 1 ? (S.settings.userName || t('Me')) : t('Room speaker {n}', { n });
-  return t('Speaker {n}', { n });
-}
+const label = lineText;
 // Where a speaker's name came from (the evidence recorded with it) and how sure that was, for the chip's tooltip and the rename dialog.
 const WHY = {
   user: 'You named this speaker.',
+  'transcript:llm': 'Guessed from what people said. Keep it or turn it down.',
   voice: 'Recognised from a saved voice.',
   stream: 'The Discord bot knows who was speaking.',
   'meeting:highlight': 'Who was highlighted in the meeting window while this voice spoke.',
@@ -51,9 +46,104 @@ const WHY = {
 const whyName = (x) => {
   const w = WHY[x.nameSource];
   if (!w) return '';
-  return x.nameConfidence != null && x.nameSource !== 'user' ? `${t(w)} ${t('{n}% sure', { n: Math.round(x.nameConfidence * 100) })}` : t(w);
+  const base = x.nameConfidence != null && x.nameSource !== 'user' ? `${t(w)} ${t('{n}% sure', { n: Math.round(x.nameConfidence * 100) })}` : t(w);
+  return x.evidenceQuote ? `${base}\n${fmtClock(x.evidenceMs)} “${x.evidenceQuote}”` : base; // the line the name was read from
 };
-const spLabel = (x) => localLabel(x.speakerId, x.channel === 'mic' ? 'me' : 'them', x.name || x.voiceName);
+const guessed = (x) => /^transcript:/.test(x.nameSource || '');
+// Voices of other people with no name yet: there is something for the AI to find
+const unnamed = (x) => x.speakerId !== 'm1' && !x.name && !x.voiceName;
+const spLabel = speakerEntryText;
+
+// ---------- translation (src/llm/translate.js) ----------
+// Off until Settings → Translation is on. A meeting then offers a language menu: the lines are shown beside their translation as it
+// arrives (live while recording, or on demand), and the summary can be read in another language.
+const trOn = () => !!S.settings?.translation?.enabled;
+const langName = (c) => S.languages?.find((l) => l.code === c)?.name || c;
+async function trInit() {
+  const cfg = S.settings?.translation;
+  N.tr = { lang: '', view: cfg?.view || 'original', text: new Map(), info: { languages: [], running: [] }, job: null, sumLang: '', summary: '' };
+  if (!trOn()) return;
+  try {
+    S.languages ||= await api('GET', '/api/languages');
+    N.tr.info = await api('GET', `/api/notes/${N.id}/translations`);
+    const job = N.tr.info.running[0];
+    if (job) N.tr.job = job;
+    // while recording with live translation on, the first language is what is being written; otherwise the language the settings
+    // ask to see first, if the meeting already has it
+    const have = N.tr.info.languages.map((l) => l.lang);
+    const first = recHere() && cfg.live ? cfg.targets[0] : cfg.view !== 'original' ? cfg.targets.find((c) => have.includes(c)) || have[0] : '';
+    if (first) { N.tr.lang = first; if (N.tr.view === 'original') N.tr.view = 'both'; await trLoad(first); }
+  } catch { N.tr.lang = ''; }
+}
+async function trLoad(lang) {
+  N.tr.text = new Map();
+  if (!lang) return;
+  for (const s of await api('GET', `/api/notes/${N.id}/transcript?lang=${encodeURIComponent(lang)}`)) if (s.translation) N.tr.text.set(s.id, s.translation);
+}
+async function trStart(lang) {
+  const r = await api('POST', `/api/notes/${N.id}/translate`, { lang });
+  if (r.started || r.running) N.tr.job = { lang, done: 0, total: r.total };
+}
+async function trSelect(lang) {
+  N.tr.lang = lang;
+  try {
+    await trLoad(lang);
+    if (lang && N.tr.view === 'original') N.tr.view = 'both';
+    if (lang && !N.tr.info.running.some((r) => r.lang === lang) && N.segs.some((s) => /\p{L}/u.test(s.text) && !N.tr.text.has(s.id))) await trStart(lang);
+  } catch (e) { fail(e); }
+  if (N.tab === 'transcript') renderTab();
+}
+const trProgress = () => (N.tr.job ? `<span class="xsmall muted" id="tr-progress">${esc(t('Translating {done} of {total}…', { done: N.tr.job.done, total: N.tr.job.total }))}</span><button class="btn xs ghost" data-tr-cancel>${t('Stop')}</button>` : '');
+// The languages to pick from: the ones chosen in settings and the ones this meeting has, then the rest
+function trOptions(selected) {
+  const have = N.tr.info.languages.map((l) => l.lang);
+  const first = [...new Set([...S.settings.translation.targets, ...have])];
+  const rest = (S.languages || []).map((l) => l.code).filter((c) => !first.includes(c));
+  const opt = (c) => `<option value="${c}" ${c === selected ? 'selected' : ''}>${esc(langName(c))}${have.includes(c) ? ' ✓' : ''}</option>`;
+  return `${first.length ? `<optgroup label="${esc(t('Translate to'))}">${first.map(opt).join('')}</optgroup>` : ''}${rest.length ? `<optgroup label="${esc(t('Other languages'))}">${rest.map(opt).join('')}</optgroup>` : ''}`;
+}
+function trControls() {
+  if (!trOn() || (!N.segs.length && !recHere())) return '';
+  const tr = N.tr, pick = (v, label) => `<button class="btn xs ${tr.view === v || (v === 'both' && tr.view === 'original') ? 'primary' : 'ghost'}" data-tr-view="${v}" aria-pressed="${tr.view === v}">${t(label)}</button>`;
+  return `<select id="tr-lang" aria-label="${esc(t('Language'))}" title="${esc(t('Show this meeting translated'))}" style="width:auto"><option value="">${t('Original')}</option>${trOptions(tr.lang)}</select>
+    ${tr.lang ? `<span class="row" style="gap:2px" role="group" aria-label="${esc(t('Show'))}">${pick('translation', 'Translation')}${pick('both', 'Both')}</span>` : ''}${trProgress()}`;
+}
+function trEvent(type, d) {
+  const tr = N.tr;
+  if (!tr) return;
+  if (type === 'translation.started') { if (!tr.job || d.lang === tr.lang) tr.job = { lang: d.lang, done: 0, total: d.total }; }
+  else if (type === 'translation.segment') {
+    if (d.lang !== tr.lang) return;
+    tr.text.set(d.segmentId, d.text);
+    const seg = N.segs.find((x) => x.id === d.segmentId), el = seg && $(`.seg[data-id="${seg.id}"]`);
+    if (el) el.outerHTML = segHtml(seg);   // the line, now with its translation
+    return;
+  } else if (type === 'translation.progress') {
+    if (tr.job?.lang === d.lang) tr.job = { lang: d.lang, done: d.done, total: d.total };
+    const el = $('#tr-progress');
+    if (el) el.textContent = t('Translating {done} of {total}…', { done: d.done, total: d.total });
+    return;
+  } else if (type === 'translation.done') {
+    if (tr.job?.lang === d.lang) tr.job = null;
+    if (d.failed) toast(t('{n} lines could not be translated.', { n: d.failed }), { error: true });
+    api('GET', `/api/notes/${N.id}/translations`).then((info) => { tr.info = info; if (N.tab === 'transcript') renderTab(); }).catch(() => {});
+    return;
+  } else if (type === 'translation.failed') { if (tr.job?.lang === d.lang) tr.job = null; fail(new Error(d.message)); }
+  if (N.tab === 'transcript') renderTab();
+}
+async function sumSelect(lang) {
+  const tr = N.tr;
+  tr.sumLang = lang; tr.summary = '';
+  if (lang) {
+    try {
+      let r = await api('GET', `/api/notes/${N.id}/summary-translation?lang=${encodeURIComponent(lang)}`);
+      if (r.text === null) { toast(t('Translating the notes…')); r = await api('POST', `/api/notes/${N.id}/summary-translation`, { lang }); }
+      tr.summary = r.text || '';
+      tr.sumFor = N.note.summary;   // the notes it is the translation of: once they change, it is not shown
+    } catch (e) { fail(e); tr.sumLang = ''; }
+  }
+  if (N.tab === 'summary') renderTab();
+}
 
 // ---------- header ----------
 function header() {
@@ -95,6 +185,7 @@ function summaryTab(body) {
   const nothing = !n.body.trim() && !N.segs.length;
   body.innerHTML = `<div class="tb">${tpl}<button class="btn primary sm" data-act="enhance" ${streaming || nothing ? 'disabled' : ''}>${icon('sparkles', 'sm')} ${n.summary ? t('Regenerate') : t('Enhance notes')}</button>
       <button class="btn sm" data-act="insights" ${nothing && !n.summary ? 'disabled' : ''} title="${t('Extract topics, glossary terms and action items')}">${icon('wand', 'sm')} ${ins ? t('Re-analyse') : t('Analyse')}</button>
+      ${trOn() && n.summary && !streaming ? `<select id="sum-lang" aria-label="${esc(t('Read the notes in'))}" title="${esc(t('Read the notes in another language'))}" style="width:auto"><option value="">${t('Original')}</option>${trOptions(N.tr.sumLang)}</select>` : ''}
       <span class="spacer"></span>${n.summary ? `<button class="btn ghost sm" data-act="copy-summary">${icon('copy', 'sm')} ${t('Copy')}</button><button class="btn ghost sm" data-act="edit-summary">${icon('edit', 'sm')} ${t('Edit')}</button>` : ''}</div>
     ${!S.state?.llmConfigured ? `<div class="banner mb small">${icon('sparkles')}<div class="grow">${t('Enhancing uses your AI model. Without one, “Analyse” still finds topics offline.')}</div><a class="btn xs" href="#/settings/ai">${t('Set up AI')}</a></div>` : ''}
     ${ins?.overview ? section('overview', 'Overview', 'file', `<p style="margin:0">${esc(ins.overview)}</p>`) : ''}
@@ -102,7 +193,7 @@ function summaryTab(body) {
     ${ins?.decisions?.length ? section('dec', 'Decisions', 'ok', `<ul class="md" style="margin:0">${ins.decisions.map((d) => `<li>${esc(d)}</li>`).join('')}</ul>`) : ''}
     ${section('actions', 'Action items', 'checksq', actionsHtml(), N.actions.length ? `<span class="badge">${N.actions.filter((a) => !a.done).length}/${N.actions.length}</span>` : '')}
     ${ins?.nextSteps?.length ? section('next', 'Next steps', 'arrowright', `<ul class="md" style="margin:0">${ins.nextSteps.map((d) => `<li>${esc(d)}</li>`).join('')}</ul>`) : ''}
-    ${section('enhanced', 'Enhanced notes', 'sparkles', `<div id="summary" class="md">${streaming ? streamingHtml() : n.summary ? renderMarkdown(n.summary) : `<div class="muted small">${nothing ? t('Type notes or record the meeting first, then enhance them into a structured summary.') : t('No enhanced notes yet. Pick a template and press “Enhance notes”.')}</div>`}</div>`)}`;
+    ${section('enhanced', 'Enhanced notes', 'sparkles', `<div id="summary" class="md">${streaming ? streamingHtml() : n.summary ? renderMarkdown(N.tr?.sumLang && N.tr.summary && N.tr.sumFor === n.summary ? N.tr.summary : n.summary) : `<div class="muted small">${nothing ? t('Type notes or record the meeting first, then enhance them into a structured summary.') : t('No enhanced notes yet. Pick a template and press “Enhance notes”.')}</div>`}</div>`)}`;
 }
 const section = (k, title, ic, html, extra = '') => `<details class="section-card" open data-sec="${k}"><summary>${icon(ic)}${t(title)} ${extra}${icon('chevdown', 'sm chev')}</summary><div class="sb">${html}</div></details>`;
 const streamingHtml = () => `<div class="typing">${renderMarkdown(S.streaming.text) || `<span class="muted">${S.streaming.stage || t('Writing…')}</span>`}</div>`;
@@ -123,11 +214,12 @@ function transcriptTab(body) {
   const total = N.analytics.durationMs || 1;
   body.innerHTML = `<div class="tb">${recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
+      ${trControls()}
       <span class="spacer"></span>
       ${!S.rec.active && N.segs.length ? `<label class="btn sm ghost" title="${t('Name the speakers from a Teams, Zoom or Meet transcript file (.vtt, .srt, .docx) of this meeting')}">${icon('users', 'sm')} ${t('Attach platform transcript')}<input type="file" id="attachtranscript" accept=".vtt,.srt,.docx,.txt,.md,.json,.html" hidden></label>` : ''}
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
-    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
+    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
     <div class="segs" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
   if (N.trq) filterTranscript();
@@ -146,19 +238,25 @@ function highlightTerms(text) {
   }
   return html;
 }
+// The words of a line: as said, with the translation beneath ('both') or in their place ('translation'), when there is one
+function lineBody(s) {
+  const tr = N.tr?.lang && N.tr.view !== 'original' ? N.tr.text.get(s.id) : '';
+  if (!tr) return `<div class="txt${N.tr?.lang && N.tr.view === 'translation' && /\p{L}/u.test(s.text) ? ' untranslated' : ''}">${highlightTerms(s.text)}</div>`;
+  return N.tr.view === 'translation' ? `<div class="txt">${highlightTerms(tr)}</div>` : `<div class="txt">${highlightTerms(s.text)}</div><div class="txt tr-line">${highlightTerms(tr)}</div>`;
+}
 function segHtml(s) {
   const name = label(s);
   const starred = N.snippets.some((x) => x.segmentId === s.id);
   return `<div class="seg ${starred ? 'starred' : ''}" data-id="${s.id}">${avatar(name, { color: speakerColor(s.speakerId, name) })}
     <div><div class="who"><button class="linkish" data-rename="${esc(s.speakerId || '')}" style="color:${speakerColor(s.speakerId, name)}">${esc(name)}</button><span class="ts">${fmtClock(s.startMs)}</span>${s.overlap ? `<span class="overlap" title="${esc(t('Somebody else was talking at the same time here: some words may be less reliable, and they are not used to learn a voice.'))}">${icon('users', 'sm')} ${t('overlap')}</span>` : ''}</div>
-    <div class="txt">${highlightTerms(s.text)}</div></div>
+    ${lineBody(s)}</div>
     <div class="tools"><button class="btn ghost icon xs star-btn" data-act="star" title="${starred ? t('Remove from snippets') : t('Save as snippet')}" aria-label="${t('Save as snippet')}">${icon('star', 'sm')}</button>
       ${N.speakers.length > 1 && s.speakerId ? `<select class="seg-reassign" data-seg="${s.id}" aria-label="${t('Change who said this')}" title="${t('Change who said this')}">${N.speakers.map((x) => `<option value="${x.speakerId}" ${x.speakerId === s.speakerId ? 'selected' : ''}>${esc(spLabel(x))}</option>`).join('')}</select>` : ''}
       <button class="btn ghost icon xs" data-act="copy-seg" title="${t('Copy')}" aria-label="${t('Copy')}">${icon('copy', 'sm')}</button></div></div>`;
 }
 // Draft words of the utterance someone is saying right now (dimmed; the final line replaces them). Never saved.
 function draftHtml(d) {
-  const name = localLabel(null, d.speaker, null);
+  const name = speakerText({ kind: d.speaker === 'me' ? 'me' : 'them' });
   return `<div class="seg draft" data-draft="${esc(d.ch)}">${avatar(name, { color: speakerColor(null, name) })}
     <div><div class="who"><span style="color:${speakerColor(null, name)}">${esc(name)}</span><span class="ts">${fmtClock(d.startMs)}</span></div><div class="txt">${esc(d.text)}</div></div></div>`;
 }
@@ -253,6 +351,8 @@ function bind(main) {
       if (e.target.matches('#tpl')) { N.note.templateId = e.target.value; await api('PATCH', `/api/notes/${N.id}`, { templateId: e.target.value }); }
       else if (e.target.matches('#note-space')) { await api('PATCH', `/api/notes/${N.id}`, { folderId: e.target.value || null }); N.note.folderId = e.target.value || null; window.dispatchEvent(new Event('wb:refresh')); done(t('Moved')); }
       else if (e.target.matches('#sp-count')) { const v = e.target.value ? Number(e.target.value) : null; await api('PATCH', `/api/notes/${N.id}`, { speakerCount: v }); N.note.speakerCount = v; done(v ? t('Speakers will be split into {n} voices when the recording stops', { n: v }) : t('Saved')); }
+      else if (e.target.matches('#tr-lang')) await trSelect(e.target.value);
+      else if (e.target.matches('#sum-lang')) await sumSelect(e.target.value);
       else if (e.target.matches('#importfile')) await importAudio(e.target.files[0]);
       else if (e.target.matches('#attachtranscript')) { await attachTranscript(e.target.files[0]); e.target.value = ''; }
       else if (e.target.matches('.seg-reassign')) { await api('POST', `/api/notes/${N.id}/segments/${e.target.dataset.seg}/speaker`, { speakerId: e.target.value }); await reloadTranscript(); }
@@ -281,6 +381,15 @@ function bind(main) {
     const tab = e.target.closest('[data-tab]');
     if (tab) { N.tab = tab.dataset.tab; history.replaceState(null, '', `#/note/${N.id}?tab=${N.tab}`); renderTab(); return; }
     if (e.target.closest('[data-merge-speakers]')) { mergeSpeakers(); return; }
+    const tv = e.target.closest('[data-tr-view]');
+    if (tv) { N.tr.view = tv.dataset.trView; renderTab(); return; }
+    if (e.target.closest('[data-tr-cancel]')) { const j = N.tr.job; N.tr.job = null; if (j) await api('POST', `/api/notes/${N.id}/translate/cancel`, { lang: j.lang }).catch(() => {}); renderTab(); return; }
+    const gn = e.target.closest('[data-guess-names]');
+    if (gn) { guessNames(gn); return; }
+    const cn = e.target.closest('[data-confirm-name]');
+    if (cn) { await keepGuess(cn.dataset.confirmName); return; }
+    const rn = e.target.closest('[data-reject-name]');
+    if (rn) { await dropGuess(rn.dataset.rejectName); return; }
     const ren = e.target.closest('[data-rename]');
     if (ren) { if (ren.dataset.rename) renameSpeaker(ren.dataset.rename); return; }
     const un = e.target.closest('[data-untag]');
@@ -414,6 +523,23 @@ async function mergeSpeakers() {
   try { await api('POST', `/api/notes/${N.id}/speakers/${r.from}/merge`, { into: r.into }); await reloadTranscript(); done(); } catch (e) { fail(e); }
 }
 
+// Names from what people say (src/speakers/transcript-names.js): ask, keep one (it becomes the person's own name), or turn one down
+async function guessNames(btn) {
+  btn.disabled = true;
+  try {
+    const r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`);
+    toast(r.named.length ? t('Names found: {n}', { n: r.named.length }) : t('Nobody could be named: the conversation does not say who they are.'));
+    await reloadTranscript();
+  } catch (e) { fail(e); btn.disabled = false; }
+}
+async function keepGuess(speakerId) {
+  const sp = N.speakers.find((x) => x.speakerId === speakerId);
+  if (!sp?.name) return;
+  try { await api('PATCH', `/api/notes/${N.id}/speakers/${speakerId}`, { name: sp.name }); await reloadTranscript(); } catch (e) { fail(e); }
+}
+async function dropGuess(speakerId) {
+  try { await api('POST', `/api/notes/${N.id}/speakers/${speakerId}/reject-name`); await reloadTranscript(); } catch (e) { fail(e); }
+}
 async function renameSpeaker(speakerId) {
   const sp = N.speakers.find((x) => x.speakerId === speakerId);
   if (!sp) return;
@@ -515,6 +641,8 @@ function handleEvent(main, type, d) {
       }
     }
     updateCounts();
+  } else if (type.startsWith('translation.') && mine(d.noteId)) {
+    trEvent(type, d);
   } else if (type === 'transcript.removed' && mine(d.noteId)) {
     N.segs = N.segs.filter((s) => !d.ids.includes(s.id));
     $$('.seg').forEach((el) => { if (d.ids.includes(Number(el.dataset.id))) el.remove(); });
@@ -531,5 +659,5 @@ function handleEvent(main, type, d) {
     api('GET', `/api/notes/${N.id}/overview`).then((ov) => { N.glossary = ov.glossary; renderAside(); });
   }
 }
-const debouncedSpeakers = debounce(async () => { if (!N) return; N.speakers = await api('GET', `/api/notes/${N.id}/speakers`); if (!recHere()) { await reloadTranscript(); } else { N.analytics = await api('GET', `/api/notes/${N.id}/analytics`); renderAside(); } }, 400);
+const debouncedSpeakers = debounce(async () => { if (!N) return; N.speakers = await api('GET', `/api/notes/${N.id}/speakers`); if (!recHere()) { await reloadTranscript(); } else { [N.segs, N.analytics] = await Promise.all([api('GET', `/api/notes/${N.id}/transcript`), api('GET', `/api/notes/${N.id}/analytics`)]); if (N.tab === 'transcript') renderTab(); renderAside(); } }, 400); // while recording, a voice coming on show renames the lines already drawn
 void tagChip; void srcIcon;

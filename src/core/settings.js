@@ -3,6 +3,7 @@
 const os = require('node:os');
 const { SecretBox } = require('./secret-box');
 const { PRESETS: CONSENT_PRESETS } = require('../consent/notice');
+const { isLanguage } = require('../llm/languages');
 const { isLocalUrl } = require('./policy');
 
 // Speech-model threads: about half the logical CPUs (they are usually SMT siblings), 2..8. Decoding stops scaling near 8.
@@ -30,6 +31,14 @@ const DEFAULTS = {
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
   speakerCountHint: false,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only). Off: exactly right it takes AMI 18.1 -> 14.8 and libri-call 24.9 -> 17.9 WDER, one voice off it costs up to 6 points; see eval/README.md
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
+  speakerNamesFromTranscript: 'auto', // after a recording, an AI reads the transcript and names voices from what people say ("I'm Maria", "Thanks, George"): auto = only when the AI server runs on this computer, on = always, off = never. The names are guesses that say so, and never save a voice print
+  translation: {
+    enabled: false,             // translate meetings into other languages. Off by default; nothing is translated until it is on and a language is chosen
+    targets: [],                // the languages offered (ISO codes in the order chosen, e.g. ['en', 'pt-PT']); the first is the one live translation uses
+    live: false,                // translate while recording, line by line (keeps the AI busy during the call)
+    view: 'original',           // what a meeting shows by default once it has a translation: original | translation | both
+    notesLanguage: '',          // the language the notes are written in: '' = the language of the meeting
+  },
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
     provider: 'ollama',         // ollama | openai
@@ -87,7 +96,8 @@ const DEFAULTS = {
   discord: { enabled: false, token: '', userId: '', guildId: '', channelId: '' }, // bot that joins your voice call and hears each person separately; userId = your own Discord user ID (found from your voice channel, and left out because the microphone already has you)
 };
 
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord']);
+const MAX_TRANSLATION_TARGETS = 8;
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord', 'translation']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
 const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
@@ -120,6 +130,16 @@ function validate(key, value) {
       if (typeof merged[k] !== typeof def[k]) throw new Error(`${key}.${k} must be a ${typeof def[k]}`);
     }
     if (key === 'meet' && !(Number.isInteger(merged.port) && merged.port >= 1024 && merged.port <= 65000)) throw new Error('meet.port must be a port from 1024 to 65000');
+    if (key === 'translation') {
+      const list = merged.targets;
+      if (!Array.isArray(list)) throw new Error('translation.targets must be a list of language codes');
+      const bad = list.find((c) => !isLanguage(c));
+      if (bad !== undefined) throw new Error(`translation.targets: unknown language "${bad}"`);
+      merged.targets = [...new Set(list)];
+      if (merged.targets.length > MAX_TRANSLATION_TARGETS) throw new Error(`translation.targets: at most ${MAX_TRANSLATION_TARGETS} languages`);
+      if (!['original', 'translation', 'both'].includes(merged.view)) throw new Error('translation.view must be original, translation or both');
+      if (merged.notesLanguage && !isLanguage(merged.notesLanguage)) throw new Error(`translation.notesLanguage: unknown language "${merged.notesLanguage}"`);
+    }
     return merged;
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
@@ -131,6 +151,7 @@ function validate(key, value) {
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
   if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);
+  if (key === 'speakerNamesFromTranscript' && !['auto', 'on', 'off'].includes(value)) throw new Error('speakerNamesFromTranscript must be auto, on or off');
   if (key === 'floatingRecorder' && !['off', 'background', 'always'].includes(value)) throw new Error('floatingRecorder must be off, background or always');
   if (key === 'autoRecord' && !['off', 'ask', 'always'].includes(value)) throw new Error('autoRecord must be off, ask or always');
   if (key === 'captureCalendar' && !['off', 'selected', 'all'].includes(value)) throw new Error('captureCalendar must be off, selected or all');

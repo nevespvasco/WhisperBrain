@@ -2,7 +2,7 @@
 const { newId } = require('./ids');
 const { tx } = require('./db');
 const { words } = require('./text');
-const { defaultLabel } = require('../speakers/store');
+const { displayFor, describe } = require('../speakers/display');
 const { toBlob } = require('../speakers/cluster');
 
 const NOTE_COLS = 'id, title, body, summary, template_id, folder_id, status, pinned, event_uid, event_start, attendees, created_at, updated_at, started_at, ended_at, source, source_ref, platform, insights, external, speaker_count, consent';
@@ -195,14 +195,16 @@ class Notes {
   }
 
   // Each segment carries its channel speaker ('me' | 'them'), the identified voice (speakerId, e.g. "s2") and a
-  // display label: the name the user gave, else a saved voice profile's name, else "Speaker 2" / "Me".
+  // display label (speakers/display.js): the name the user gave, else a saved voice profile's name, else "Speaker 2" / "Them" / "Me"
+  // (which of them depends on whether the note is being recorded), with labelKind and displayNo for a screen to write it its own way.
   segments(noteId) {
-    return this.db.prepare(`SELECT s.id, s.speaker, s.channel, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
+    const rows = this.db.prepare(`SELECT s.id, s.speaker, s.channel, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
         CASE WHEN s.words IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM json_each(s.words) w WHERE json_extract(w.value, '$[3]') = 1) END AS overlap,
         COALESCE(NULLIF(ns.name, ''), v.name, '') AS speakerName
       FROM segments s LEFT JOIN note_speakers ns ON ns.note_id = s.note_id AND ns.speaker_id = s.speaker_id LEFT JOIN voices v ON v.id = ns.voice_id
-      WHERE s.note_id = ? ORDER BY s.start_ms, s.id`).all(noteId)
-      .map((r) => ({ ...r, label: r.speakerName || defaultLabel(r.speakerId, r.speaker) }));
+      WHERE s.note_id = ? ORDER BY s.start_ms, s.id`).all(noteId);
+    const map = displayFor(rows, noteId, this.bus?.live);
+    return rows.map((r) => { const d = describe(map, r); return { ...r, label: d.label, labelKind: d.kind, displayNo: d.n }; });
   }
 
   // Utterances with their word timings ([[word, startMs, endMs], ...] relative to the utterance start), for the

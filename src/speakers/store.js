@@ -3,6 +3,8 @@ const { newId } = require('../core/ids');
 const { tx } = require('../core/db');
 const { toBlob, fromBlob, norm, blend, cosine, mergeClusters, matchVoices, addPrint, populationMean, MATCH, MAX_REJECTS, VOICE_MEAN } = require('./cluster');
 const { semitones } = require('../audio/features');
+const { displayFor, describe } = require('./display');
+const { nameKey } = require('../meet/protocol');
 
 const PITCH_VETO = 4;   // semitones: two voices this far apart in pitch are never the same person
 // A voice print is biometric data: it is saved only on the say-so of someone, and the profile records whose.
@@ -38,8 +40,29 @@ class Speakers {
       FROM segments s, json_each(s.words) w WHERE s.note_id = ? AND s.speaker_id = ? AND s.words IS NOT NULL AND json_extract(w.value, '$[3]') = 1`).get(noteId, speakerId).ms;
   }
 
+  // How the voices of a note are shown (display.js), from the lines stored so far. -> { map, shown, of(speakerId, channelSpeaker) }
+  // `shown` names the voices on show, to tell when it changes; `of` says what to call a line of a voice.
+  display(noteId, userName = '') {
+    const rows = this.db.prepare(`SELECT s.speaker, s.speaker_id AS speakerId, s.text, COALESCE(NULLIF(ns.name, ''), v.name, '') AS speakerName
+      FROM segments s LEFT JOIN note_speakers ns ON ns.note_id = s.note_id AND ns.speaker_id = s.speaker_id LEFT JOIN voices v ON v.id = ns.voice_id
+      WHERE s.note_id = ? ORDER BY s.start_ms, s.id`).all(noteId);
+    const map = displayFor(rows, noteId, this.bus?.live);
+    const names = new Map();
+    for (const r of rows) if (r.speakerId && r.speakerName && !names.has(r.speakerId)) names.set(r.speakerId, r.speakerName);
+    return {
+      map,
+      shown: [...map].filter(([, v]) => v.shown).map(([id]) => id).sort().join(','),
+      of: (speakerId, speaker) => describe(map, { speakerId, speaker, speakerName: names.get(speakerId) || '' }, { userName }),
+    };
+  }
+
   publicForNote(noteId, userName) {
-    return this.forNote(noteId).filter((s) => s.segments > 0).map(({ centroid, ...s }) => ({ ...s, label: s.name || s.voiceName || defaultLabel(s.speakerId, s.channel === 'mic' ? 'me' : 'them', userName) }));
+    const shown = this.display(noteId, userName);
+    return this.forNote(noteId).filter((s) => s.segments > 0).map(({ centroid, ...s }) => {
+      const name = s.name || s.voiceName || '';
+      const d = name ? { label: name, kind: 'name', n: shown.map.get(s.speakerId)?.n ?? null } : shown.of(s.speakerId, s.channel === 'mic' ? 'me' : 'them');
+      return { ...s, label: d.label, labelKind: d.kind, displayNo: d.n };
+    });
   }
 
   save(noteId, { speakerId, channel, centroid, count, voiceId, pitch }) {
@@ -90,6 +113,21 @@ class Speakers {
     this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id), name_source = CASE WHEN ? THEN name_source ELSE ? END, name_confidence = CASE WHEN ? THEN name_confidence ELSE ? END WHERE note_id = ? AND speaker_id = ?').run(clean, link, agrees ? 1 : 0, source, agrees ? 1 : 0, confidence, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
     return agrees ? 'agrees' : 'named';
+  }
+
+  // The user turns down a name that came from the conversation (the AI's guess): the voice goes back to unnamed, and the name is
+  // remembered as refused for that voice so the next guess does not offer it again. A name the person typed, or one a saved voice
+  // or the meeting window gave, is not touched by this. -> true when a guess was cleared
+  rejectName(noteId, speakerId, { evidence } = {}) {
+    const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
+    if (!sp?.name || !/^transcript/.test(sp.nameSource || '')) return false;
+    this.db.prepare("UPDATE note_speakers SET name = '', name_source = '', name_confidence = NULL WHERE note_id = ? AND speaker_id = ?").run(noteId, speakerId);
+    if (evidence) {
+      evidence.replace(noteId, ['mention'], evidence.forNote(noteId, { kind: 'mention' }).filter((r) => r.meta?.speakerId !== speakerId));
+      evidence.add(noteId, [{ kind: 'refuted', source: 'user', key: nameKey(sp.name), name: sp.name, meta: { speakerId } }]);
+    }
+    this.bus?.publish('speakers.updated', { noteId });
+    return true;
   }
 
   // Remember a voice the meeting window named, for the next meetings: the speaker's print becomes (one more print of) a
@@ -225,6 +263,27 @@ class Speakers {
     return changes.size;
   }
 
+  // Lines that got no speaker live (too short to start one, and nobody they sounded like) go to the speaker of their own
+  // channel they sound most like, when that is within `slack` under the clustering threshold. A stranger stays unlabelled.
+  // The diarization does this word by word for the channels it covers; this is for the ones it does not. -> number placed
+  placeUnlabelled(noteId, threshold = 0.6, { channels = ['mic', 'system'], slack = 0.1 } = {}) {
+    const known = this.forNote(noteId).filter((s) => s.centroid);
+    const move = this.db.prepare('UPDATE segments SET speaker_id = ? WHERE id = ? AND note_id = ?');
+    let placed = 0;
+    for (const seg of this.segmentVoices(noteId)) {
+      if (seg.speakerId || !seg.embedding || !channels.includes(seg.channel)) continue;
+      let best = null, score = -1;
+      for (const sp of known) {
+        if (sp.channel !== seg.channel) continue;
+        const c = cosine(seg.embedding, sp.centroid);
+        if (c > score) { score = c; best = sp; }
+      }
+      if (best && score >= threshold - slack) { move.run(best.speakerId, seg.id, noteId); placed++; }
+    }
+    if (placed) this.bus?.publish('speakers.updated', { noteId });
+    return placed;
+  }
+
   // Every utterance of a note with the voice it was judged to have (for the after-recording refinement).
   segmentVoices(noteId) {
     return this.db.prepare('SELECT id, speaker, speaker_id AS speakerId, embedding FROM segments WHERE note_id = ? ORDER BY start_ms, id').all(noteId)
@@ -299,11 +358,6 @@ class Speakers {
     for (const r of this.db.prepare("SELECT channel, embedding FROM voice_exemplars WHERE negative = 0 AND channel != ''").all()) if (per[r.channel]) per[r.channel].push(fromBlob(r.embedding));
     const mu = Object.fromEntries(Object.keys(per).map((ch) => [ch, this.adapt ? populationMean(per[ch], this.mean, MATCH.prior[ch]) : this.mean]));
     return (channel) => mu[channel] || this.mean;
-  }
-
-  label(noteId, speakerId, channelSpeaker) {
-    const r = this.db.prepare('SELECT ns.name, v.name AS voiceName FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id WHERE ns.note_id = ? AND ns.speaker_id = ?').get(noteId, speakerId);
-    return r?.name || r?.voiceName || defaultLabel(speakerId, channelSpeaker);
   }
 
   // ---- voice profiles ----
