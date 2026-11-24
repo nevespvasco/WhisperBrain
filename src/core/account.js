@@ -16,7 +16,8 @@ function dirSize(dir) {
 }
 
 class Account {
-  constructor({ db, notes, settings, speakers, models, dataDir, bus, knowledge }) { Object.assign(this, { db, notes, settings, speakers, models, dataDir, bus, knowledge }); }
+  // semantic: the search-by-meaning index, which keeps a copy of the transcripts' text and vectors made from it
+  constructor({ db, notes, settings, speakers, models, dataDir, bus, knowledge, semantic = null }) { Object.assign(this, { db, notes, settings, speakers, models, dataDir, bus, knowledge, semantic }); }
 
   summary() {
     const c = (sql) => this.db.prepare(sql).get().c;
@@ -65,6 +66,7 @@ class Account {
     const cutoff = now - days * 86400000;
     const old = this.db.prepare("SELECT id FROM notes WHERE status != 'recording' AND COALESCE(ended_at, created_at) < ?").all(cutoff);
     for (const { id } of old) this.notes.remove(id);
+    if (old.length) this.semantic?.prune();
     if (old.length) this.bus?.publish('account.changed', { what: 'retention', deleted: old.length });
     return old.length;
   }
@@ -74,8 +76,10 @@ class Account {
       const count = this.db.prepare('DELETE FROM segments').run().changes;
       this.db.prepare('DELETE FROM note_speakers').run();
       this.db.prepare('DELETE FROM evidence').run();
+      this.db.prepare('DELETE FROM semantic_chunks').run();   // the text copy kept for search by meaning
       return count;
     });
+    this.semantic?.prune();     // and the vectors made from it (when the extension is loaded; otherwise at the next start)
     for (const { id } of this.db.prepare('SELECT id FROM notes').all()) this.notes.reindex(id);
     this.bus?.publish('account.changed', { what: 'transcripts' });
     return n;
@@ -87,10 +91,11 @@ class Account {
   deleteEverything({ removeModels = false } = {}) {
     tx(this.db, () => {
       for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segments', 'note_speakers', 'search', 'notes', 'folders',
-        'evidence', 'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
+        'evidence', 'semantic_chunks', 'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
     this.settings.reset();
+    this.semantic?.prune();
     this.db.exec('VACUUM');
     if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
     this.bus?.publish('account.changed', { what: 'all' });

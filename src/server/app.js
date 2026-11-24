@@ -44,6 +44,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const evidence = new Evidence(conn);
   speakers.enabled = () => settings.get('voiceprints');
   const semantic = new SemanticIndex({ db: conn, notes, embedder: new HashEmbedder() });
+  semantic.enabled = () => settings.get('semanticSearch');
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
@@ -57,7 +58,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
-  const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge });
+  const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge, semantic });
 
   // When a recording ends: enhance automatically if asked, then fill the knowledge layer (topics, glossary,
   // action items). Without auto-enhance, offline topics are still extracted so search and topics work.

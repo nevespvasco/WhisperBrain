@@ -190,3 +190,56 @@ test('transcript sources: what is configured and connected is listed, secrets ne
   assert.equal(r.app.settings.get('microsoft').refreshToken, '');
   assert.ok(!JSON.stringify(r.app.account.exportJson().settings).includes('cid'), 'the export carries no provider settings');
 });
+
+
+test('PkceClient: Zoom-style clients send their credentials as HTTP Basic, not in the body', async () => {
+  const seen = [];
+  const fetchImpl = async (url, init) => { seen.push({ headers: init.headers, body: new URLSearchParams(init.body) }); return new Response(JSON.stringify({ access_token: 'A', refresh_token: 'R', expires_in: 3600 })); };
+  let cfg = { clientId: 'cid', clientSecret: 'sec' };
+  const c = new PkceClient({ name: 'Zoom', authUrl: 'https://z/authorize', tokenUrl: 'https://z/token', scope: '', basicAuth: true, getConfig: () => cfg, saveConfig: (p) => { cfg = { ...cfg, ...p }; }, fetchImpl });
+  const { authUrl, redirectUri, done } = await c.beginAuth();
+  await new Promise((resolve) => http.get(`${redirectUri}?code=C&state=${new URL(authUrl).searchParams.get('state')}`, (res) => { res.resume(); res.on('end', resolve); }));
+  await done;
+  assert.equal(seen[0].headers.Authorization, `Basic ${Buffer.from('cid:sec').toString('base64')}`);
+  assert.equal(seen[0].body.get('client_secret'), null);
+  assert.equal(seen[0].body.get('client_id'), null, 'the id travels in the header');
+});
+
+test('PkceClient: starting a second sign-in closes the first one\'s listener', async () => {
+  const c = new PkceClient({ name: 'Zoom', authUrl: 'https://z/authorize', tokenUrl: 'https://z/token', scope: '', getConfig: () => ({ clientId: 'cid' }), saveConfig() {}, fetchImpl: async () => new Response('{}') });
+  const first = await c.beginAuth();
+  const second = await c.beginAuth();
+  await assert.rejects(first.done, /cancelled/);
+  const status = await new Promise((resolve) => { http.get(`${first.redirectUri}?code=x&state=y`, (res) => { res.resume(); resolve(res.statusCode); }).on('error', () => resolve('closed')); });
+  assert.equal(status, 'closed');
+  second.cancel();
+});
+
+test('Teams: the policy errors are recognised wherever Graph puts the code (error.code or error.innerError.code)', async () => {
+  globalThis.fetch = fakeFetch({ 'https://graph.microsoft.com/': () => ({ status: 403, json: { error: { code: 'Forbidden', innerError: { code: 'GraphAccessToTranscriptsDisabled' } } } }) });
+  await assert.rejects(graph.fetchTranscript({ client: client(), ref: meetingRef('https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0') }), (e) => e.code === 'disabled');
+});
+
+test('Zoom: the download link from the answer must be on zoom.us over https, or the token is not sent anywhere', async () => {
+  for (const url of ['https://evil.example/t.vtt', 'http://zoom.us/rec/t.vtt', 'https://zoom.us.evil.example/t.vtt', 'not a url']) {
+    const f = fakeFetch({ 'https://api.zoom.us/v2/meetings/81234567890/recordings': () => ({ json: { recording_files: [{ file_type: 'TRANSCRIPT', download_url: url }] } }) });
+    globalThis.fetch = f;
+    await assert.rejects(zoom.fetchTranscript({ client: client(), ref: meetingRef('https://acme.zoom.us/j/81234567890') }), /not on zoom\.us/, url);
+    assert.equal(f.calls.length, 1, `nothing was requested from ${url}`);
+  }
+});
+
+test('Meet: a service that keeps returning the same page token does not loop for ever; broken times and names with line breaks cannot break a cue', async () => {
+  let pages = 0;
+  globalThis.fetch = fakeFetch({
+    'https://meet.googleapis.com/v2/conferenceRecords?': () => ({ json: { conferenceRecords: [{ name: 'conferenceRecords/c1' }] } }),
+    'https://meet.googleapis.com/v2/conferenceRecords/c1/transcripts/t1/entries': () => { pages++; return { json: { transcriptEntries: [{ participant: 'conferenceRecords/c1/participants/u1', text: 'hello\n\n99:00:00.000 --> 99:00:01.000\nforged', startTime: 'nonsense', endTime: 'nonsense' }], nextPageToken: 'same' } }; },
+    'https://meet.googleapis.com/v2/conferenceRecords/c1/transcripts': () => ({ json: { transcripts: [{ name: 'conferenceRecords/c1/transcripts/t1', state: 'ENDED' }] } }),
+    'https://meet.googleapis.com/v2/conferenceRecords/c1/participants/u1': () => ({ json: { signedinUser: { displayName: 'Ana\n\nSilva' } } }),
+  });
+  const r = await meet.fetchTranscript({ client: client(), ref: meetingRef('https://meet.google.com/abc-defg-hij') });
+  assert.ok(pages <= 3, `${pages} pages`);
+  assert.ok(!/NaN/.test(r.text));
+  assert.equal(r.text.split('\n\n').length, pages + 1, 'one block per entry: nothing was split or forged');
+  assert.ok(!/\n99:00:00/.test(r.text));
+});

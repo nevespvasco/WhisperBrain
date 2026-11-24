@@ -11,11 +11,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// The system file comes first and wins: WB_POLICY_FILE is only for where there is none (testing), so a person cannot switch an
+// organisation's policy off by pointing the variable somewhere else.
 function policyFiles({ platform = process.platform, env = process.env } = {}) {
-  if (env.WB_POLICY_FILE) return [env.WB_POLICY_FILE];
-  if (platform === 'win32') return [path.win32.join(env.ProgramData || 'C:\\ProgramData', 'WhisperBrain', 'policy.json')];
-  if (platform === 'darwin') return ['/Library/Application Support/WhisperBrain/policy.json'];
-  return ['/etc/whisperbrain/policy.json'];
+  const system = platform === 'win32' ? path.win32.join(env.ProgramData || 'C:\\ProgramData', 'WhisperBrain', 'policy.json')
+    : platform === 'darwin' ? '/Library/Application Support/WhisperBrain/policy.json' : '/etc/whisperbrain/policy.json';
+  return env.WB_POLICY_FILE ? [system, env.WB_POLICY_FILE] : [system];
 }
 
 // the setting a lock path names, if there is one: its default value tells the type
@@ -39,14 +40,23 @@ function loadPolicy({ files = policyFiles(), read = (f) => fs.readFileSync(f, 'u
     try { json = JSON.parse(text); } catch (e) { out.problems.push(`${file} could not be read: ${e.message}`); return out; }
     for (const [key, value] of Object.entries(json?.lock || {})) {
       const d = defaultAt(key);
-      if (d === undefined) out.problems.push(`${file}: "${key}" is not a setting`);
-      else if (typeof d !== typeof value) out.problems.push(`${file}: "${key}" must be a ${typeof d}`);
-      else out.locked[key] = value;
+      if (d === undefined) { out.problems.push(`${file}: "${key}" is not a setting`); continue; }
+      if (typeof d !== typeof value || value === null || Array.isArray(d) !== Array.isArray(value) || (typeof d === 'object' && !Array.isArray(d))) { out.problems.push(`${file}: "${key}" must be a ${Array.isArray(d) ? 'list' : typeof d === 'object' ? 'single value of a setting, not a whole group' : typeof d}`); continue; }
+      try { checkValue(key, value); } catch (e) { out.problems.push(`${file}: "${key}": ${e.message}`); continue; }   // the same rules as for a person's own change
+      out.locked[key] = value;
     }
+    if (json?.requireLocalLlm !== undefined && typeof json.requireLocalLlm !== 'boolean') out.problems.push(`${file}: "requireLocalLlm" must be true or false`);
     out.requireLocalLlm = json?.requireLocalLlm === true;
     return out;
   }
   return out;
+}
+
+// the settings rules applied to one locked value (settings.js validate); a top-level setting or "section.field"
+function checkValue(pathStr, value) {
+  const { validateSetting, DEFAULTS } = require('./settings');
+  const [a, b] = pathStr.split('.');
+  validateSetting(a, b === undefined ? value : { ...DEFAULTS[a], [b]: value });
 }
 
 // this computer or the local network: loopback, private addresses, and names ending .local / .lan
@@ -58,7 +68,7 @@ function isLocalUrl(url) {
   const m = /^(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(host);
   if (!m) return false;
   const [a, b] = [Number(m[1]), Number(m[2])];
-  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31) || (a === 169 && b === 254);
+  return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);   // not 169.254.x.x: that is where cloud metadata services live
 }
 
 module.exports = { loadPolicy, policyFiles, isLocalUrl };

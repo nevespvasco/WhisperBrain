@@ -79,7 +79,7 @@ class Speakers {
     let voiceId = sp.voiceId, voiceName = sp.voiceName;
     if (replacing && voiceId && !same(voiceName, clean)) { voiceId = null; voiceName = null; this.db.prepare('UPDATE note_speakers SET voice_id = NULL WHERE note_id = ? AND speaker_id = ?').run(noteId, speakerId); }
     if (voiceId && voiceName && !same(voiceName, clean)) return 'conflict';
-    const voice = this.voiceByName(clean);
+    const voice = this.enabled() ? this.voiceByName(clean) : null;   // voice prints off: no saved voice is linked
     let link = null;
     if (voice && !all.some((x) => x.voiceId === voice.id && x.speakerId !== speakerId)) {
       const fits = voiceId === voice.id || (sp.centroid && matchVoices([{ id: sp.speakerId, centroid: sp.centroid, channel: sp.channel }], [voice], MATCH.threshold - 0.2, null, { mu: this.channelMeans() }).has(sp.speakerId));
@@ -156,7 +156,7 @@ class Speakers {
     if (linked && !same(linked.name, clean)) {
       const confirmedHere = sp.name && same(sp.name, linked.name);
       if (!confirmedHere || this.voiceByName(clean)) {
-        if (sp.centroid) this.reject(linked.id, sp.centroid, source);
+        if (sp.centroid && this.enabled()) this.reject(linked.id, sp.centroid, source);
         voiceId = null;
       }
     }

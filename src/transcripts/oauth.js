@@ -14,8 +14,10 @@ const authError = (m) => Object.assign(new Error(m), { code: 'auth' });
 
 class PkceClient {
   // name: for messages. authUrl/tokenUrl: the provider's endpoints. scope: space separated. extraAuthParams: e.g. { prompt: 'consent' }
-  constructor({ name, authUrl, tokenUrl, scope, extraAuthParams = {}, getConfig, saveConfig, fetchImpl = globalThis.fetch, now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS }) {
-    Object.assign(this, { name, authUrl, tokenUrl, scope, extraAuthParams, getConfig, saveConfig, now, authTimeoutMs });
+  // basicAuth: the client id and secret go in an HTTP Basic header, not in the body (Zoom asks for this)
+  constructor({ name, authUrl, tokenUrl, scope, extraAuthParams = {}, basicAuth = false, getConfig, saveConfig, fetchImpl = globalThis.fetch, now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS }) {
+    Object.assign(this, { name, authUrl, tokenUrl, scope, extraAuthParams, basicAuth, getConfig, saveConfig, now, authTimeoutMs });
+    this.pending = null;            // the sign-in in progress: a second one cancels it, so no listener is left open
     this.fetch = fetchImpl;
     this.refreshing = null;
   }
@@ -24,8 +26,10 @@ class PkceClient {
   connected() { return !!this.config().refreshToken; }
 
   async postForm(fields) {
+    const headers = { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' };
+    if (this.basicAuth) { headers.Authorization = `Basic ${Buffer.from(`${fields.client_id}:${fields.client_secret || ''}`).toString('base64')}`; fields = { ...fields, client_id: undefined, client_secret: undefined }; }
     const body = new URLSearchParams(Object.entries(fields).filter(([, v]) => v !== undefined && v !== ''));
-    const res = await this.fetch(this.tokenUrl, { method: 'POST', body, signal: AbortSignal.timeout(15000), headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' } });
+    const res = await this.fetch(this.tokenUrl, { method: 'POST', body, signal: AbortSignal.timeout(15000), headers });
     return { ok: res.ok, status: res.status, json: await res.json().catch(() => ({})) };
   }
 
@@ -40,6 +44,7 @@ class PkceClient {
   async beginAuth({ openExternal } = {}) {
     const { clientId, clientSecret } = this.config();
     if (!clientId) throw new Error(`Set a ${this.name} client ID (an app registered with ${this.name}) before connecting.`);
+    this.pending?.();
     const verifier = b64url(crypto.randomBytes(48));
     const state = b64url(crypto.randomBytes(24));
     let settle, finished = false, busy = false;
@@ -74,7 +79,9 @@ class PkceClient {
     const q = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: this.scope, state, code_challenge: b64url(crypto.createHash('sha256').update(verifier).digest()), code_challenge_method: 'S256', ...this.extraAuthParams });
     const url = `${this.authUrl}?${q}`;
     if (openExternal) { try { await openExternal(url); } catch (e) { finish(e); } }
-    return { authUrl: url, redirectUri, done, cancel: () => finish(authError(`${this.name} sign-in was cancelled`)) };
+    const cancel = () => finish(authError(`${this.name} sign-in was cancelled`));
+    this.pending = cancel;
+    return { authUrl: url, redirectUri, done, cancel };
   }
 
   // A valid access token, refreshed when missing or about to expire.

@@ -20,11 +20,10 @@ function policyFile(obj) {
   return { file, done: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-test('policyFiles: where each OS looks, and WB_POLICY_FILE wins', () => {
+test('policyFiles: where each OS looks; WB_POLICY_FILE is only a fallback after it', () => {
   assert.deepEqual(policyFiles({ platform: 'linux', env: {} }), ['/etc/whisperbrain/policy.json']);
   assert.deepEqual(policyFiles({ platform: 'darwin', env: {} }), ['/Library/Application Support/WhisperBrain/policy.json']);
   assert.deepEqual(policyFiles({ platform: 'win32', env: { ProgramData: 'C:\\ProgramData' } }), [path.win32.join('C:\\ProgramData', 'WhisperBrain', 'policy.json')]);
-  assert.deepEqual(policyFiles({ platform: 'linux', env: { WB_POLICY_FILE: '/x/p.json' } }), ['/x/p.json']);
 });
 
 test('loadPolicy: no file is no policy; a broken file is reported and locks nothing; unknown keys are reported', () => {
@@ -121,4 +120,58 @@ test('the app reads the policy at start: state() says what is managed, and old m
   assert.equal(app.notes.get(old.id), null, 'older than 30 days: gone');
   app.close(); await app.settled;
   fs.rmSync(dataDir, { recursive: true, force: true }); p.done();
+});
+
+// ---- found in review ----
+test('capVoices: a nonsense cap leaves the voices alone instead of looping for ever', () => {
+  const { capVoices } = require('../src/speakers/final');
+  const res = { turns: [{ speaker: 0, start: 0, end: 5 }, { speaker: 1, start: 5, end: 6 }], voices: [] };
+  for (const max of [NaN, 0, 0.5, undefined, -1]) assert.equal(capVoices(res, max).turns.length, 2, String(max));
+});
+
+test('a lock goes through the same rules as a person\'s own change: wrong shapes and values are reported and lock nothing', () => {
+  const bad = policyFile({ lock: { llm: null, meet: {}, language: 'xx', retentionDays: 0.00001, 'meet.port': 'x', voiceprints: false }, requireLocalLlm: 'yes' });
+  const r = loadPolicy({ files: [bad.file] });
+  assert.deepEqual(r.locked, { voiceprints: false }, 'only the one valid lock');
+  assert.ok(r.problems.length >= 5, r.problems.join('\n'));
+  assert.ok(r.problems.some((p) => /requireLocalLlm/.test(p)));
+  bad.done();
+});
+
+test('an organisation\'s file wins: pointing WB_POLICY_FILE elsewhere does not switch it off', () => {
+  const dir = tmpDir('wb-pol-'); const sys = path.join(dir, 'system.json'); const user = path.join(dir, 'user.json');
+  fs.writeFileSync(sys, JSON.stringify({ lock: { voiceprints: false } })); fs.writeFileSync(user, JSON.stringify({ lock: {} }));
+  assert.deepEqual(loadPolicy({ files: [sys, user] }).locked, { voiceprints: false });
+  assert.deepEqual(policyFiles({ platform: 'linux', env: { WB_POLICY_FILE: '/x/p.json' } }), ['/etc/whisperbrain/policy.json', '/x/p.json']);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('the policy\'s values are never written into the settings: what the person stored survives the policy being lifted', () => {
+  const { isLocalUrl } = require('../src/core/policy');
+  assert.equal(isLocalUrl('http://169.254.169.254/latest'), false, 'cloud metadata is not "local"');
+  const db = open(':memory:');
+  new Settings(db, null).update({ llm: { baseUrl: 'https://api.openai.com/v1', model: 'gpt' }, meet: { headcount: true } });
+  const p = policyFile({ requireLocalLlm: true, lock: { 'meet.learnVoices': false } });
+  const managed = new Settings(db, null, null, loadPolicy({ files: [p.file] }));
+  assert.equal(managed.get('llm').baseUrl, '', 'not used while the policy is on');
+  managed.update({ llm: { model: 'other' }, meet: { headcount: false } });
+  const lifted = new Settings(db, null);
+  assert.deepEqual([lifted.get('llm').baseUrl, lifted.get('llm').model, lifted.get('meet').headcount], ['https://api.openai.com/v1', 'other', false]);
+  p.done();
+});
+
+test('voice prints off: a name from the meeting links no saved voice, and a correction stores no rejected print', () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, null), speakers = new Speakers(db, null);
+  const v = (seed) => { const a = new Float32Array(32); let x = seed * 9301 + 49297; for (let i = 0; i < 32; i++) { x = (x * 9301 + 49297) % 233280; a[i] = x / 233280 - 0.5; } return a; };
+  const first = notes.create({});
+  speakers.save(first.id, { speakerId: 's1', channel: 'system', centroid: v(1), count: 5 });
+  notes.addSegments(first.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'x' }]);
+  speakers.rename(first.id, 's1', 'Ana', { remember: true, consentSource: 'user' });
+  speakers.enabled = () => false;
+  const second = notes.create({});
+  speakers.save(second.id, { speakerId: 's1', channel: 'system', centroid: v(1), count: 5 });
+  notes.addSegments(second.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'x' }]);
+  speakers.nameFromMeeting(second.id, 's1', 'Ana');
+  assert.equal(speakers.forNote(second.id)[0].voiceId, null);
 });

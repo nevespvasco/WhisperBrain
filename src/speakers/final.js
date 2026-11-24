@@ -43,14 +43,14 @@ function foldStarved(res, { minShare, minSeconds }) {
 // At most `max` voices: while there are more, the one with the least speech joins the voice it sounds most like. A roster or a
 // calendar says who might be there, not who spoke, so it only caps; it never invents a voice.
 function capVoices(res, max) {
+  if (!(max >= 1)) return { ...res, folded: 0 };   // nothing sensible to cap to (0, NaN): leave the voices alone
   let cur = { ...res, folded: 0 };
   for (;;) {
     const secs = secondsOf(cur);
     if (secs.size <= max) return cur;
     const [smallest] = [...secs].sort((a, b) => a[1] - b[1])[0];
     const to = nearest(cur, smallest, [...secs.keys()].filter((k) => k !== smallest));
-    const next = applyFold(cur, new Map([[smallest, to]]));
-    cur = { ...next, folded: cur.folded + 1 };
+    cur = { ...applyFold(cur, new Map([[smallest, to]])), folded: cur.folded + 1 };
   }
 }
 

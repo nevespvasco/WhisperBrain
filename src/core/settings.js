@@ -124,6 +124,7 @@ function validate(key, value) {
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
   if (key === 'consentPreset' && !CONSENT_PRESETS.includes(value)) throw new Error('consentPreset must be general, eu or us');
+  if (key === 'retentionDays' && !(Number.isInteger(value) && value >= 0 && value <= 3650)) throw new Error('retentionDays must be a whole number of days from 0 (keep everything) to 3650');
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
@@ -218,6 +219,7 @@ class Settings {
           out[row.key] = validate(row.key, v);
         } catch { /* keep default */ }
       }
+      this.raw = structuredClone(out);        // what is stored, before the policy: updates are merged with this, so the policy's values are never written back
       this.applyPolicy(out);
       this.cache = out;
     }
@@ -302,7 +304,8 @@ class Settings {
   update(patch) {
     if (!this.unlocked) throw new Error('settings are still being unlocked: await init() first');
     const current = this.all();
-    const next = {};
+    const raw = this.raw;                       // what is stored: the policy's values are not (see all())
+    const next = {}, stored = {};
     for (const [key, value] of Object.entries(patch)) {
       let v = value;
       if (SECRETS[key] && v && typeof v === 'object') {
@@ -310,15 +313,16 @@ class Settings {
         for (const f of SECRETS[key]) if (v[f] === MASK) v[f] = current[key][f];
       }
       if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => (w?.secret === MASK ? { ...w, secret: current.webhooks.find((x) => x.id === w.id)?.secret || '' } : w));
-      next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);
+      next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);        // as it will read (policy applied): checked and cached
+      stored[key] = OBJECT_KEYS.has(key) ? validate(key, { ...raw[key], ...v }) : next[key];   // as it is kept
     }
     this.checkPolicy(next);
     const before = current.secretStorage;
-    const sync = Object.entries(next).filter(([k]) => !(this.box && hasSecrets(k)));
+    const sync = Object.entries(stored).filter(([k]) => !(this.box && hasSecrets(k)));
     if (sync.length) this.write(sync);
     if (this.box) {
       this.cache = { ...current, ...next };
-      for (const [k, v] of Object.entries(next)) if (hasSecrets(k)) {
+      for (const [k, v] of Object.entries(stored)) if (hasSecrets(k)) {
         if (secretFields(k, v).some(([h, f]) => h[f])) this.unreadable = this.unreadable.filter((x) => x !== k);   // a secret was typed again
         this.persistSecretKey(k, v);
       }
@@ -329,4 +333,4 @@ class Settings {
   }
 }
 
-module.exports = { Settings, DEFAULTS, MASK, defaultAsrThreads };
+module.exports = { Settings, validateSetting: validate, DEFAULTS, MASK, defaultAsrThreads };

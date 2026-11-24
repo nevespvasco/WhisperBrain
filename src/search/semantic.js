@@ -59,6 +59,7 @@ class SemanticIndex {
     });
     this.available = false;
     this.reason = 'not started';
+    this.enabled = () => true;       // the person's switch (settings.semanticSearch): off means no vector results, whatever is loaded
   }
 
   // -> true when vector search works. Never throws: it is an extra.
@@ -95,7 +96,7 @@ class SemanticIndex {
 
   // -> [{ noteId, text, startMs, endMs, distance }] nearest first, cosine distance 0..2
   async search(query, { k = 10 } = {}) {
-    if (!this.available || !String(query || '').trim()) return [];
+    if (!this.available || !this.enabled() || !String(query || '').trim()) return [];
     const [q] = await this.embedder.embed([query]);
     const rows = this.db.prepare('SELECT rowid AS id, distance FROM semantic_vec WHERE embedding MATCH ? AND k = ?').all(blob(q), k);
     const info = this.db.prepare('SELECT note_id AS noteId, text, start_ms AS startMs, end_ms AS endMs FROM semantic_chunks WHERE id = ?');

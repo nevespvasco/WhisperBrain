@@ -125,3 +125,43 @@ test('the app: off by default; switched on, it indexes and the route fuses both 
   await srv.close(); app.close(); await app.settled;
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+test('deleting transcripts or everything removes what was indexed from them (text and vectors)', { skip }, async () => {
+  const { Account } = require('../src/core/account');
+  const { Speakers } = require('../src/speakers/store');
+  const r = rig();
+  await r.index.init();
+  const a = r.mk('Hiring sync', ['the recruiter said we can close two engineers by march']);
+  await r.index.indexNote(a.id);
+  assert.equal(r.db.prepare('SELECT COUNT(*) c FROM semantic_chunks').get().c, 1);
+  const account = new Account({ db: r.db, notes: r.notes, settings: { reset() {} }, speakers: new Speakers(r.db, null), models: { catalog: [] }, bus: null, semantic: r.index });
+  account.deleteTranscripts();
+  assert.equal(r.db.prepare('SELECT COUNT(*) c FROM semantic_chunks').get().c, 0, 'the text copy is gone');
+  assert.equal(r.db.prepare('SELECT COUNT(*) c FROM semantic_vec').get().c, 0, 'and so are the vectors');
+  const b = r.mk('Again', ['the budget was approved yesterday afternoon']);
+  await r.index.indexNote(b.id);
+  account.deleteEverything();
+  assert.equal(r.db.prepare('SELECT COUNT(*) c FROM semantic_chunks').get().c + r.db.prepare('SELECT COUNT(*) c FROM semantic_vec').get().c, 0);
+});
+
+test('chunks carry the names of the people, not "Them"', { skip }, async () => {
+  const { Speakers } = require('../src/speakers/store');
+  const r = rig();
+  await r.index.init();
+  const n = r.mk('Call', ['good morning everyone']);
+  const speakers = new Speakers(r.db, null);
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: new Float32Array(4).fill(1), count: 1 });
+  speakers.rename(n.id, 's1', 'Ana Silva');
+  await r.index.indexNote(n.id);
+  assert.match(r.db.prepare('SELECT text FROM semantic_chunks').get().text, /^Ana Silva: good morning/);
+});
+
+test('switching the setting off stops vector results at once (without unloading anything)', { skip }, async () => {
+  const r = rig();
+  await r.index.init();
+  const n = r.mk('Hiring', ['the recruiter said we can close two engineers by march']);
+  await r.index.indexNote(n.id);
+  assert.equal((await r.index.hybrid('recruiter engineers')).at(0).via.includes('meaning'), true);
+  r.index.enabled = () => false;
+  assert.deepEqual((await r.index.hybrid('recruiter engineers')).at(0).via, ['words']);
+});

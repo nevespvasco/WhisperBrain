@@ -63,3 +63,17 @@ test('latencyReport: meetings with no evidence are left out, and a note without 
   assert.ok(rep.every((r) => r.platform === 'unknown'));
   assert.ok(n);
 });
+
+
+test('latencyReport: the onset is the start of the utterance (the voice activity), not the first recognised word', () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, null), speakers = new Speakers(db, null), ev = new Evidence(db);
+  const n = notes.create({ title: 'x' });
+  // the utterance starts at 2000 ms but the recogniser's first word is 600 ms into it; the highlight arrives at 2700 ms
+  notes.addSegments(n.id, [{ speaker: 'them', speakerId: 's1', startMs: 2000, endMs: 6000, text: 'good morning everyone', words: [['good', 600, 900], ['morning', 900, 1400], ['everyone', 1400, 2000]] }]);
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: new Float32Array(4).fill(1), count: 1 });
+  speakers.nameFromMeeting(n.id, 's1', 'Ana Silva');
+  ev.add(n.id, [{ kind: 'highlight', source: 'extension', key: 'ana silva', name: 'Ana Silva', t0: 2700, t1: 6700, meta: { lagMs: 300 } }]);
+  const row = latencyReport(db).find((r) => r.source === 'extension');
+  assert.equal(row.onset.p50, 700, 'measured from the voice activity start, not from the first word');
+});

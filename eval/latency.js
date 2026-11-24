@@ -54,7 +54,8 @@ function latencyReport(db) {
       g.lags.push(estimateLag({ raw: list.map((r) => ({ startMs: r.t0, endMs: r.t1, name: r.name })), speech, prior: list[0].meta?.lagMs ?? 500 }));
       for (const r of list) {
         const voice = voiceOf.get(r.name.toLowerCase());
-        const onsets = (speech.get(voice) || []).map(([s]) => s).filter((s) => r.t0 >= s - ONSET_BEFORE && r.t0 - s <= ONSET_AFTER);
+        // the utterance start is where the voice activity detector opened it (the first recognised word comes later)
+        const onsets = utterances.filter((u) => u.speakerId === voice).map((u) => u.startMs).filter((s) => r.t0 >= s - ONSET_BEFORE && r.t0 - s <= ONSET_AFTER);
         if (onsets.length) g.onsets.push(r.t0 - Math.max(...onsets));
       }
     }

@@ -11,7 +11,7 @@ const SETUP = {
     urls: (c) => { const base = `https://login.microsoftonline.com/${encodeURIComponent(c.tenant || 'organizations')}/oauth2/v2.0`; return { authUrl: `${base}/authorize`, tokenUrl: `${base}/token` }; } },
   meet: { setting: 'googleMeet', name: 'Google', scope: 'https://www.googleapis.com/auth/meetings.space.readonly', extra: { access_type: 'offline', prompt: 'consent' },
     urls: () => ({ authUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' }) },
-  zoom: { setting: 'zoom', name: 'Zoom', scope: '',
+  zoom: { setting: 'zoom', name: 'Zoom', scope: '', basicAuth: true,
     urls: () => ({ authUrl: 'https://zoom.us/oauth/authorize', tokenUrl: 'https://zoom.us/oauth/token' }) },
 };
 
@@ -23,10 +23,17 @@ class TranscriptService {
   client(id) {
     if (!SETUP[id]) throw new TranscriptError(`There is no such platform as "${id}".`, 'unknown');
     const s = SETUP[id];
-    return new PkceClient({
-      name: s.name, scope: s.scope, extraAuthParams: s.extra || {}, ...s.urls(this.config(id)), fetchImpl: this.fetchImpl,
-      getConfig: () => this.config(id), saveConfig: (patch) => this.app.settings.update({ [s.setting]: patch }),
-    });
+    const urls = s.urls(this.config(id));
+    // one client per platform (and sign-in address): two fetches at once share one token refresh, instead of both using the same
+    // refresh token (which some platforms allow once)
+    const key = `${id}|${urls.tokenUrl}`;
+    if (!this.clients.has(key)) {
+      this.clients.set(key, new PkceClient({
+        name: s.name, scope: s.scope, extraAuthParams: s.extra || {}, basicAuth: !!s.basicAuth, ...urls, fetchImpl: this.fetchImpl,
+        getConfig: () => this.config(id), saveConfig: (patch) => this.app.settings.update({ [s.setting]: patch }),
+      }));
+    }
+    return this.clients.get(key);
   }
 
   // [{ id, label, configured, connected }] (never the secrets)
