@@ -1,6 +1,8 @@
 'use strict';
 // Typed settings stored as JSON rows. Unknown keys are rejected; values are coerced/validated per key.
 const os = require('node:os');
+const { SecretBox } = require('./secret-box');
+const { PRESETS: CONSENT_PRESETS } = require('../consent/notice');
 
 // Speech-model threads: about half the logical CPUs (they are usually SMT siblings), 2..8. Decoding stops scaling near 8.
 function defaultAsrThreads(cpus = os.availableParallelism()) {
@@ -80,11 +82,10 @@ const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion',
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
 const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
-const { SecretBox } = require('./secret-box');
 
 // Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.
 function secretFields(key, value) {
-  if (key === 'webhooks') return Array.isArray(value) ? value.map((w) => [w, 'secret']) : [];
+  if (key === 'webhooks') return Array.isArray(value) ? value.filter((w) => w && typeof w === 'object').map((w) => [w, 'secret']) : [];
   return (SECRETS[key] || []).filter((f) => value && typeof value === 'object').map((f) => [value, f]);
 }
 const hasSecrets = (key) => key === 'webhooks' || !!SECRETS[key];
@@ -113,7 +114,7 @@ function validate(key, value) {
     return merged;
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
-  if (key === 'consentPreset' && !require('../consent/notice').PRESETS.includes(value)) throw new Error('consentPreset must be general, eu or us');
+  if (key === 'consentPreset' && !CONSENT_PRESETS.includes(value)) throw new Error('consentPreset must be general, eu or us');
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
@@ -146,6 +147,8 @@ class Settings {
     this.opened = new Map();           // sealed text -> plaintext, filled by init()
     this.queue = Promise.resolve();    // sealed writes, one after another
     this.unreadable = [];              // keys whose sealed secrets could not be opened (another user, another keystore)
+    this.unlocked = !secretBox;        // false until init() has opened the sealed values
+    this.epoch = 0;                    // bumped by reset(): a sealed write queued before it must not land after it
   }
 
   async init() {
@@ -160,10 +163,16 @@ class Settings {
       }
     }
     this.cache = null;
+    this.all();                        // built once, from the opened values; from here on the cache is the truth
+    this.opened.clear();
+    this.unlocked = true;
     if (this.mode() !== 'plain') this.rewriteSecrets();   // the one-time move of what an older version left in the clear
     await this.flush();
     return this;
   }
+
+  // Forget everything held in memory and cancel sealed writes still waiting (the data was just deleted).
+  reset() { this.epoch++; this.cache = null; this.opened.clear(); this.unreadable = []; }
 
   flush() { return this.queue; }
 
@@ -172,13 +181,13 @@ class Settings {
   mode() {
     if (!this.box) return 'plain';
     if (this.box.strength === 'strong' || this.box.strength === 'fallback') return 'seal';
-    return this.all().secretStorage === 'never' ? 'omit' : 'plain';
+    return (this.cache || this.all()).secretStorage === 'never' ? 'omit' : 'plain';
   }
 
   // For the UI: how secrets rest right now, and whether the person has a choice to make.
   secretStatus() {
     const weak = !!this.box && (this.box.strength === 'weak' || this.box.strength === 'none');
-    const policy = this.all().secretStorage;
+    const policy = (this.cache || this.all()).secretStorage;
     return {
       kind: this.box?.kind || 'none', strength: this.box?.strength || 'none', policy, mode: this.mode(),
       needsChoice: weak && policy === 'ask',
@@ -224,12 +233,31 @@ class Settings {
 
   // Write one secret-bearing setting the way the current mode says, after whatever was queued before it.
   persistSecretKey(key, value) {
+    const epoch = this.epoch;
     this.queue = this.queue.then(async () => {
+      if (epoch !== this.epoch) return;                  // the data was deleted in the meantime
       const mode = this.mode();
-      const stored = mode === 'seal' ? await mapSecretsAsync(key, value, (v) => this.box.seal(v))
-        : mode === 'omit' ? mapSecrets(key, value, () => '') : value;
-      this.write([[key, stored]]);
+      const kept = this.retainUnreadable(key, value);
+      const stored = mode === 'seal' ? await mapSecretsAsync(key, kept, (v) => (SecretBox.isSealed(v) ? v : this.box.seal(v)))
+        : mode === 'omit' ? mapSecrets(key, kept, (v) => (SecretBox.isSealed(v) ? v : '')) : kept;
+      if (epoch === this.epoch) this.write([[key, stored]]);
     }).catch((e) => this.bus?.publish('settings.error', { key, message: e.message }));
+  }
+
+  // A secret this keystore could not open is blank in memory; when the row is written again its sealed original is put
+  // back, so an unrelated edit does not destroy what another keystore can still read.
+  retainUnreadable(key, value) {
+    if (!this.unreadable.includes(key)) return value;
+    const old = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    let prev; try { prev = old && JSON.parse(old.value); } catch { return value; }
+    const out = structuredClone(value);
+    const pairs = secretFields(key, out), prevPairs = secretFields(key, prev);
+    for (const [holder, field] of pairs) {
+      if (holder[field]) continue;
+      const was = key === 'webhooks' ? prevPairs.find(([h]) => h.id === holder.id) : prevPairs.find(([, f]) => f === field);
+      if (was && SecretBox.isSealed(was[0][was[1]])) holder[field] = was[0][was[1]];
+    }
+    return out;
   }
 
   rewriteSecrets() {
@@ -239,6 +267,7 @@ class Settings {
   }
 
   update(patch) {
+    if (!this.unlocked) throw new Error('settings are still being unlocked: await init() first');
     const current = this.all();
     const next = {};
     for (const [key, value] of Object.entries(patch)) {
@@ -255,7 +284,10 @@ class Settings {
     if (sync.length) this.write(sync);
     if (this.box) {
       this.cache = { ...current, ...next };
-      for (const [k, v] of Object.entries(next)) if (hasSecrets(k)) { this.unreadable = this.unreadable.filter((x) => x !== k); this.persistSecretKey(k, v); }
+      for (const [k, v] of Object.entries(next)) if (hasSecrets(k)) {
+        if (secretFields(k, v).some(([h, f]) => h[f])) this.unreadable = this.unreadable.filter((x) => x !== k);   // a secret was typed again
+        this.persistSecretKey(k, v);
+      }
       if (next.secretStorage && next.secretStorage !== before) this.rewriteSecrets();   // the person chose: apply it to what is stored
     } else this.cache = null;
     this.bus?.publish('settings', { keys: Object.keys(next) });

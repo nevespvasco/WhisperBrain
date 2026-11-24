@@ -214,3 +214,79 @@ test('createApp without a SecretBox behaves as before', async () => {
   app.close(); await app.settled;
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
+
+// ---- found in review ----
+test('settings cannot be changed while sealed secrets are still being opened (a write would clobber them)', async () => {
+  const db = plaintextInstall();
+  const s = new Settings(db, null, fakeBox());
+  assert.throws(() => s.update({ userName: 'Bia' }), /unlock|init/i);
+  await s.init();
+  s.update({ userName: 'Bia' });
+  assert.equal(s.get('userName'), 'Bia');
+});
+
+test('startup work that reads secrets (extension pairing token) waits for them: a sealed token is not replaced by a new one', async () => {
+  const dataDir = tmpDir('wb-sec-');
+  const first = createApp({ dataDir, platform: quietPlatform(), secretBox: fakeBox() });
+  await first.ready;
+  first.settings.update({ meet: { ...first.settings.get('meet'), token: 'paired-token-123' } });
+  first.close(); await first.settled;
+  const app = createApp({ dataDir, platform: quietPlatform(), secretBox: fakeBox(), detect: true });
+  await app.ready;
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(app.settings.get('meet').token, 'paired-token-123');
+  app.close(); await app.settled;
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('"delete everything" is not undone by a secret that was still waiting to be written', async () => {
+  const dataDir = tmpDir('wb-sec-');
+  const app = createApp({ dataDir, platform: quietPlatform(), secretBox: fakeBox() });
+  await app.ready;
+  app.settings.update({ notion: { token: 'secret_late' } });   // sealed write still queued
+  app.account.deleteEverything();
+  await app.settings.flush();
+  const stored = app.db.prepare('SELECT COUNT(*) c FROM settings').get().c;
+  assert.equal(stored, 0, 'nothing came back');
+  assert.equal(app.settings.get('notion').token, '', 'and the memory is clean too');
+  app.close(); await app.settled;
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('an unrelated edit does not wipe a sealed secret this keystore could not open', async () => {
+  const db = plaintextInstall();
+  const sealer = new Settings(db, null, fakeBox());
+  await sealer.init(); await sealer.flush();
+  const before = JSON.parse(rows(db).llm).apiKey;
+  const broken = new SecretBox({ kind: 'other', strength: 'strong', encrypt: async (s) => Buffer.from(s), decrypt: async () => { throw new Error('wrong keystore'); } });
+  const s = new Settings(db, null, broken);
+  await s.init();
+  s.update({ llm: { model: 'b' } });
+  await s.flush();
+  assert.equal(JSON.parse(rows(db).llm).apiKey, before, 'the sealed key is still there for the keystore that can read it');
+  assert.equal(JSON.parse(rows(db).llm).model, 'b', 'the edit itself was saved');
+  s.update({ llm: { apiKey: 'typed-again' } });
+  await s.flush();
+  assert.notEqual(JSON.parse(rows(db).llm).apiKey, before, 'typing a new key replaces it');
+  assert.ok(!s.secretStatus().unreadable.includes('llm'));
+});
+
+test('a damaged webhooks row does not stop startup', async () => {
+  const db = open(':memory:');
+  db.prepare("INSERT INTO settings(key, value) VALUES('webhooks', '[null, 5]')").run();
+  const s = new Settings(db, null, fakeBox());
+  await s.init();
+  assert.deepEqual(s.get('webhooks'), []);
+});
+
+test('fileSecretBox: only a missing key file is created; any other read error stops instead of replacing the key', async () => {
+  const dir = tmpDir('wb-key-');
+  const file = path.join(dir, 'secret.key');
+  fs.writeFileSync(file, Buffer.alloc(5));                         // damaged: wrong length
+  await assert.rejects(fileSecretBox(file).seal('x'), /not a valid key file/);
+  assert.equal(fs.readFileSync(file).length, 5, 'the damaged file was left alone');
+  fs.rmSync(file); fs.mkdirSync(file);                              // reading a directory fails with EISDIR, not ENOENT
+  await assert.rejects(fileSecretBox(file).seal('x'));
+  assert.ok(fs.statSync(file).isDirectory(), 'nothing was overwritten');
+  fs.rmSync(dir, { recursive: true, force: true });
+});

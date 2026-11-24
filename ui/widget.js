@@ -49,11 +49,13 @@ function consentStrip() {
   if (c === 'announced') return `<div class="consent ok">${icon('check', 'sm')} ${esc(t('Others told'))}</div>`;
   if (c === 'declined') return `<div class="consent bad">${icon('alert', 'sm')} ${esc(t('Someone objected'))}</div>`;
   return `<div class="consent">${icon('alert', 'sm')}<span class="grow">${esc(t('Do the others on the call know?'))}</span>
-    <button class="btn sm" data-act="copy-notice">${icon('copy', 'sm')} ${esc(t('Copy notice'))}</button><button class="btn sm ghost" data-act="told">${esc(t('I told them'))}</button></div>`;
+    <button class="btn sm" data-act="copy-notice">${icon('copy', 'sm')} ${esc(S.noticeCopied ? t('Copied') : t('Copy notice'))}</button><button class="btn sm ghost" data-act="told">${esc(t('I told them'))}</button><button class="btn sm ghost" data-act="objected" title="${esc(t('Someone objected'))}">${icon('alert', 'sm')}</button></div>
+    ${S.consentError ? `<div class="consent bad">${esc(S.consentError)}</div>` : ''}`;
 }
 async function loadConsent() {
-  if (!S.rec.active || !S.rec.noteId) return;
-  try { S.rec.consent = await getConsent(S.rec.noteId); draw(); } catch { /* shows the warning */ }
+  const id = S.rec.noteId;
+  if (!S.rec.active || !id) return;
+  try { const c = await getConsent(id); if (S.rec.noteId === id) { S.rec.consent = c; draw(); } } catch { /* shows the warning */ }
 }
 
 function render() {
@@ -192,8 +194,16 @@ root.addEventListener('click', async (e) => {
   try {
     if (b.dataset.act === 'collapse') setExpanded(false);
     else if (b.dataset.act === 'open') { if (bridge) bridge.openApp(S.rec.noteId || ''); else window.open(`/#/note/${S.rec.noteId || ''}`, '_blank'); }
-    else if (b.dataset.act === 'copy-notice') { await copyNotice(S.rec.noteId); S.rec.consent = 'announced'; draw(); }
-    else if (b.dataset.act === 'told') { await setConsent(S.rec.noteId, 'announced'); S.rec.consent = 'announced'; draw(); }
+    else if (b.dataset.act === 'copy-notice') {
+      S.consentError = '';
+      try { await copyNotice(); S.noticeCopied = true; } catch { S.consentError = t('Could not copy here. Open WhisperBrain and copy the notice from the recording bar.'); }
+      draw();
+    }
+    else if (b.dataset.act === 'told' || b.dataset.act === 'objected') {
+      const id = S.rec.noteId, c = b.dataset.act === 'told' ? 'announced' : 'declined';
+      await setConsent(id, c);
+      if (S.rec.noteId === id) { S.rec.consent = c; S.noticeCopied = false; S.consentError = ''; draw(); }
+    }
     else if (b.dataset.act === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
     else if (b.dataset.act === 'stop') { b.disabled = true; await api('POST', '/api/recording/stop'); }
   } catch { b.disabled = false; }

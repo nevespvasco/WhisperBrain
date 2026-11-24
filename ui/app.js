@@ -230,13 +230,15 @@ function connectEvents() {
         { label: t('Not now'), run: () => {} }] });
     },
     'meeting.ended': () => { S.detector = { active: false }; renderTopbar(); if (S.rec.active) toast(t('The call ended. Stop recording?'), { timeout: 20000, actions: [{ label: t('Stop'), primary: true, run: () => stopRecording().catch(fail) }, { label: t('Keep recording'), run: () => {} }] }); },
-    // A recording that started by itself is announced until the person has dealt with the others: told them (copy the
-    // notice, or say so), or stopped it. The toast has no close button on purpose.
+    // A recording that started by itself stays announced until the person has dealt with the others: told them, or
+    // stopped it. The toast has no close button on purpose, and it belongs to its recording: it goes when that one stops.
     'meeting.autostarted': (d) => {
-      toast(t('Recording started automatically. Do the others on the call know?'), { ok: true, sticky: true, actions: [
-        { label: t('Copy notice for the chat'), primary: true, run: () => copyNotice(d.noteId).then(() => { toast(t('Notice copied: paste it into the meeting chat.'), { ok: true }); setRecConsent('announced'); }).catch(fail) },
-        { label: t('I told them'), run: () => setConsent(d.noteId, 'announced').then(() => setRecConsent('announced')).catch(fail) },
-        { label: t('Stop recording'), run: () => stopRecording().catch(fail) },
+      S.autoToast?.remove();
+      const mine = () => S.rec.active && S.rec.noteId === d.noteId;
+      S.autoToast = toast(t('Recording started automatically. Do the others on the call know?'), { ok: true, sticky: true, actions: [
+        { label: t('Copy notice for the chat'), primary: true, keep: true, run: async () => { await copyNotice(); toast(t('Notice copied: paste it into the meeting chat, then choose “I told them”.'), { ok: true }); } },
+        { label: t('I told them'), run: async () => { await setConsent(d.noteId, 'announced'); if (mine()) setRecConsent('announced', d.noteId); } },
+        { label: t('Stop recording'), run: async () => { if (mine()) await stopRecording(); } },
       ] });
       bump(); if (d.noteId) go(`#/note/${d.noteId}`);
     },

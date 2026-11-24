@@ -104,11 +104,12 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
     else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
   };
-  if (detect) { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }
+  const ready = settings.init();
+  // Work that reads secrets (the extension's pairing token, the Discord token) starts once they are opened.
+  if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }).catch(() => {});
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
-  const ready = settings.init();
   return Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,

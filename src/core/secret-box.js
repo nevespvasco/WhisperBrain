@@ -46,11 +46,14 @@ function fileSecretBox(keyFile) {
   let key = null;
   const load = () => {
     if (key) return key;
-    try { key = fs.readFileSync(keyFile); } catch {
-      key = crypto.randomBytes(32);
-      fs.writeFileSync(keyFile, key, { mode: 0o600 });
+    let k;
+    try { k = fs.readFileSync(keyFile); } catch (e) {
+      if (e.code !== 'ENOENT') throw e;                  // unreadable is not the same as missing: never replace a key we cannot read
+      k = crypto.randomBytes(32);
+      fs.writeFileSync(keyFile, k, { mode: 0o600, flag: 'wx' });
     }
-    if (key.length !== 32) throw new Error(`${keyFile} is not a valid key file`);
+    if (k.length !== 32) throw new Error(`${keyFile} is not a valid key file`);
+    key = k;
     return key;
   };
   return new SecretBox({

@@ -79,7 +79,7 @@ class Account {
         'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
-    this.settings.cache = null;
+    this.settings.reset();
     this.db.exec('VACUUM');
     if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
     this.bus?.publish('account.changed', { what: 'all' });

@@ -11,7 +11,6 @@ export async function startRecording(noteId, extra = {}) {
   try {
     const st = await api('POST', '/api/recording/start', noteId ? { noteId } : { templateId: S.settings.defaultTemplate, ...extra });
     S.rec = { active: true, noteId: st.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0 };
-    loadRecConsent(st.noteId);
     S.liveText = '';
     renderRecbar(); renderTop(); bump();
     if (!(S.view.name === 'note' && S.view.parts[1] === st.noteId)) go(`#/note/${st.noteId}?tab=transcript`);
@@ -56,8 +55,9 @@ const consentChip = () => {
   const c = S.rec.consent || 'unknown';
   return `<button class="btn sm ${c === 'unknown' ? 'warn' : c === 'declined' ? 'danger' : 'ghost'}" data-rec="consent" title="${t('Were the other people on the call told this is being recorded?')}">${icon(c === 'announced' ? 'check' : 'alert', 'sm')} ${t(CONSENT_LABEL[c])}</button>`;
 };
-export function setRecConsent(consent) { if (S.rec.active) { S.rec.consent = consent; renderRecbar(); } }
-async function loadRecConsent(noteId) { try { setRecConsent(await getConsent(noteId)); } catch { /* the bar still shows the warning */ } }
+// noteId: the recording the answer is about; a late answer for a recording that is over is ignored
+export function setRecConsent(consent, noteId = S.rec.noteId) { if (S.rec.active && S.rec.noteId === noteId) { S.rec.consent = consent; renderRecbar(); } }
+async function loadRecConsent(noteId) { try { setRecConsent(await getConsent(noteId), noteId); } catch { /* the bar still shows the warning */ } }
 
 export function renderRecbar() {
   if (!S.rec.active) { recbar.hidden = true; return; }
@@ -78,9 +78,9 @@ recbar.addEventListener('click', async (e) => {
 });
 function consentMenu(anchor) {
   const id = S.rec.noteId;
-  const mark = (c) => () => setConsent(id, c).then(() => setRecConsent(c)).catch(fail);
+  const mark = (c) => () => setConsent(id, c).then(() => setRecConsent(c, id)).catch(fail);
   menu(anchor, [
-    { label: t('Copy notice for the meeting chat'), icon: 'copy', run: () => copyNotice(id).then(() => { toast(t('Notice copied: paste it into the meeting chat.'), { ok: true }); setRecConsent('announced'); }).catch(fail) },
+    { label: t('Copy notice for the meeting chat'), icon: 'copy', run: () => copyNotice().then(() => toast(t('Notice copied: paste it into the meeting chat, then choose “I told them”.'), { ok: true })).catch(fail) },
     { label: t('I told them'), icon: 'check', selected: S.rec.consent === 'announced', run: mark('announced') },
     { label: t('Someone objected'), icon: 'alert', selected: S.rec.consent === 'declined', run: mark('declined') },
     'sep',
@@ -95,10 +95,10 @@ setInterval(() => {
 }, 500);
 
 export function syncRec(st) {
-  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs, aec: st.echo?.cancellation || null };
+  if (st?.active) S.rec = { consent: S.rec.noteId === st.noteId ? S.rec.consent : undefined, active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs, aec: st.echo?.cancellation || null };
   else S.rec = { active: false };
   renderRecbar(); renderTop();
-  if (st?.active) loadRecConsent(st.noteId);
+  if (st?.active && !S.rec.consent) loadRecConsent(st.noteId);
 }
 
 export async function handleCaptureRequest(d) {
@@ -114,11 +114,11 @@ export async function handleCaptureRequest(d) {
 export function recEvents({ renderTopbar }) {
   renderTop = renderTopbar;
   return {
-    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0, aec: d.echoCancellation || null }; S.liveText = ''; S.liveDraft = ''; renderRecbar(); renderTopbar(); bump();  loadRecConsent(d.noteId); },
+    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0, aec: d.echoCancellation || null }; S.liveText = ''; S.liveDraft = ''; renderRecbar(); renderTopbar(); bump(); loadRecConsent(d.noteId); },
     'recording.paused': () => { S.liveDraft = ''; S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; renderRecbar(); },
     'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); renderRecbar(); },
     'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d?.stage || null; renderRecbar(); },
-    'recording.stopped': () => { S.liveDraft = ''; S.drafts = {}; S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
+    'recording.stopped': () => { S.autoToast?.remove(); S.autoToast = null; S.liveDraft = ''; S.drafts = {}; S.rec = { active: false }; stopAllCapture(); renderRecbar(); renderTopbar(); bump(); },
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),
     'transcript.segment': (d) => { S.liveText = `${d.segment.label ? d.segment.label + ': ' : ''}${d.segment.text}`; showDraft({ ch: d.segment.speaker === 'me' ? 'mic' : 'system', text: '' }); if (S.rec.active) renderRecbar(); },

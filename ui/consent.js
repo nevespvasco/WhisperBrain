@@ -4,10 +4,10 @@ import { api } from './api.js';
 export const getConsent = async (noteId) => (await api('GET', `/api/notes/${encodeURIComponent(noteId)}`)).consent;
 export const setConsent = (noteId, consent) => api('PATCH', `/api/notes/${encodeURIComponent(noteId)}`, { consent });
 
-// Put the notice on the clipboard, ready for the meeting chat; copying it counts as announcing.
-export async function copyNotice(noteId) {
+// Put the notice on the clipboard, ready for the meeting chat. Copying it is not telling anyone: the person says so
+// afterwards ("I told them"). Rejects when the clipboard is not available.
+export async function copyNotice() {
   const { text } = await api('GET', '/api/consent/notice');
   await navigator.clipboard.writeText(text);
-  await setConsent(noteId, 'announced');
   return text;
 }
