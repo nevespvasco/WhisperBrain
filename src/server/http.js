@@ -169,7 +169,7 @@ function createRoutes(app) {
   add('POST', '/api/notes/:id/speakers/:sid/merge', async ({ params, body }) => {
     noteOr404(params.id);
     if (!SPEAKER_ID.test(params.sid) || !SPEAKER_ID.test(body.into || '') || params.sid === body.into) throw new HttpError(400, 'invalid speaker');
-    if (!app.speakers.mergeSpeakers(params.id, params.sid, body.into)) throw new HttpError(409, 'these speakers cannot be merged');
+    if (!app.speakers.mergeSpeakers(params.id, params.sid, body.into)) throw new HttpError(409, 'These speakers cannot be merged: they are on different channels, sound too different, or already have different names.');
     app.notes.reindex(params.id);
     return { ok: true };
   });

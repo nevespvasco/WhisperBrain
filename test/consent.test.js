@@ -117,3 +117,21 @@ test('segments without a channel (imports, uploads) get one from who spoke; a cu
   assert.deepEqual(notes.segments(n.id).filter((s) => [first, second].includes(s.id)).map((s) => s.channel), ['dc:7', 'dc:7']);
   assert.equal(notes.segmentWords(n.id)[0].channel, 'mic');
 });
+
+// ---- speaker ids ----
+test('freeSpeakerId ignores Discord people: their long ids must not become the next "s…" number', () => {
+  const { speakers, meeting } = rig();
+  const n = meeting();
+  speakers.ensureNamed(n, 'd123456789012345678', 'Rui', 'system');
+  assert.equal(speakers.freeSpeakerId(n, 'system'), 's2');
+  assert.equal(speakers.freeSpeakerId(n, 'mic'), 'm1');
+});
+
+test('reassignSegment makes a new speaker only for ordinary ids; a Discord person must already be on the call', () => {
+  const { db, speakers, meeting } = rig();
+  const n = meeting();
+  const segId = db.prepare('SELECT id FROM segments WHERE note_id = ?').get(n).id;
+  assert.equal(speakers.reassignSegment(n, segId, 'd999'), false, 'nobody by that id was on the call');
+  assert.equal(speakers.forNote(n).some((x) => x.speakerId === 'd999'), false);
+  assert.equal(speakers.reassignSegment(n, segId, 's7'), true, 'a new voice number is fine');
+});

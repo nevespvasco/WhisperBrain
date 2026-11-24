@@ -59,11 +59,12 @@ function extractJson(text) {
 const str = (v, n = 400) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
 // Action items leave the app (Notion, Linear, webhooks), so what a model wrote, possibly steered by the transcript, is
 // reduced to plain words first: no markup, no links (they could carry data out or lure a click), bounded length.
-const URL_LIKE = /\b(?:[a-z][a-z0-9+.-]*:\/\/|javascript:|data:|vbscript:|www\.)[^\s)>\]]*/gi;
+const MD_LINK = /!?\[([^\]]*)\]\((?:[^()\s]|\([^)]*\))*\)/g;                 // [text](target), ![alt](target): the words stay
+const URL_LIKE = /\b(?:[a-z][a-z0-9+.-]*:\/\/|javascript:|vbscript:|data:[a-z]+\/|mailto:|www\.)[^\s)>\]]*|\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\/[^\s)>\]]*/gi; // scheme://, bare host/path, www., script and data URLs
 function plain(v, n = 300) {
   if (typeof v !== 'string') return '';
-  const t = v.replace(/<[^>]*>/g, ' ').replace(URL_LIKE, ' ').replace(/!?\[([^\]]*)\]\(\s*\)/g, '$1').replace(/[*`~]+/g, '').replace(/^[\s#>]+/, '')
-    .replace(/\s+/g, ' ').trim().slice(0, n).trim();
+  const t = v.replace(/<\/?[a-z][^>]*>/gi, ' ').replace(MD_LINK, '$1').replace(URL_LIKE, ' ').replace(/\*\*|~~|`/g, '')
+    .replace(/^\s*(?:#{1,6}\s+|>+\s*)/, '').replace(/\s+/g, ' ').trim().slice(0, n).trim();
   return /[\p{L}\p{N}]/u.test(t) ? t : '';
 }
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -121,8 +122,8 @@ function localInsights(note) {
 
 function topicBriefMessages({ topic, items }) {
   return [
-    { role: 'system', content: 'You synthesise what a team has said about one topic across several meetings. Use only the provided material. Output Markdown: a 2-sentence summary, "## How it evolved" (chronological bullets with meeting dates), "## Who said what" (bullets attributing positions to people), "## Open questions". Same language as the material. No preamble.' },
-    { role: 'user', content: `Topic: ${topic.name}\n\n${items}` },
+    { role: 'system', content: 'You synthesise what a team has said about one topic across several meetings. Use only the provided material. Output Markdown: a 2-sentence summary, "## How it evolved" (chronological bullets with meeting dates), "## Who said what" (bullets attributing positions to people), "## Open questions". Same language as the material. No preamble. ' + UNTRUSTED },
+    { role: 'user', content: `Topic: ${topic.name}\n\n${neutralizeTags(items)}` },
   ];
 }
 

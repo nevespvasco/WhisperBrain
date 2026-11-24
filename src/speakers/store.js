@@ -113,7 +113,7 @@ class Speakers {
   freeSpeakerId(noteId, channel) {
     const prefix = channel === 'mic' ? 'm' : 's';
     const used = this.db.prepare('SELECT speaker_id AS id FROM note_speakers WHERE note_id = ? UNION SELECT DISTINCT speaker_id FROM segments WHERE note_id = ? AND speaker_id IS NOT NULL').all(noteId, noteId)
-      .map((r) => Number(String(r.id).slice(1))).filter((n) => Number.isFinite(n));
+      .filter((r) => String(r.id).startsWith(prefix)).map((r) => Number(String(r.id).slice(1))).filter((n) => Number.isSafeInteger(n) && n < 1000); // d<snowflake> ids are Discord people, not voice numbers
     return `${prefix}${Math.max(0, ...used) + 1}`;
   }
 
@@ -166,6 +166,7 @@ class Speakers {
   reassignSegment(noteId, segmentId, speakerId) {
     const exists = this.db.prepare('SELECT channel FROM note_speakers WHERE note_id = ? AND speaker_id = ?').get(noteId, speakerId);
     if (!exists) {
+      if (!/^[ms]\d{1,3}$/.test(speakerId)) return false; // only a new voice number may be made up; a Discord person must have been on the call
       const seg = this.db.prepare('SELECT speaker FROM segments WHERE id = ? AND note_id = ?').get(segmentId, noteId);
       if (!seg) return false;
       this.db.prepare('INSERT INTO note_speakers(note_id, speaker_id, channel, count) VALUES(?, ?, ?, 0)').run(noteId, speakerId, seg.speaker === 'me' ? 'mic' : 'system');
