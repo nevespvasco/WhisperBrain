@@ -12,6 +12,9 @@ const COOKIE = 'wb_token';
 const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
 
+// speaker ids: m1 (microphone), s1 (system audio), d<snowflake> (a person on Discord)
+const SPEAKER_ID = /^(?:[ms]\d{1,3}|d\d{1,24})$/;
+
 class HttpError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
 }
@@ -158,8 +161,16 @@ function createRoutes(app) {
   });
   add('POST', '/api/notes/:id/segments/:segId/speaker', async ({ params, body }) => {
     noteOr404(params.id);
-    if (!/^[ms]\d{1,3}$/.test(body.speakerId || '')) throw new HttpError(400, 'invalid speakerId');
+    if (!SPEAKER_ID.test(body.speakerId || '')) throw new HttpError(400, 'invalid speakerId');
     if (!app.speakers.reassignSegment(params.id, Number(params.segId), body.speakerId)) throw new HttpError(404, 'segment not found');
+    return { ok: true };
+  });
+  // fold one speaker of the note into another (the same person heard twice); refused when the voices clearly differ
+  add('POST', '/api/notes/:id/speakers/:sid/merge', async ({ params, body }) => {
+    noteOr404(params.id);
+    if (!SPEAKER_ID.test(params.sid) || !SPEAKER_ID.test(body.into || '') || params.sid === body.into) throw new HttpError(400, 'invalid speaker');
+    if (!app.speakers.mergeSpeakers(params.id, params.sid, body.into)) throw new HttpError(409, 'these speakers cannot be merged');
+    app.notes.reindex(params.id);
     return { ok: true };
   });
   add('GET', '/api/voices', async () => app.speakers.publicVoices());

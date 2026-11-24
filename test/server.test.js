@@ -229,3 +229,26 @@ test('voices are opt-in: naming a speaker without ticking "remember" saves no vo
   assert.deepEqual((await s.json('GET', '/api/voices')).map((v) => v.name), ['Ana']);
   assert.equal(s.app.db.prepare("SELECT consent_source s FROM voices WHERE name = 'Ana'").get().s, 'user');
 });
+
+test('speakers: a line can be moved to a Discord person, and one speaker can be merged into another', async (t) => {
+  const s = await boot(t);
+  const n = await s.json('POST', '/api/notes', { title: 'Call' });
+  const [seg] = s.app.notes.addSegments(n.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 2000, text: 'hello' }]);
+  const same = new Float32Array([1, 0.9, 1, 0.9]);
+  s.app.speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: same, count: 2 });
+  s.app.speakers.save(n.id, { speakerId: 's2', channel: 'system', centroid: same, count: 2 });
+  s.app.speakers.ensureNamed(n.id, 'd4242', 'Rui', 'system');
+  const move = (speakerId) => s.json('POST', `/api/notes/${n.id}/segments/${seg.id}/speaker`, { speakerId });
+  await move('d4242');
+  assert.equal(s.app.notes.segments(n.id)[0].speakerId, 'd4242');
+  for (const bad of ['d', 'dabc', 'x1', 's1; drop', 'd' + '9'.repeat(30)]) await assert.rejects(move(bad), (e) => e.status === 400, bad);
+
+  const merge = (from, into) => s.json('POST', `/api/notes/${n.id}/speakers/${from}/merge`, { into });
+  await move('s2');
+  assert.deepEqual(await merge('s2', 's1'), { ok: true });
+  assert.equal(s.app.notes.segments(n.id)[0].speakerId, 's1', 'its lines moved over');
+  assert.ok(!s.app.speakers.forNote(n.id).some((x) => x.speakerId === 's2'), 'and the speaker is gone');
+  await assert.rejects(merge('s1', 's1'), (e) => e.status === 400, 'a speaker cannot join itself');
+  await assert.rejects(merge('s9', 's1'), (e) => e.status === 409, 'unknown speakers, or voices that clearly differ, are refused');
+  await assert.rejects(merge('s1', 'nope'), (e) => e.status === 400);
+});

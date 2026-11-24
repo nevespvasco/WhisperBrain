@@ -111,7 +111,7 @@ function transcriptTab(body) {
       <span class="spacer"></span>
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
-    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${t('Name this speaker')}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
+    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${t('Name this speaker')}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
     <div class="segs" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
   if (N.trq) filterTranscript();
@@ -263,6 +263,7 @@ function bind(main) {
   main.onclick = async (e) => {
     const tab = e.target.closest('[data-tab]');
     if (tab) { N.tab = tab.dataset.tab; history.replaceState(null, '', `#/note/${N.id}?tab=${N.tab}`); renderTab(); return; }
+    if (e.target.closest('[data-merge-speakers]')) { mergeSpeakers(); return; }
     const ren = e.target.closest('[data-rename]');
     if (ren) { if (ren.dataset.rename) renameSpeaker(ren.dataset.rename); return; }
     const un = e.target.closest('[data-untag]');
@@ -368,6 +369,22 @@ async function addLink() {
       show('url');
     },
   });
+}
+
+// One person heard as two voices: fold one speaker into another (the server refuses voices that clearly differ).
+async function mergeSpeakers() {
+  const options = (selected) => N.speakers.map((x, i) => `<option value="${esc(x.speakerId)}" ${i === selected ? 'selected' : ''}>${esc(spLabel(x))}</option>`).join('');
+  const r = await modal({
+    title: t('Merge speakers'),
+    body: `<div class="stack"><label class="field"><span>${t('This speaker')}</span><select name="from">${options(1)}</select></label>
+      <label class="field"><span>${t('is the same person as')}</span><select name="into">${options(0)}</select></label>
+      <div class="hint">${t('Their lines are joined under the second name. This cannot be split again automatically.')}</div></div>`,
+    foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" data-ok>${t('Merge')}</button>`,
+    onMount: (d, close) => { $('[data-ok]', d).onclick = () => close({ from: $('[name=from]', d).value, into: $('[name=into]', d).value }); },
+  });
+  if (!r) return;
+  if (r.from === r.into) { toast(t('Pick two different speakers.')); return; }
+  try { await api('POST', `/api/notes/${N.id}/speakers/${r.from}/merge`, { into: r.into }); await reloadTranscript(); done(); } catch (e) { fail(e); }
 }
 
 async function renameSpeaker(speakerId) {
