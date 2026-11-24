@@ -81,6 +81,12 @@ export const SOURCES = {
   linear: { icon: 'checksq', label: 'Linear' }, calendar: { icon: 'calendar', label: 'Calendar' },
 };
 export const PLATFORMS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Microsoft Teams', slack: 'Slack', discord: 'Discord', webex: 'Webex', whereby: 'Whereby', jitsi: 'Jitsi', facetime: 'FaceTime', browser: 'Browser' };
+// "Zoom + Discord": every call that is live, not only the first (a detector status/event: { platforms, platform, apps })
+export const callLabel = (d) => {
+  const names = (d?.platforms?.length ? d.platforms : [d?.platform]).filter(Boolean).map((p) => PLATFORMS[p] || null);
+  const known = names.filter(Boolean);
+  return (known.length ? known : (d?.apps || []).slice(0, 2)).join(' + ');
+};
 export const srcIcon = (src) => `<span class="srcicon" title="${esc(t(SOURCES[src]?.label || src))}">${icon(SOURCES[src]?.icon || 'file')}</span>`;
 
 // ---------- toasts ----------

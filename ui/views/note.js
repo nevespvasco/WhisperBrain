@@ -163,7 +163,7 @@ function header() {
       </div>
     </div>
     <div class="note-actions">
-      ${recHere() ? `<button class="btn danger" data-act="stop">${icon('stop', 'sm')} ${t('Stop')}</button>` : `<button class="btn" data-act="record" ${S.rec.active ? 'disabled' : ''}>${icon('mic', 'sm')} ${N.segs.length ? t('Resume recording') : t('Record')}</button>`}
+      ${finishing() ? `<button class="btn" disabled>${spinner()} ${t('Finishing…')}</button>` : recHere() ? `<button class="btn danger" data-act="stop">${icon('stop', 'sm')} ${t('Stop')}</button>` : `<button class="btn" data-act="record" ${S.rec.active ? `disabled title="${esc(S.rec.finalizing ? t('Wait for the last recording to finish') : t('Another meeting is being recorded'))}"` : ''}>${icon('mic', 'sm')} ${N.segs.length ? t('Resume recording') : t('Record')}</button>`}
       <button class="btn" data-act="share">${icon('share', 'sm')} ${t('Share')}</button>
       <button class="btn icon" data-act="more" aria-label="${t('More')}">${icon('more')}</button>
     </div></div>`;
@@ -176,6 +176,7 @@ function renderTab() {
   if (!body) return;
   $$('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === N.tab)));
   ({ summary: summaryTab, transcript: transcriptTab, notes: notesTab, snippets: snippetsTab, chat: chatTab })[N.tab](body);
+  fitLive();
 }
 
 function summaryTab(body) {
@@ -212,6 +213,9 @@ function actionsHtml() {
 
 function transcriptTab(body) {
   const total = N.analytics.durationMs || 1;
+  // drawn again (a speaker renamed, the voices relabelled after Stop): stay where the reader was, unless following the newest line
+  const prev = $('#segs');
+  N.restoreTop = !prev ? null : prev.classList.contains('live') && N.follow !== false ? 'end' : prev.scrollTop;
   body.innerHTML = `<div class="tb">${recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
       ${trControls()}
@@ -221,12 +225,28 @@ function transcriptTab(body) {
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
-    <div class="segs" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
+    ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div><button type="button" class="btn sm jump-latest" id="jump-latest" hidden>${icon('chevdown', 'sm')} ${t('Latest')}</button></div>`;
   if (N.trq) filterTranscript();
-  if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); setTimeout(() => el.scrollIntoView({ block: 'center' }), 60); } N.seg = null; }
-  else if (recHere()) requestAnimationFrame(() => { const m = $('#main'); m.scrollTop = m.scrollHeight; });
+  if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); N.restoreTop = null; setTimeout(() => centreLine(el), 60); } N.seg = null; }
+  else if (recHere() && N.restoreTop === null) requestAnimationFrame(() => scrollLatest());
+  wireLiveBox(N.restoreTop !== null);
 }
-const recControls = () => (recHere() ? `<button class="btn sm" data-act="pause">${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button><button class="btn sm danger" data-act="stop">${icon('stop', 'sm')} ${t('Stop')}</button>` : `<button class="btn sm primary" data-act="record" ${S.rec.active ? 'disabled' : ''}>${icon('mic', 'sm')} ${t('Record')}</button>`);
+// Scroll the transcript box (never the page) so a line sits in its middle
+function centreLine(el) { const box = $('#segs'); if (box) box.scrollTop = el.offsetTop - (box.clientHeight - el.offsetHeight) / 2; }
+// After Stop the recording is finished in the background (the last words, then who spoke when): the app stays usable meanwhile.
+const finishing = () => recHere() && !!S.rec.finalizing;
+const spinner = () => '<span class="spinner" aria-hidden="true"></span>';
+const finStage = () => (S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…'));
+const finBanner = () => (finishing() ? `<div class="banner small mb" id="fin-banner" role="status">${spinner()}<div class="grow"><b>${finStage()}</b><div class="muted">${t('This runs in the background: you can keep using the app. The transcript and speakers update here when it is done.')}</div></div></div>` : '');
+function syncFinishing() {
+  const wrap = $('.segs-wrap');
+  if (!wrap) return;
+  $('#fin-banner')?.remove();
+  wrap.insertAdjacentHTML('beforebegin', finBanner());
+  fitLive();
+}
+const muteBtn = () => (S.rec.micAvailable === false ? '' : `<button class="btn sm ${S.rec.micMuted ? 'danger' : ''}" data-act="mute" aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic', 'sm')} ${S.rec.micMuted ? t('Unmute') : t('Mute')}</button>`);
+const recControls = () => (finishing() ? `<button class="btn sm" data-act="finishing" disabled>${spinner()} ${t('Finishing…')}</button>` : recHere() ? `${muteBtn()}<button class="btn sm" data-act="pause">${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button><button class="btn sm danger" data-act="stop">${icon('stop', 'sm')} ${t('Stop')}</button>` : `<button class="btn sm primary" data-act="record" ${S.rec.active ? 'disabled' : ''}>${icon('mic', 'sm')} ${t('Record')}</button>`);
 
 function highlightTerms(text) {
   let html = esc(text);
@@ -274,7 +294,57 @@ function showDraft(d) {
   box.insertAdjacentHTML('beforeend', draftHtml(d));
   keepInView();
 }
-function keepInView() { const m = $('#main'); if (m && m.scrollHeight - m.scrollTop - m.clientHeight < 400) m.scrollTop = m.scrollHeight; }
+// The transcript is a fixed-height box with its own scrollbar, while recording and after. While recording here it follows the
+// newest line: scrolling up to re-read pauses the following (and offers "Latest"); reaching the bottom again, or pressing it,
+// resumes it. No scrolling of the whole page.
+const nearEnd = (box) => box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+function scrollLatest() { const box = $('#segs'); if (!box) return; box.scrollTop = box.scrollHeight; N.follow = true; const j = $('#jump-latest'); if (j) j.hidden = true; }
+// On the transcript tab the page itself does not scroll: the transcript box is sized to end above the bottom of the window (and
+// the recording bar while it shows) and the side cards scroll inside their own column, so there is exactly one scrollbar for the
+// lines. Any other tab leaves the page to scroll as usual.
+const BAR_CLEARANCE = 100;   // the floating recording bar (20px off the bottom, ~46px tall) plus the card's own padding
+const EDGE_CLEARANCE = 30;   // no recording bar: the card's own padding and a little air
+function fitLive() {
+  const main = $('#main'), box = $('#segs'), aside = $('#aside');
+  if (!main) return;
+  const fit = !!N && N.tab === 'transcript' && !!box;
+  const grid = $('.note-grid'), sideBySide = !!grid && getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length > 1;
+  main.classList.toggle('fit', fit && sideBySide);   // stacked (narrow window): the side cards come below, so the page must scroll to reach them
+  if (box) box.style.height = '';
+  if (aside) aside.style.maxHeight = '';
+  if (!fit) return;
+  if (sideBySide) main.scrollTop = 0;
+  const top = (el) => el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
+  box.style.height = `${Math.max(140, main.clientHeight - top(box) - (S.rec.active ? BAR_CLEARANCE : EDGE_CLEARANCE))}px`;
+  if (aside && sideBySide) aside.style.maxHeight = `${Math.max(200, main.clientHeight - top(aside) - 40)}px`;
+  if (N.restoreTop != null) { box.scrollTop = N.restoreTop === 'end' ? box.scrollHeight : N.restoreTop; N.restoreTop = null; }
+  else if (box.classList.contains('live') && N.follow !== false) box.scrollTop = box.scrollHeight;
+}
+let fitWired = false;
+// restoring: the box was drawn again where the reader had scrolled to, so whether it follows the newest line is kept as it was
+function wireLiveBox(restoring = false) {
+  if (!fitWired) { fitWired = true; window.addEventListener('resize', () => { if ($('#segs')) fitLive(); }); }
+  const box = $('#segs'), jump = $('#jump-latest');
+  if (!box || !jump) return;
+  if (!restoring) N.follow = true;
+  jump.hidden = !box.classList.contains('live') || N.follow !== false;
+  box.addEventListener('scroll', () => { if (!box.classList.contains('live')) return; N.follow = nearEnd(box); jump.hidden = N.follow; }, { passive: true });
+  jump.addEventListener('click', scrollLatest);
+}
+function syncLiveBox() {
+  const box = $('#segs');
+  if (!box) { fitLive(); return; }
+  const live = !!N && recHere();
+  const was = box.classList.contains('live');
+  box.classList.toggle('live', live);
+  fitLive();
+  if (live && !was) scrollLatest(); else if (!live) { const j = $('#jump-latest'); if (j) j.hidden = true; }
+}
+function keepInView() {
+  const box = $('#segs');
+  if (!box) return;
+  if (box.classList.contains('live') ? N.follow !== false : nearEnd(box)) box.scrollTop = box.scrollHeight;
+}
 function filterTranscript() {
   const q = N.trq.toLowerCase();
   let hits = 0;
@@ -335,6 +405,7 @@ function renderAside() {
       ${N.links.length ? `<div class="stack tight">${N.links.map((l) => `<div class="row"><span class="srcicon">${icon({ notion: 'doc', linear: 'checksq', obsidian: 'book', calendar: 'video', webhook: 'webhook' }[l.kind] || 'link')}</span><a class="grow ellipsis small" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.title || l.url)}</a><button class="btn ghost icon xs" data-unlink="${l.id}" aria-label="${t('Remove')}">${icon('x', 'sm')}</button></div>`).join('')}</div>` : `<div class="small muted">${t('Export to Notion, Obsidian or Linear — or link an issue — and it shows up here.')}</div>`}
     </section>
     ${N.related.length ? `<section class="panel"><div class="panel-head"><h3>${icon('layers')} ${t('Related meetings')}</h3></div><div class="list">${N.related.map((r) => meetingRow(r, { snippet: esc(r.reasons.join(' · ')) })).join('')}</div></section>` : ''}`;
+  fitLive();
 }
 
 // ---------- actions ----------
@@ -406,6 +477,7 @@ function bind(main) {
       else if (a === 'record') await startRecording(N.id);
       else if (a === 'stop') await stopRecording();
       else if (a === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
+      else if (a === 'mute') await api('POST', '/api/recording/mic-mute', { muted: !S.rec.micMuted });
       else if (a === 'share') openExport(N.id);
       else if (a === 'more') moreMenu(btn, main);
       else if (a === 'add-tag') addTag();
@@ -623,6 +695,7 @@ function updateCounts() { $$('[data-count]').forEach((b) => { const c = count(b.
 function handleEvent(main, type, d) {
   if (!N) return;
   const mine = (x) => x === N.id;
+  if (type.startsWith('recording.')) requestAnimationFrame(syncLiveBox);
   if (type === 'recording.stopped' || type === 'recording.paused') { N.drafts = {}; $$('.seg.draft').forEach((el) => el.remove()); } // nothing is being said any more
   if (type === 'transcript.partial' && mine(d.noteId)) {
     showDraft(d);
@@ -646,9 +719,10 @@ function handleEvent(main, type, d) {
   } else if (type === 'transcript.removed' && mine(d.noteId)) {
     N.segs = N.segs.filter((s) => !d.ids.includes(s.id));
     $$('.seg').forEach((el) => { if (d.ids.includes(Number(el.dataset.id))) el.remove(); });
-  } else if (['recording.started', 'recording.stopped', 'recording.paused', 'recording.resumed'].includes(type) && (mine(d.noteId) || type !== 'recording.started')) {
+  } else if (['recording.started', 'recording.stopped', 'recording.paused', 'recording.resumed', 'recording.mic-muted', 'recording.finalizing'].includes(type) && (mine(d.noteId) || type !== 'recording.started')) {
+    if (type === 'recording.finalizing' || type === 'recording.stopped') syncFinishing();
     if (type === 'recording.stopped' && mine(d.noteId)) { reloadOverview(main).then(reloadTranscript); }
-    else { refreshHeader(main); if (['transcript', 'notes'].includes(N.tab)) { const tb = $('.tb', main); if (tb) { const first = tb.querySelector('[data-act="record"], [data-act="pause"]'); if (first) { const wrap = document.createElement('span'); wrap.innerHTML = recControls(); tb.querySelectorAll('[data-act="record"],[data-act="pause"],[data-act="stop"]').forEach((x) => x.remove()); tb.prepend(...wrap.childNodes); } } } }
+    else { refreshHeader(main); if (['transcript', 'notes'].includes(N.tab)) { const tb = $('.tb', main); if (tb) { const first = tb.querySelector('[data-act="record"], [data-act="mute"], [data-act="pause"], [data-act="finishing"]'); if (first) { const wrap = document.createElement('span'); wrap.innerHTML = recControls(); tb.querySelectorAll('[data-act="record"],[data-act="mute"],[data-act="pause"],[data-act="stop"],[data-act="finishing"]').forEach((x) => x.remove()); tb.prepend(...wrap.childNodes); } } } }
   } else if (type === 'speakers.updated' && mine(d.noteId)) {
     debouncedSpeakers();
   } else if (['note.insights', 'import.done'].includes(type) && mine(d.id || d.noteId)) {

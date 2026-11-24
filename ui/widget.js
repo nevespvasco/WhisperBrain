@@ -125,7 +125,7 @@ function render() {
     syncLines(box);
     if (stick) box.scrollTop = box.scrollHeight;
     put(root.querySelector('.slot-consent'), consentStrip());
-    put(root.querySelector('footer'), `<button class="btn sm" data-act="pause" ${busy ? 'disabled' : ''}>${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button>
+    put(root.querySelector('footer'), `${S.rec.micAvailable === false ? '' : `<button class="btn sm ${S.rec.micMuted ? 'danger' : ''}" data-act="mute" ${busy ? 'disabled' : ''} aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic', 'sm')} ${S.rec.micMuted ? t('Unmute') : t('Mute')}</button>`}<button class="btn sm" data-act="pause" ${busy ? 'disabled' : ''}>${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button>
       <button class="btn sm stop" data-act="stop" ${busy ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`);
   }
   paintMeters();
@@ -156,7 +156,7 @@ const relabelSoon = () => { clearTimeout(relabel); relabel = setTimeout(loadLine
 function setRec(st) {
   clearTimeout(savedTimer);
   S.saved = false;
-  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: !!st.paused, finalizing: !!st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs || 0, base: Date.now(), elapsedMs: st.elapsedMs || 0 };
+  if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: !!st.paused, finalizing: !!st.finalizing, stage: st.stage || null, micMuted: !!st.micMuted, micAvailable: st.micAvailable !== false, baseMs: st.elapsedMs || 0, base: Date.now(), elapsedMs: st.elapsedMs || 0 };
   else S.rec = { active: false };
 }
 
@@ -170,7 +170,8 @@ async function sync() {
 
 events({
   open: sync,
-  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0 }); S.lines = []; S.tr.clear(); S.drafts = {}; draw(); loadConsent(); },
+  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0, micAvailable: d.channels ? d.channels.includes('mic') : true }); S.lines = []; S.tr.clear(); S.drafts = {}; draw(); loadConsent(); },
+  'recording.mic-muted': (d) => { if (S.rec.active && S.rec.noteId === d.noteId) { S.rec.micMuted = d.muted; draw(); } },
   'recording.paused': () => { S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; draw(); },
   'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); draw(); },
   'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d.stage || null; draw(); },
@@ -269,6 +270,7 @@ root.addEventListener('click', async (e) => {
       if (S.rec.noteId === id) { S.rec.consent = c; S.noticeCopied = false; S.consentError = ''; draw(); }
     }
     else if (b.dataset.act === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
+    else if (b.dataset.act === 'mute') await api('POST', '/api/recording/mic-mute', { muted: !S.rec.micMuted });
     else if (b.dataset.act === 'stop') { b.disabled = true; await api('POST', '/api/recording/stop'); }
   } catch { b.disabled = false; }
 });

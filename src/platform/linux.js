@@ -1,6 +1,7 @@
 'use strict';
 const { execFile, spawn } = require('node:child_process');
 const { ProcessSource, FallbackSource } = require('../audio/source');
+const { AppStreamsSource } = require('../audio/app-streams');
 const { classify, classifyWindowTitle } = require('./apps');
 const { detectEchoCancel, EchoCanceller, EchoCancelledSource } = require('./pw-echo-cancel');
 const { enhancement } = require('../audio/capture-options');
@@ -65,6 +66,26 @@ function micUsers(parsed, { selfPids = [process.pid] } = {}) {
   return apps;
 }
 
+// Chat apps make sounds without a call (a notification, a ring): playing is only a weak sign for them
+const NOISY_APPS = new Set(['discord', 'slack', 'whatsapp', 'telegram', 'signal', 'facetime']);
+
+// Who is in a call: the applications holding a microphone (micUsers) and, beyond them, the meeting apps that are *playing* audio.
+// A call you only listen to (the microphone muted, or not opened until you speak; Zoom in a Flatpak) has no input stream at all, but
+// the other people are heard through a running output stream. A browser needs a window title to be a call, so it is not counted from
+// playback; and an application is listed once, with the microphone as the stronger evidence. -> micUsers' shape, plus via: 'playback'
+function callUsers(parsed, { selfPids = [process.pid] } = {}) {
+  const apps = micUsers(parsed, { selfPids });
+  const have = new Set(apps.map((a) => a.appId));
+  for (const s of parsed.outputStreams || []) {
+    if (!s.running || (s.pid && selfPids.includes(s.pid))) continue;
+    const cls = classify({ name: s.name, binary: s.binary, title: s.title });
+    if (!cls || cls.id === 'browser' || cls.id === 'other' || have.has(cls.id)) continue;
+    have.add(cls.id);
+    apps.push({ name: cls.name, appId: cls.id, weak: NOISY_APPS.has(cls.id), pid: s.pid, binary: s.binary, via: 'playback' });
+  }
+  return apps;
+}
+
 // Which playback stream is the meeting app's voice? `app` = { pid, binary, appId } as micUsers() reports it. Chosen by process,
 // then program, then what the stream is (a Chrome tab's audio plays from its audio service, not from the process that holds
 // the microphone, so the pid alone is not enough). Only a stream that is playing counts. Where nothing says which of several
@@ -72,6 +93,21 @@ function micUsers(parsed, { selfPids = [process.pid] } = {}) {
 // -> { stream, reason } (reason says why not, when there is no stream)
 function pickOutputStream(parsed, app, { selfPids = [process.pid] } = {}) {
   if (!app) return { stream: null, reason: 'no application to follow' };
+  let top = ownStreams(parsed, app, selfPids);
+  if (!top.length) return { stream: null, reason: `no playback stream of ${app.name || app.appId || 'that application'}` };
+  // choose among all its streams first, playing or not, and only then ask whether the choice is playing: a quiet call stream
+  // must not lose to a notification sound or another tab of the same program
+  if (top.length > 1) {
+    const call = top.filter((s) => isCallStream(s, app));
+    if (call.length >= 1) top = call;
+  }
+  if (top.length !== 1) return { stream: null, reason: 'several streams of this application could be the call and none is marked as it' };
+  return top[0].running ? { stream: top[0], reason: '' } : { stream: null, reason: 'its playback stream is not playing yet' };
+}
+
+// The playback streams that belong to `app` ({ pid, binary, name, appId }, as micUsers() reports it), the best-matching ones only:
+// by process, then program, then what the stream is.
+function ownStreams(parsed, app, selfPids) {
   const mine = (s) => s.serial != null && !(s.pid && selfPids.includes(s.pid)) && !!classify({ name: s.name, binary: s.binary, title: s.title });
   const same = (a, b) => !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
   const related = (s) => {
@@ -81,17 +117,23 @@ function pickOutputStream(parsed, app, { selfPids = [process.pid] } = {}) {
     return app.appId && !['browser', 'other'].includes(app.appId) && cls?.id === app.appId ? 1 : 0;
   };
   const found = (parsed.outputStreams || []).filter(mine).map((s) => ({ s, rel: related(s) })).filter((x) => x.rel > 0);
-  if (!found.length) return { stream: null, reason: `no playback stream of ${app.name || app.appId || 'that application'}` };
-  // choose among all its streams first, playing or not, and only then ask whether the choice is playing: a quiet call stream
-  // must not lose to a notification sound or another tab of the same program
+  if (!found.length) return [];
   const best = Math.max(...found.map((x) => x.rel));
-  let top = found.filter((x) => x.rel === best).map((x) => x.s);
-  if (top.length > 1) {
-    const call = top.filter((s) => { const c = classifyWindowTitle(s.title); return c && (['browser', 'other'].includes(app.appId) || c.id === app.appId); });
-    if (call.length >= 1) top = call;
+  return found.filter((x) => x.rel === best).map((x) => x.s);
+}
+const isCallStream = (s, app) => { const c = classifyWindowTitle(s.title); return !!c && (['browser', 'other'].includes(app.appId) || c.id === app.appId); };
+
+// Every stream to follow for a set of chosen applications, right now: their playing streams. A program with several streams
+// gives all of them (they are its own audio: the call, its notification sounds), except a browser, whose other tabs are not the
+// call: there only streams marked as a call count, or its one stream. -> [{ key, serial, name }]
+function streamsOfApps(parsed, apps, { selfPids = [process.pid] } = {}) {
+  const out = new Map();
+  for (const app of apps) {
+    let top = ownStreams(parsed, app, selfPids);
+    if (top.length > 1 && ['browser', 'other'].includes(app.appId)) top = top.filter((s) => isCallStream(s, app));
+    for (const s of top) if (s.running) out.set(s.serial, { key: s.serial, serial: s.serial, name: s.name });
   }
-  if (top.length !== 1) return { stream: null, reason: 'several streams of this application could be the call and none is marked as it' };
-  return top[0].running ? { stream: top[0], reason: '' } : { stream: null, reason: 'its playback stream is not playing yet' };
+  return [...out.values()];
 }
 
 async function pwDump() {
@@ -244,8 +286,17 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump
     // transcript; without one, or when its stream cannot be found, whatever the default output device plays (its monitor,
     // without any virtual device), as before. The source says which in `capture` = { mode: 'app' | 'output', app?, reason }.
     // If the application's stream goes away mid-call the capture carries on with the whole output instead of going silent.
-    async createSystemSource({ sink, app } = {}) {
+    async createSystemSource({ sink, app, apps, wholeOutput } = {}) {
       const base = ['--rate', '16000', '--channels', '1', '--format', 's16'];
+      // Several chosen applications (or one the person chose): follow their streams as they come and go and mix them. Nothing else
+      // is captured, not even when a stream cannot be found yet: the channel is silent until it plays, as the person asked.
+      if (apps?.length) {
+        return new AppStreamsSource({
+          list: async () => { const d = await dumpFn(); return d ? streamsOfApps(d, apps) : []; },
+          open: (st) => record([...base, '-P', 'node.dont-reconnect=true', '-P', 'node.dont-fallback=true', '--target', String(st.serial), '-'], `pw-record (${st.name || 'application'} audio)`),
+          capture: { mode: 'apps', app: apps.map((a) => a.name || a.appId).join(' + '), reason: '' },
+        });
+      }
       const whole = async (reason) => {
         const target = sink || (await defaultNames()).defaultSink;
         if (!target) throw new Error('no default audio output found');
@@ -253,7 +304,7 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump
         src.capture = { mode: 'output', reason };
         return src;
       };
-      if (!app) return whole('no application given: capturing the whole output');
+      if (!app) return whole(wholeOutput ? '' : 'no application given: capturing the whole output'); // chosen on purpose: nothing to warn about
       const dump = await dumpFn();
       if (!dump) return whole('PipeWire could not be asked about playback streams: capturing the whole output');
       const { stream, reason } = pickOutputStream(dump, app);
@@ -271,7 +322,7 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump
     async micActivity() {
       const d = await dumpFn();
       if (!d) return { supported: false, active: false, apps: [] };
-      const apps = micUsers(d);
+      const apps = callUsers(d);
       return { supported: true, active: apps.length > 0, apps };
     },
 
@@ -316,4 +367,4 @@ function create({ x11Helper, env = process.env, clipboard: hostClipboard, pwDump
   };
 }
 
-module.exports = { create, parsePwDump, micUsers, pickOutputStream, sessionKind, parseWmctrl, parseClientList, parseXpropWindow, meetingWindowsFrom };
+module.exports = { create, parsePwDump, micUsers, callUsers, pickOutputStream, streamsOfApps, sessionKind, parseWmctrl, parseClientList, parseXpropWindow, meetingWindowsFrom };

@@ -59,6 +59,7 @@ class RecordingManager {
     if (!a) return { active: false };
     return {
       active: true, noteId: a.noteId, paused: a.paused, finalizing: a.finalizing, stage: a.stage || null,
+      micMuted: a.micMuted, micAvailable: !!a.channels.mic,
       elapsedMs: this.elapsed(a), channels: Object.keys(a.channels), needsRenderer: a.rendererChannels,
       echo: { cancellation: a.aec ? { ...a.aec } : null, dropped: { ...a.echoDropped } },
       draft: a.draft ? { on: a.draft.on, reason: a.draft.reason || null } : { on: false, reason: null },
@@ -85,8 +86,10 @@ class RecordingManager {
   }
 
   // app: the meeting application ({ name, appId, pid, binary }) when the caller knows it; the system channel then follows it
-  // alone where the platform can (Linux), see resolveSystemApp.
-  async start(noteId, { mic, system, app } = {}) {
+  // alone where the platform can (Linux), see resolveSystemApp. apps: the applications the person chose to record (several calls at
+  // once): only their audio, and it stays so (widenSystemCapture leaves it alone). wholeOutput: the person chose everything the
+  // computer plays, so no application is followed and nothing needs saying about it.
+  async start(noteId, { mic, system, app, apps, wholeOutput } = {}) {
     if (this.active) throw new RecordingError('busy', 'A recording is already in progress.');
     const note = this.notes.get(noteId);
     if (!note) throw new RecordingError('not-found', 'Note not found.');
@@ -97,7 +100,7 @@ class RecordingManager {
     const prior = this.notes.segments(noteId).reduce((m, x) => Math.max(m, x.endMs), 0);
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
-      noteId, shown: '', channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
+      noteId, chosenApps: apps?.length ? apps : null, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
       fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
@@ -124,7 +127,7 @@ class RecordingManager {
         try {
           let src;
           if (cap[ch] === 'native') {
-            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource({ app: await this.resolveSystemApp(s, app) });
+            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource(a.chosenApps ? { apps: a.chosenApps } : wholeOutput ? { wholeOutput: true } : { app: await this.resolveSystemApp(s, app) });
           } else {
             src = new PushSource();
             a.rendererChannels.push(ch);
@@ -223,10 +226,11 @@ class RecordingManager {
   }
 
   // The system channel follows one application's stream; when a second call turns up (Zoom and Discord at once) that would
-  // lose the other call, so it moves to the whole output. Idempotent; false when nothing needed (or could be) changed.
+  // lose the other call, so it moves to the whole output. Idempotent; false when nothing needed (or could be) changed, and always
+  // false when the person chose which applications to record.
   widenSystemCapture(reason) {
     const a = this.active;
-    return !!(a && !a.finalizing && a.channels.system?.widen?.(reason));
+    return !!(a && !a.finalizing && !a.chosenApps && a.channels.system?.widen?.(reason));
   }
 
   attach(a, ch, src) {
@@ -280,6 +284,7 @@ class RecordingManager {
 
   onPcm(a, ch, buf) {
     if (this.active !== a || a.paused || a.finalizing) return;
+    if (ch === 'mic' && a.micMuted) buf = Buffer.alloc(buf.length);   // muted: what the microphone hears goes no further; the timeline carries on in silence
     const spool = this.spoolFor(a, ch);
     if (a.fed[ch] === 0) {
       a.epoch[ch] = Math.max(0, this.elapsed(a) - Math.round((buf.length / 2 / 16000) * 1000));
@@ -421,6 +426,19 @@ class RecordingManager {
       this.engine.reset(ch);
       a.fed[ch] = 0;
     }));
+  }
+
+  // Stop recording what the user says, and start again, without stopping the meeting: the microphone's audio is replaced by silence
+  // before the recognizer, the speaker pass or the audio kept for it ever see it. The other side goes on as ever. A new recording
+  // starts unmuted. Asking for the state it already has changes nothing and says nothing. -> the status
+  setMicMuted(muted) {
+    const a = this.active;
+    if (!a) throw new RecordingError('idle', 'No recording in progress.');
+    if (!a.channels.mic) throw new RecordingError('no-mic', 'The microphone is not part of this recording.');
+    if (a.finalizing || a.micMuted === !!muted) return this.status();
+    a.micMuted = !!muted;
+    this.bus.publish('recording.mic-muted', { noteId: a.noteId, muted: a.micMuted });
+    return this.status();
   }
 
   async pause() {

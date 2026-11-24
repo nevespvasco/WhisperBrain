@@ -326,12 +326,20 @@ function createRoutes(app) {
     let noteId = body.noteId;
     if (!noteId) noteId = app.notes.create({ title: body.title || '', eventUid: body.eventUid, eventStart: body.eventStart, attendees: body.attendees, templateId: body.templateId, folderId: body.folderId, platform: body.platform }).id;
     else if (app.notes.get(noteId)?.source === 'manual') app.notes.update(noteId, { source: 'recorded' });
-    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system }); } catch (e) {
+    // calls: the live calls the person chose to record (ids such as 'zoom', 'discord'), turned into the applications behind them
+    const apps = Array.isArray(body.calls) && body.calls.length ? app.detector.appsFor?.(body.calls.map(String)) : undefined;
+    const wholeOutput = Array.isArray(body.calls) && !body.calls.length; // [] = the person chose everything the computer plays
+    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system, apps: apps?.length ? apps : undefined, wholeOutput }); } catch (e) {
       throw new HttpError({ 'no-model': 412, busy: 409, 'not-found': 404 }[e.code] || 500, e.message, e.code);
     }
   });
   add('POST', '/api/recording/pause', async () => app.recording.pause());
   add('POST', '/api/recording/resume', async () => app.recording.resume());
+  // mute / unmute the user's own microphone in the middle of a meeting; without `muted` it toggles
+  add('POST', '/api/recording/mic-mute', async ({ body }) => {
+    if (body.muted !== undefined && typeof body.muted !== 'boolean') throw new HttpError(400, 'muted must be true or false');
+    try { return app.recording.setMicMuted(body.muted ?? !app.recording.status().micMuted); } catch (e) { throw new HttpError(409, e.message, e.code); }
+  });
   add('POST', '/api/recording/stop', async () => { try { return await app.recording.stop(); } catch (e) { throw new HttpError(409, e.message, e.code); } });
   add('POST', '/api/recording/pcm', async ({ req, query }) => {
     const buf = await readBody(req, 4 * 1024 * 1024);

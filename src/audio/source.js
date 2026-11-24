@@ -85,6 +85,15 @@ class FallbackSource extends AudioSource {
   }
 
   stop() { this.stopping = true; this.current?.stop(); }
+
+  // Another call joined (a second meeting app): stop following the one stream and capture the fallback, the whole output, from
+  // now on. Returns whether anything changed; false once widened, or when the preferred source is not the one running.
+  widen(reason) {
+    if (this.stopping || !this.current || this.current !== this.primary) return false;
+    this.fallbackCapture = { ...this.fallbackCapture, reason };
+    this.primary.stop();   // its 'end' starts the fallback, as when the stream goes away by itself
+    return true;
+  }
 }
 
 module.exports = { AudioSource, PushSource, ProcessSource, FallbackSource };

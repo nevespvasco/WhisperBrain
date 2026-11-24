@@ -165,7 +165,7 @@ function wireEvents() {
   core.bus.subscribe((e) => {
     if (e.type === 'meeting.detected') {
       const title = e.data.event?.summary || e.data.title;
-      notify('Meeting detected', `${e.data.apps.join(', ')} is using your microphone${title ? ` — ${title}` : ''}. Click to take notes.`, () => win?.webContents.executeJavaScript(`location.hash = '#/?detected=1'`).catch(() => {}));
+      notify('Meeting detected', `${e.data.apps.join(' and ')} ${e.data.apps.length > 1 ? 'are' : 'is'} using your microphone${title ? ` — ${title}` : ''}. Click to take notes.`, () => win?.webContents.executeJavaScript(`location.hash = '#/?detected=1'`).catch(() => {}));
     } else if (e.type === 'meeting.autostarted') notify('Recording started', 'WhisperBrain is taking notes for this meeting. Tell the others on the call it is being recorded.', () => win?.webContents.executeJavaScript(`location.hash = '#/note/${e.data.noteId}'`).catch(() => {}));
     else if (e.type === 'meeting.ended' && core.recording.status().active) notify('Meeting ended', 'The call app released the microphone.');
     else if (e.type === 'meeting.starting') notify('Meeting starting', e.data.event.summary, () => win?.webContents.executeJavaScript(`location.hash = '#/'`).catch(() => {}));

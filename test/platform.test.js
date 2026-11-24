@@ -297,3 +297,126 @@ test('linux: if the whole output cannot be captured as the fallback either, the 
   assert.match(errors[0], /output/i);
   assert.equal(ended.length, 1);
 });
+
+// ---- a call you only listen to: the microphone is muted or unused, but the app is playing the other people ----
+test('linux: a meeting app playing audio counts as a call even when it holds no microphone (Zoom with the mic muted, in a Flatpak)', () => {
+  const only = (streams) => ({ defaultSink: 'x', defaultSource: 'y', sources: [], sinks: [], inputStreams: [], outputStreams: streams });
+  const out = (o) => ({ serial: 1, nodeName: '', running: true, name: '', binary: '', pid: null, title: '', ...o });
+  // the real thing: a Flatpak shows its own pid namespace (4), and Zoom's playback stream is called "ZOOM VoiceEngine"
+  const zoom = linux.callUsers(only([out({ name: 'ZOOM VoiceEngine', binary: 'zoom', pid: 4, title: 'playStream' })]), { selfPids: [] });
+  assert.deepEqual(zoom.map((a) => [a.appId, a.weak, a.via]), [['zoom', false, 'playback']]);
+  assert.deepEqual(linux.callUsers(only([out({ name: 'ZOOM VoiceEngine', binary: 'zoom', running: false })]), { selfPids: [] }), [], 'not playing: not a call');
+  assert.deepEqual(linux.callUsers(only([out({ name: 'Spotify', title: 'Spotify' }), out({ name: 'mpv' })]), { selfPids: [] }), [], 'music and video are not calls');
+  assert.deepEqual(linux.callUsers(only([out({ name: 'Google Chrome', binary: 'chrome', title: 'Lo-fi beats - YouTube' })]), { selfPids: [] }), [], 'a browser playing is not a call without a title that says so');
+  // chat apps make sounds without a call: a weak sign, so nothing starts recording by itself because of it
+  assert.equal(linux.callUsers(only([out({ name: 'Discord', binary: 'discord' })]), { selfPids: [] })[0].weak, true);
+  // ourselves are never the call
+  assert.deepEqual(linux.callUsers(only([out({ name: 'zoom', binary: 'zoom', pid: 77 })]), { selfPids: [77] }), []);
+});
+
+test('linux: microphone users and playing apps are one list, each application once', () => {
+  const apps = linux.callUsers(PW(), { selfPids: [31337] });
+  assert.deepEqual(apps.map((a) => a.appId).sort(), ['browser', 'zoom']);
+  assert.equal(apps.find((a) => a.appId === 'zoom').via, undefined, 'Zoom holds the microphone here: that is the stronger evidence');
+});
+
+test('linux: micActivity reports a muted Zoom call', async () => {
+  const dump = { defaultSink: 'x', defaultSource: 'y', sources: [], sinks: [], inputStreams: [], outputStreams: [{ serial: 9, nodeName: '', running: true, name: 'ZOOM VoiceEngine', binary: 'zoom', pid: 4, title: 'playStream' }] };
+  const p = linux.create({ env: {}, pwDump: async () => dump });
+  const r = await p.micActivity();
+  assert.deepEqual([r.supported, r.active, r.apps.map((a) => a.appId)], [true, true, ['zoom']]);
+});
+
+test('audio: a source that follows one application can be widened to the whole output, once, and never after stop', async () => {
+  const { EventEmitter } = require('node:events');
+  const { FallbackSource } = require('../src/audio/source');
+  const fake = (name) => Object.assign(new EventEmitter(), { name, started: 0, stopped: 0, start() { this.started++; }, stop() { this.stopped++; setImmediate(() => this.emit('end')); } });
+  const make = () => {
+    const primary = fake('app'), fallback = fake('output');
+    const src = new FallbackSource({ primary, makeFallback: () => fallback, capture: { mode: 'app' }, fallbackCapture: { mode: 'output', reason: 'x' } });
+    const seen = []; src.on('capture', (c) => seen.push(c));
+    return { src, primary, fallback, seen };
+  };
+  const a = make();
+  a.src.start();
+  assert.equal(a.src.widen('two calls'), true);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(a.primary.stopped, 1);
+  assert.equal(a.fallback.started, 1);
+  assert.deepEqual(a.seen, [{ mode: 'output', reason: 'two calls' }]);
+  assert.equal(a.src.widen('again'), false, 'already on the whole output');
+  const b = make();
+  assert.equal(b.src.widen('before start'), false);
+  b.src.start(); b.src.stop();
+  assert.equal(b.src.widen('after stop'), false);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(b.fallback.started, 0, 'stopping on purpose never starts the fallback');
+});
+
+test('linux: streamsOfApps gives the playing streams of the chosen applications only, several apps at once', () => {
+  const d = PW();
+  const keys = (apps) => linux.streamsOfApps(d, apps, { selfPids: [] }).map((s) => s.serial).sort();
+  assert.deepEqual(keys([{ pid: 4242, appId: 'zoom', name: 'Zoom' }]), [701], 'one application');
+  assert.deepEqual(keys([{ pid: 4242, appId: 'zoom', name: 'Zoom' }, { pid: 5000, binary: 'chrome', appId: 'browser', name: 'Chrome' }]), [701, 702], 'Zoom and the call in Chrome, not the YouTube tab');
+  assert.deepEqual(keys([{ pid: 5000, binary: 'chrome', appId: 'browser', name: 'Chrome' }]), [702], 'a browser: only the stream marked as the call');
+  assert.deepEqual(keys([{ appId: 'discord', name: 'Discord', binary: 'Discord' }]), [], 'nothing playing for it now: nothing, not "everything"');
+  const quiet = { ...d, outputStreams: d.outputStreams.map((s) => (s.serial === 701 ? { ...s, running: false } : s)) };
+  assert.deepEqual(linux.streamsOfApps(quiet, [{ pid: 4242, appId: 'zoom', name: 'Zoom' }], { selfPids: [] }), [], 'a stream that is not playing is not followed yet');
+  // a program with two streams (call + notification sound) gives both
+  const two = { ...d, outputStreams: [...d.outputStreams, { serial: 990, name: 'discord', binary: 'Discord', pid: 61, running: true, title: 'Playback' }, { serial: 991, name: 'discord', binary: 'Discord', pid: 61, running: true, title: 'Playback' }] };
+  assert.deepEqual(linux.streamsOfApps(two, [{ appId: 'discord', name: 'Discord', binary: 'Discord', pid: 61 }], { selfPids: [] }).map((s) => s.serial).sort(), [990, 991]);
+});
+
+test('audio: AppStreamsSource follows streams as they come and go, mixes them on the clock and fills the gaps with silence', async () => {
+  const { EventEmitter } = require('node:events');
+  const { AppStreamsSource } = require('../src/audio/app-streams');
+  const tone = (n, v) => { const b = Buffer.alloc(n * 2); for (let i = 0; i < n; i++) b.writeInt16LE(v, i * 2); return b; };
+  let clock = 0;
+  const live = new Map();       // key -> fake source
+  const opened = [];
+  const fake = (key) => Object.assign(new EventEmitter(), { key, started: 0, stopped: 0, start() { this.started++; }, stop() { this.stopped++; this.emit('end'); } });
+  let listed = [];
+  const src = new AppStreamsSource({
+    list: async () => listed, now: () => clock, pollMs: 1e9, frameMs: 1e9,   // driven by hand below
+    open: (s) => { const f = fake(s.key); live.set(s.key, f); opened.push(s.key); return f; },
+    capture: { mode: 'apps', app: 'A + B', reason: '' },
+  });
+  const out = [];
+  src.on('pcm', (b) => out.push(b));
+  const total = () => Buffer.concat(out);
+  const samples = () => { const b = total(); return Array.from({ length: b.length / 2 }, (_, i) => b.readInt16LE(i * 2)); };
+  src.start();                                    // the timers are huge: refresh() once, flush() by hand
+  await new Promise((r) => setImmediate(r));
+  clock += 100; src.flush();                      // 100 ms with no stream: 1600 samples of silence
+  assert.equal(total().length, 3200);
+  assert.ok(samples().every((v) => v === 0));
+  listed = [{ key: 1, name: 'Zoom' }];
+  await src.refresh();
+  assert.deepEqual(opened, [1]);
+  live.get(1).emit('pcm', tone(1600, 1000));
+  clock += 100; src.flush();
+  assert.equal(samples().slice(1600, 3200).every((v) => v === 1000), true, 'one stream passes through');
+  listed = [{ key: 1, name: 'Zoom' }, { key: 2, name: 'Discord' }];
+  await src.refresh();
+  assert.deepEqual(opened, [1, 2], 'a stream already followed is not opened again');
+  live.get(1).emit('pcm', tone(1600, 1000)); live.get(2).emit('pcm', tone(1600, 500));
+  clock += 100; src.flush();
+  assert.equal(samples().slice(3200, 4800).every((v) => v === 1500), true, 'two streams are summed');
+  live.get(1).emit('pcm', tone(1600, 30000)); live.get(2).emit('pcm', tone(1600, 30000));
+  clock += 100; src.flush();
+  assert.equal(samples().slice(4800, 6400).every((v) => v === 32767), true, 'and never wrap around');
+  // a stream ends: its last audio is still sent, then it is forgotten; the clock keeps the channel going
+  live.get(2).emit('pcm', tone(800, 500)); live.get(2).emit('end');
+  clock += 100; src.flush();
+  assert.equal(samples()[6400], 500);
+  assert.equal(samples()[6400 + 900], 0, 'half a frame of it, then silence from the other, which sent nothing');
+  clock += 1000; src.flush();
+  assert.equal(total().length / 2, 16000 * 1.5, 'the channel runs at the clock: 16 000 samples per second, no more, no less');
+  // late catch-up after a stall still delivers what is due
+  clock += 250; src.flush();
+  assert.equal(total().length / 2, 16000 * (clock / 1000));
+  src.stop();
+  assert.equal(live.get(1).stopped, 1, 'stopping stops what is followed');
+  clock += 100; src.flush();
+  assert.equal(total().length / 2, 16000 * ((clock - 100) / 1000), 'nothing after stop');
+});

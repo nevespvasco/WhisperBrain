@@ -187,6 +187,33 @@ test('the setting can turn per-app capture off: the whole output, and nobody is 
   await r.mgr.stop();
 });
 
+test('when the person chose which calls to record, exactly those applications are followed, whatever the setting, and never widened', async () => {
+  const DISCORD = { name: 'Discord', appId: 'discord', weak: false, pid: 2, binary: 'Discord' };
+  const r = followRig({ apps: [ZOOM, DISCORD], setting: false });
+  await start(r, { apps: [ZOOM, DISCORD] });
+  assert.deepEqual(r.calls.system, [{ apps: [ZOOM, DISCORD] }]);
+  assert.equal(r.calls.activity, 0, 'nobody is asked who is on the call: the person said');
+  let widened = 0;
+  r.mgr.active.channels.system.widen = () => { widened++; return true; };
+  assert.equal(r.mgr.widenSystemCapture('a second call'), false);
+  assert.equal(widened, 0, 'a chosen set stays what was chosen');
+  await r.mgr.stop();
+  // without a choice the same call does widen
+  const r2 = followRig({ apps: [ZOOM] });
+  await start(r2);
+  r2.mgr.active.channels.system.widen = () => true;
+  assert.equal(r2.mgr.widenSystemCapture('a second call'), true);
+  await r2.mgr.stop();
+});
+
+test('when the person chose everything the computer plays, no application is looked up or followed', async () => {
+  const r = followRig({ apps: [ZOOM] });
+  await start(r, { wholeOutput: true });
+  assert.deepEqual(r.calls.system, [{ wholeOutput: true }]);
+  assert.equal(r.calls.activity, 0, 'nobody is asked who is on the call: the person said');
+  await r.mgr.stop();
+});
+
 test('what the system channel is capturing is reported, and so is a change (the app stopped playing)', async () => {
   const r = followRig({ apps: [ZOOM] });
   const n = await start(r);
