@@ -5,6 +5,8 @@ const { toBlob, fromBlob, norm, blend, cosine, mergeClusters, matchVoices, addPr
 const { semitones } = require('../audio/features');
 
 const PITCH_VETO = 4;   // semitones: two voices this far apart in pitch are never the same person
+// A voice print is biometric data: it is saved only on the say-so of someone, and the profile records whose.
+const CONSENT_SOURCES = new Set(['user', 'meeting', 'import']);
 
 
 // Default label for a speaker that has not been named. Channel "mic" ids are m1, m2…; system audio ids are s1, s2…
@@ -74,13 +76,15 @@ class Speakers {
 
   // Remember a voice the meeting window named, for the next meetings: the speaker's print becomes (one more print of) a
   // saved voice. Refused when a voice with that name exists and this one does not sound like it: two people may share a
-  // first name, and a wrong highlight must not teach a profile somebody else's voice. -> true when learned
-  learnFromMeeting(noteId, speakerId) {
+  // first name, and a wrong highlight must not teach a profile somebody else's voice. Refused too unless the caller
+  // attests consent ({ consent: true }: the "remember voices the call named" setting is on). -> true when learned
+  learnFromMeeting(noteId, speakerId, { consent = false } = {}) {
+    if (consent !== true) return false;
     const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
     if (!sp?.name || !sp.centroid || sp.talkMs < 8000) return false; // a voice print needs some seconds of speech to mean anything
     const existing = this.voiceByName(sp.name);
     if (existing && sp.voiceId !== existing.id) return false;
-    this.rename(noteId, speakerId, sp.name, { remember: true });
+    this.rename(noteId, speakerId, sp.name, { remember: true, consentSource: 'meeting' });
     return true;
   }
 
@@ -120,7 +124,9 @@ class Speakers {
   // is not you" (a rejected print, so the same wrong match is not made again) and the speaker goes with the new name.
   // Only a link the user had already confirmed under that very name and now renames to a new name nobody has is read as
   // renaming the profile itself.
-  rename(noteId, speakerId, name, { remember = false } = {}) {
+  // remember saves a voice only together with consentSource ('user' | 'meeting' | 'import'); without it the speaker is
+  // named and nothing biometric is stored. The profile keeps when and from which speaker consent was given.
+  rename(noteId, speakerId, name, { remember = false, consentSource = null } = {}) {
     const sp = this.forNote(noteId).find((s) => s.speakerId === speakerId);
     if (!sp) return null;
     const clean = String(name || '').trim().slice(0, 80);
@@ -135,17 +141,18 @@ class Speakers {
         voiceId = null;
       }
     }
-    if (remember && clean && sp.centroid) {
+    if (remember && clean && sp.centroid && CONSENT_SOURCES.has(consentSource)) {
       const existing = voiceId ? this.voice(voiceId) : this.voiceByName(clean);
       const seconds = sp.talkMs > 0 ? sp.talkMs / 1000 : Math.max(1, sp.count) * 3;
       const print = { embedding: sp.centroid, weight: Math.min(30, seconds), channel: sp.channel === 'mic' ? 'mic' : 'system', pitch: sp.pitch, source };
       if (existing) {
         this.reinforce(existing.id, print, { name: clean, utterances: Math.max(1, sp.count) });
+        this.db.prepare('UPDATE voices SET consent_at = COALESCE(consent_at, ?), consent_source = COALESCE(consent_source, ?), enrolled_from = COALESCE(enrolled_from, ?) WHERE id = ?').run(Date.now(), consentSource, source, existing.id);
         voiceId = existing.id;
       } else {
         voiceId = newId();
         tx(this.db, () => {
-          this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now());
+          this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at, consent_at, consent_source, enrolled_from) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now(), Date.now(), consentSource, source);
           this.writePrints(voiceId, addPrint([], print));
         });
       }

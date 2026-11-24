@@ -73,7 +73,7 @@ test('vocabulary for a note: calendar attendees, saved speakers and glossary fro
   settings.update({ userName: 'Rui Costa' });
   const earlier = notes.create({});
   speakers.save(earlier.id, { speakerId: 's1', channel: 'system', centroid: new Float32Array(4).fill(0.5), count: 3 });
-  speakers.rename(earlier.id, 's1', 'Joana Pereira', { remember: true }); // a saved voice
+  speakers.rename(earlier.id, 's1', 'Joana Pereira', { remember: true, consentSource: 'user' }); // a saved voice
   knowledge.upsertTerm({ term: 'Kubernetes', definition: 'orchestrator' });
   knowledge.upsertTerm({ term: 'Zeta Protocol', definition: 'auto', auto: true });
   const n = notes.create({ attendees: [{ name: 'Vasco Neves', email: 'v@x.io' }, { email: 'ana.silva@acme.com' }, { name: '', email: 'x1@y.z' }] });

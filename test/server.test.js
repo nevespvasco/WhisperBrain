@@ -215,3 +215,17 @@ test('account: summary, exports, and danger zone confirmations', async (t) => {
   assert.equal((await s.json('GET', '/api/notes')).length, 0);
   assert.equal((await s.json('GET', '/api/settings')).userName, '', 'settings back to defaults');
 });
+
+test('voices are opt-in: naming a speaker without ticking "remember" saves no voice; ticking it records consent', async (t) => {
+  const s = await boot(t);
+  const n = await s.json('POST', '/api/notes', { title: 'Call' });
+  s.app.notes.addSegments(n.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'hello' }, { speaker: 'them', speakerId: 's2', startMs: 13000, endMs: 25000, text: 'hi' }]);
+  s.app.speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: new Float32Array(4).fill(1), count: 3 });
+  s.app.speakers.save(n.id, { speakerId: 's2', channel: 'system', centroid: new Float32Array([1, -1, 1, -1]), count: 3 });
+  await s.json('PATCH', `/api/notes/${n.id}/speakers/s1`, { name: 'Ana' });
+  await s.json('PATCH', `/api/notes/${n.id}/speakers/s2`, { name: 'Bruno', remember: false });
+  assert.deepEqual(await s.json('GET', '/api/voices'), [], 'named for this meeting only');
+  await s.json('PATCH', `/api/notes/${n.id}/speakers/s1`, { name: 'Ana', remember: true });
+  assert.deepEqual((await s.json('GET', '/api/voices')).map((v) => v.name), ['Ana']);
+  assert.equal(s.app.db.prepare("SELECT consent_source s FROM voices WHERE name = 'Ana'").get().s, 'user');
+});

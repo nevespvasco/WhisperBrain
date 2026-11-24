@@ -226,6 +226,20 @@ const MIGRATIONS = [
   `
   ALTER TABLE notes ADD COLUMN speaker_count INTEGER;
   `,
+  // v8: voice prints are opt-in, so a saved voice records when, and on whose say-so, it was enrolled (consent_source =
+  // 'user' | 'meeting' | 'import'; enrolled_from = "<note>:<speaker>"). Profiles from before this keep NULL: no consent is
+  // invented for them. And every utterance names its channel: 'mic' | 'system' | 'dc:<discord user id>', so a person on
+  // Discord stays distinguishable from the mixed system audio (speaker still reads 'them' for them).
+  `
+  ALTER TABLE voices ADD COLUMN consent_at INTEGER;
+  ALTER TABLE voices ADD COLUMN consent_source TEXT;
+  ALTER TABLE voices ADD COLUMN enrolled_from TEXT;
+  ALTER TABLE segments ADD COLUMN channel TEXT;
+  UPDATE segments SET channel = CASE
+    WHEN speaker = 'me' THEN 'mic'
+    WHEN speaker_id GLOB 'd[0-9]*' THEN 'dc:' || substr(speaker_id, 2)
+    ELSE 'system' END;
+  `,
 ];
 
 function open(file) {

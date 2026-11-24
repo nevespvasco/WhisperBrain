@@ -67,7 +67,7 @@ const DEFAULTS = {
     port: 47631,                // where the extension finds the app; the next ports are tried when it is taken
     token: '',                  // the secret the extension pairs with (made on first use)
     refine: true,               // let the names fix the voices: one person heard as two voices is joined, two people heard as one are split
-    learnVoices: true,          // remember a voice the call named clearly (many seconds, no doubt) so the next meetings recognise it
+    learnVoices: false,         // opt-in (a voice print is biometric data): remember a voice the call named clearly (many seconds, no doubt) so the next meetings recognise it
     captions: true,             // use the meeting's live captions (name and words) when the extension sends them
     vision: false,              // last resort: look at the meeting window and ask your local vision model who is speaking
   },

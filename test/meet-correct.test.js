@@ -65,12 +65,14 @@ test('correct: an utterance only half highlighted as the other name stays', () =
 });
 
 // ---- through a recording ----
-function rig(t, { db = open(':memory:'), timers = true, settings: extra = {} } = {}) {
+// learn: the user opted in to remembering the voices the call named (off by default)
+function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, learn = false } = {}) {
   if (timers) t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
   class FakeEngine extends EventEmitter { async start() {} feed() {} async flush() {} reset() {} }
   const bus = new Bus();
   const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
   settings.update({ speakerRefine: false, echoDedupe: false, speakerDiarize: false, ...extra });
+  if (learn) settings.update({ meet: { ...settings.get('meet'), learnVoices: true } });
   const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-fix-'));
   const engine = new FakeEngine();
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk', segmentationInstalled: () => true, segmentationPath: () => '/seg' };
@@ -134,7 +136,7 @@ test('recording: corrections can be switched off and the names still apply', asy
 });
 
 test('voices: a voice the call named beyond doubt is remembered, and the next meeting knows it with no help', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
   assert.deepEqual(first.speakers.voices().map((v) => v.name).sort(), ['Ana', 'Bruno']);
   assert.equal(first.events.find((e) => e.type === 'recording.meet-names').data.learned, 2);
@@ -143,8 +145,16 @@ test('voices: a voice the call named beyond doubt is remembered, and the next me
   assert.deepEqual([...new Set(second.labels())].sort(), ['Ana', 'Bruno'], 'named by their voices alone');
 });
 
-test('voices: a name that is only briefly highlighted teaches nothing', async (t) => {
+test('voices: with the default settings nothing is remembered, however clearly the call named people', async (t) => {
   const r = rig(t);
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  assert.deepEqual(r.labels().includes('Ana'), true, 'named for this meeting');
+  assert.equal(r.speakers.voices().length, 0, 'but no voice print saved');
+  assert.equal(r.events.find((e) => e.type === 'recording.meet-names').data.learned, 0);
+});
+
+test('voices: a name that is only briefly highlighted teaches nothing', async (t) => {
+  const r = rig(t, { learn: true });
   // each person speaks one 6 s turn: the call named them, but under the 10 s a saved voice needs
   await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1)]);
   assert.deepEqual(r.labels().sort(), ['Ana', 'Bruno']);
@@ -152,7 +162,7 @@ test('voices: a name that is only briefly highlighted teaches nothing', async (t
 });
 
 test('voices: the call cannot overrule a saved voice the speaker matched', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Zed', E.zed, 0), T('Ana', E.ana, 1), T('Zed', E.zed, 2), T('Ana', E.ana, 3)]);
   assert.deepEqual(first.speakers.voices().map((v) => v.name).sort(), ['Ana', 'Zed']);
   // next meeting: Zed's voice is shown as "Mallory" by the call
@@ -164,7 +174,7 @@ test('voices: the call cannot overrule a saved voice the speaker matched', async
 });
 
 test('voices: a name shared by two different-sounding people is not mixed into one saved voice', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
   const second = rig(t, { db: first.db, timers: false });
   // a different "Ana" (another voice) on another call

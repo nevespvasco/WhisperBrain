@@ -376,7 +376,7 @@ async function renameSpeaker(speakerId) {
   const voices = await api('GET', '/api/voices').catch(() => []);
   const suggestions = [...new Set([...(N.note.attendees || []).map((a) => a.name).filter(Boolean), ...voices.map((v) => v.name)])];
   const r = await promptDialog(t('Name this speaker'), sp.name || sp.voiceName || '', {
-    extra: `<label class="check"><input type="checkbox" name="remember" checked> ${t('Remember this voice and recognise this person in future meetings')}</label>
+    extra: `<label class="check"><input type="checkbox" name="remember"> ${t('Remember this voice and recognise this person in future meetings')}</label>
       ${suggestions.length ? `<div class="chips">${suggestions.map((n) => `<button type="button" class="chip" data-suggest="${esc(n)}">${avatar(n, { cls: 'sm' })}${esc(n)}</button>`).join('')}</div>` : ''}
       <div class="hint">${t('Voices are compared on this device only.')}</div>`,
   });

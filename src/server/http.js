@@ -151,7 +151,7 @@ function createRoutes(app) {
   add('GET', '/api/notes/:id/speakers', async ({ params }) => { noteOr404(params.id); return app.speakers.publicForNote(params.id, app.settings.get('userName')); });
   add('PATCH', '/api/notes/:id/speakers/:sid', async ({ params, body }) => {
     noteOr404(params.id);
-    const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember });
+    const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember, consentSource: body.remember ? 'user' : null });
     if (!r) throw new HttpError(404, 'speaker not found');
     app.notes.reindex(params.id);
     return r;

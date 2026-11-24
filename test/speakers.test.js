@@ -85,7 +85,7 @@ test('recording: who-said-what across several remote voices, naming, and recogni
   assert.deepEqual(list.map((s) => s.speakerId), ['m1', 's1', 's2']);
   assert.ok(list.find((s) => s.speakerId === 's1').talkMs >= 4000, 'talk time per speaker');
 
-  speakers.rename(n1.id, 's1', 'Ana', { remember: true });
+  speakers.rename(n1.id, 's1', 'Ana', { remember: true, consentSource: 'user' });
   speakers.rename(n1.id, 's2', 'Bruno', { remember: false });
   assert.deepEqual(notes.segments(n1.id).map((s) => s.label), ['Ana', 'Bruno', 'Bruno', 'Me', 'Ana']);
   assert.match(notes.transcriptText(n1.id), /^Ana: hello everyone/);

@@ -188,7 +188,7 @@ test('store: a saved voice is not matched to a speaker whose pitch is far off', 
   const a = notes.create({}), b = notes.create({});
   notes.addSegments(a.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 900, text: 'hi', embedding: EMB.man }]);
   speakers.save(a.id, { speakerId: 's1', channel: 'system', centroid: EMB.man, count: 5, pitch: 115 });
-  speakers.rename(a.id, 's1', 'Carlos', { remember: true });
+  speakers.rename(a.id, 's1', 'Carlos', { remember: true, consentSource: 'user' });
   speakers.save(b.id, { speakerId: 's1', channel: 'system', centroid: noisy(EMB.man, 0.1, 9), count: 3, pitch: 210 });
   assert.equal(speakers.autoMatch(b.id, 0.65), 0, 'same embedding but an octave higher: not Carlos');
   speakers.save(b.id, { speakerId: 's1', channel: 'system', centroid: noisy(EMB.man, 0.1, 9), count: 3, pitch: 118 });
