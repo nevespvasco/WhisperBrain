@@ -285,7 +285,7 @@ const MIGRATIONS = [
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
 function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : undefined);
+  const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : {});
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   migrate(db);
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }
