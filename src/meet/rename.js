@@ -36,7 +36,7 @@ function renameFromEvidence({ notes, speakers, evidence, noteId, selfNames = [] 
   const remotes = latest === null ? null : [...new Set(by('roster').filter((r) => r.t0 === latest && !r.meta?.self).map((r) => r.name))];
   const selfKeys = [...new Set([...selfNames.map(nameKey), ...by('roster').filter((r) => r.meta?.self).map((r) => r.key)])].filter(Boolean);
 
-  const res = nameSpeakers({ speech, active, remotes, selfKeys });
+  const res = nameSpeakers({ speech, active, remotes, selfKeys, candidates: by('calendar').map((r) => r.name) });
   const source = transcript.length ? 'transcript' : fromCaptions.length ? 'meeting:caption' : 'meeting:highlight';
   const named = [], kept = [];
   for (const n of res.named) {

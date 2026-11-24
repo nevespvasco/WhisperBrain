@@ -91,7 +91,8 @@ class MeetingCollector {
 
   // Names for the voices of the system audio. utterances: this note's segments with words (notes.segmentWords).
   // -> { named, unresolved, active, matrix, display } (see names.js); nothing is written here.
-  vote(utterances, { endMs, options } = {}) {
+  // candidates: the names of the people invited (a prior for the names the window shows, see names.js canonicalizer)
+  vote(utterances, { endMs, options, candidates = null } = {}) {
     const mine = this.mine(utterances);
     const speech = speechOf(mine);
     const highlight = this.intervals(endMs, speech);
@@ -101,7 +102,7 @@ class MeetingCollector {
     const active = named.length ? mergeIntervals(named, highlight) : highlight;
     const roster = this.roster();
     const remotes = roster ? roster.filter((p) => !p.self).map((p) => p.name) : null;
-    const res = nameSpeakers({ speech, active, remotes, selfKeys: this.userKeys, options });
+    const res = nameSpeakers({ speech, active, remotes, selfKeys: this.userKeys, candidates, options });
     return { ...res, active, captionNamed: named.length, lagMs: { ...this.lags } };
   }
 

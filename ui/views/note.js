@@ -38,6 +38,21 @@ function localLabel(speakerId, channel, name) {
   if (speakerId[0] === 'm') return n === 1 ? (S.settings.userName || t('Me')) : t('Room speaker {n}', { n });
   return t('Speaker {n}', { n });
 }
+// Where a speaker's name came from (the evidence recorded with it) and how sure that was, for the chip's tooltip and the rename dialog.
+const WHY = {
+  user: 'You named this speaker.',
+  voice: 'Recognised from a saved voice.',
+  stream: 'The Discord bot knows who was speaking.',
+  'meeting:highlight': 'Who was highlighted in the meeting window while this voice spoke.',
+  'meeting:caption': 'The meeting’s live captions: their words matched what this voice said.',
+  'meeting:roster': 'The only other person on the call.',
+  transcript: 'The platform’s own transcript: its words matched what this voice said.',
+};
+const whyName = (x) => {
+  const w = WHY[x.nameSource];
+  if (!w) return '';
+  return x.nameConfidence != null && x.nameSource !== 'user' ? `${t(w)} ${t('{n}% sure', { n: Math.round(x.nameConfidence * 100) })}` : t(w);
+};
 const spLabel = (x) => localLabel(x.speakerId, x.channel === 'mic' ? 'me' : 'them', x.name || x.voiceName);
 
 // ---------- header ----------
@@ -112,7 +127,7 @@ function transcriptTab(body) {
       ${!S.rec.active && N.segs.length ? `<label class="btn sm ghost" title="${t('Name the speakers from a Teams, Zoom or Meet transcript file (.vtt, .srt, .docx) of this meeting')}">${icon('users', 'sm')} ${t('Attach platform transcript')}<input type="file" id="attachtranscript" accept=".vtt,.srt,.docx,.txt,.md,.json,.html" hidden></label>` : ''}
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
-    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${t('Name this speaker')}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
+    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
     <div class="segs" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>`;
   if (N.trq) filterTranscript();
@@ -405,6 +420,7 @@ async function renameSpeaker(speakerId) {
   const voices = await api('GET', '/api/voices').catch(() => []);
   const suggestions = [...new Set([...(N.note.attendees || []).map((a) => a.name).filter(Boolean), ...voices.map((v) => v.name)])];
   const r = await promptDialog(t('Name this speaker'), sp.name || sp.voiceName || '', {
+    hint: sp.name || sp.voiceName ? whyName(sp) : '',
     extra: `<label class="check"><input type="checkbox" name="remember"> ${t('Remember this voice and recognise this person in future meetings')}</label>
       ${suggestions.length ? `<div class="chips">${suggestions.map((n) => `<button type="button" class="chip" data-suggest="${esc(n)}">${avatar(n, { cls: 'sm' })}${esc(n)}</button>`).join('')}</div>` : ''}
       <div class="hint">${t('Voices are compared on this device only.')}</div>`,

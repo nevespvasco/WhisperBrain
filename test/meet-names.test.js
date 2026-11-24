@@ -179,3 +179,32 @@ test('naming: people lit up while nobody speaks do not dilute anyone', () => {
   const r = nameSpeakers({ speech, active });
   assert.deepEqual(r.named.map((n) => [n.speakerId, n.name]).sort(), [['s1', 'Ana'], ['s2', 'Bruno']]);
 });
+
+// ---- invited people as a prior (never forced) ----
+test('candidates: a highlight that is a short form of exactly one invited person takes the invited person\'s full name', () => {
+  const speech = new Map([['s1', [[0, 9000]]], ['s2', [[10000, 19000]]]]);
+  const active = [{ startMs: 0, endMs: 9000, name: 'Ana S.' }, { startMs: 10000, endMs: 19000, name: 'Bruno' }];
+  const candidates = ['Ana Silva', 'Bruno Costa', 'Carla Dias'];
+  const r = nameSpeakers({ speech, active, candidates });
+  assert.deepEqual(r.named.map((n) => [n.speakerId, n.name]).sort(), [['s1', 'Ana Silva'], ['s2', 'Bruno Costa']]);
+});
+
+test('candidates: the same person shown as "Ana" and as "Ana Silva" is one name, not two competing ones', () => {
+  const speech = new Map([['s1', [[0, 10000]]]]);
+  const active = [{ startMs: 0, endMs: 5000, name: 'Ana' }, { startMs: 5000, endMs: 10000, name: 'Ana Silva' }];
+  assert.equal(nameSpeakers({ speech, active }).named.length, 0, 'without the invitation it is a tie between two names');
+  assert.deepEqual(nameSpeakers({ speech, active, candidates: ['Ana Silva'] }).named.map((n) => n.name), ['Ana Silva']);
+});
+
+test('candidates: never forced: an ambiguous short form, a guest, or nobody invited stay exactly as the window showed them', () => {
+  const speech = new Map([['s1', [[0, 9000]]], ['s2', [[10000, 19000]]]]);
+  const active = [{ startMs: 0, endMs: 9000, name: 'Bruno' }, { startMs: 10000, endMs: 19000, name: 'Gina Guest' }];
+  const r = nameSpeakers({ speech, active, candidates: ['Bruno Costa', 'Bruno Dias', 'Ana Silva'] });
+  assert.deepEqual(r.named.map((n) => [n.speakerId, n.name]).sort(), [['s1', 'Bruno'], ['s2', 'Gina Guest']]);
+  assert.equal(nameSpeakers({ speech, active, candidates: [] }).named.length, 2);
+});
+
+test('candidates: an invitation alone names nobody (one invited person is not "the only voice")', () => {
+  const r = nameSpeakers({ speech: new Map([['s1', [[0, 20000]]]]), active: [], candidates: ['Bruno Costa'] });
+  assert.equal(r.named.length, 0);
+});

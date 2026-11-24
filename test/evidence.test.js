@@ -137,3 +137,18 @@ test('deleting a transcript deletes the evidence about who spoke in it (names of
   new Account({ db, notes, settings: { reset() {} }, speakers: new Speakers(db, null), models: { catalog: [] }, bus: null }).deleteTranscripts();
   assert.equal(ev.forNote(b.id).length, 0);
 });
+
+test('naming again from the evidence knows the invitation too (renameFromEvidence)', () => {
+  const { renameFromEvidence } = require('../src/meet/rename');
+  const db = open(':memory:');
+  const notes = new Notes(db, null), speakers = new Speakers(db, null), ev = new Evidence(db);
+  const n = notes.create({});
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: voice(1), count: 5 });
+  notes.addSegments(n.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'x' }]);
+  ev.add(n.id, [
+    { kind: 'highlight', source: 'x', key: 'ana', name: 'Ana', t0: 500, t1: 12500, meta: { lagMs: 500 } },
+    { kind: 'calendar', source: 'calendar', key: 'ana silva', name: 'Ana Silva', meta: { email: 'a@x.org' } },
+  ]);
+  const r = renameFromEvidence({ notes, speakers, evidence: ev, noteId: n.id });
+  assert.deepEqual(r.named.map((x) => x.name), ['Ana Silva']);
+});

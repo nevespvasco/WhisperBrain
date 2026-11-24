@@ -218,3 +218,18 @@ test('voices: a name shared by two different-sounding people is not mixed into o
   assert.equal(ana.length, 1);
   assert.ok(ana[0].samples <= 4, 'the saved Ana was not taught the other voice');
 });
+
+test('calendar: a short name in the window becomes the invited person\'s full name, and the invitation is kept as evidence', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'ana@x.org' }, { name: 'Bruno Costa', email: 'b@x.org' }, { name: 'Carla Dias', email: '' }, { name: '', email: 'nobody@x.org' }] });
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana Silva', 'Bruno Costa']);
+  assert.deepEqual(r.evidence.forNote(r.n.id, { kind: 'calendar' }).map((e) => [e.name, e.key, e.meta.email]), [['Ana Silva', 'ana silva', 'ana@x.org'], ['Bruno Costa', 'bruno costa', 'b@x.org'], ['Carla Dias', 'carla dias', '']]);
+});
+
+test('calendar: a guest who was not invited keeps the name the window showed', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'a@x.org' }] });
+  await r.call([T('Ana', E.ana, 0), T('Gina Guest', E.bruno, 1), T('Ana', E.ana, 2), T('Gina Guest', E.bruno, 3)]);
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana Silva', 'Gina Guest']);
+});

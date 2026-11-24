@@ -495,7 +495,8 @@ class RecordingManager {
   nameFromMeeting(a, s) {
     try {
       const m = s.meet;
-      const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs });
+      const invited = (this.notes.get(a.noteId)?.attendees || []).map((p) => p.name).filter(Boolean);
+      const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs, candidates: invited });
       let res = run();
       const fixed = m.refine ? this.fixVoicesFromMeeting(a, res) : { merged: 0, moved: 0 };
       if (fixed.merged || fixed.moved) res = run();
@@ -507,7 +508,10 @@ class RecordingManager {
       }
       let learned = 0;
       if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
-      try { this.evidence?.add(a.noteId, a.meet.toEvidence({ endMs: a.accMs })); } catch { /* a record, never a reason to fail the stop */ }
+      try {
+        this.evidence?.add(a.noteId, [...a.meet.toEvidence({ endMs: a.accMs }),
+          ...(this.notes.get(a.noteId)?.attendees || []).filter((p) => p.name).map((p) => ({ kind: 'calendar', source: 'calendar', key: nameKey(p.name), name: p.name, weight: 1, meta: { email: p.email || '' } }))]);
+      } catch { /* a record, never a reason to fail the stop */ }
       a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }

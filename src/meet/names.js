@@ -95,14 +95,38 @@ function speechOf(utterances, { gapMs = 500 } = {}) {
   return map;
 }
 
+// The people invited (the calendar's attendees) as a prior for what the window shows: a name that is a short form of exactly one
+// invited person ("Ana", "Ana S.") is that person, so "Ana" and "Ana Silva" are one name and the full one is what is kept. Never
+// forced: a name that fits nobody, or several invited people ("Bruno" with two Brunos), stays exactly as shown, and an invitation
+// does not name any voice by itself. -> (name) => { key, name } | null
+function canonicalizer(candidates) {
+  const list = (candidates || []).map((n) => ({ name: n, key: nameKey(n) })).filter((c) => c.key).map((c) => ({ ...c, tok: c.key.split(' ') }));
+  return (shown) => {
+    const key = nameKey(shown);
+    if (!key || !list.length) return null;
+    const exact = list.find((c) => c.key === key);
+    if (exact) return exact;
+    const tok = key.split(' ');
+    const fits = list.filter((c) => tok.length <= c.tok.length && tok.every((w, i) => c.tok[i].startsWith(w)));
+    return fits.length === 1 ? fits[0] : null;
+  };
+}
+
 // speech: Map(speakerId -> [[startMs, endMs]]); active: from activeIntervals; remotes: names of the other people on the
 // call from the roster (null when no roster); selfKeys: name keys that are the user.
 // -> { named: [{ speakerId, name, ms, share, via }], unresolved: [{ speakerId, best, share }] }
-function nameSpeakers({ speech, active, remotes = null, selfKeys = [], options = {} }) {
+function nameSpeakers({ speech, active, remotes = null, selfKeys = [], candidates = null, options = {} }) {
   const o = { ...DEFAULTS, ...options };
   const self = new Set(selfKeys);
   const display = new Map(); // key -> the name as first seen
-  const keyOf = (name) => { const k = nameKey(name); if (k && !display.has(k)) display.set(k, name); return k; };
+  const canon = canonicalizer(candidates);
+  const keyOf = (name) => {
+    const c = canon(name);
+    if (c) { display.set(c.key, c.name); return c.key; }
+    const k = nameKey(name);
+    if (k && !display.has(k)) display.set(k, name);
+    return k;
+  };
   const iv = active.map((a) => ({ ...a, key: keyOf(a.name) })).filter((a) => a.key && !self.has(a.key));
 
   // overlap of each voice's speech with each highlighted name
