@@ -1,0 +1,15 @@
+[
+  {"id":0,"type":"PipeWire:Interface:Core","info":{"props":{}}},
+  {"id":1,"type":"PipeWire:Interface:Metadata","metadata":[
+    {"subject":0,"key":"default.audio.sink","type":"Spa:String:JSON","value":{"name":"alsa_output.pci.analog-stereo"}},
+    {"subject":0,"key":"default.audio.source","type":"Spa:String:JSON","value":{"name":"alsa_input.usb-mic.analog-stereo"}}]},
+  {"id":10,"type":"PipeWire:Interface:Node","info":{"state":"suspended","props":{"media.class":"Audio/Sink","node.name":"alsa_output.pci.analog-stereo","node.description":"Speakers"}}},
+  {"id":11,"type":"PipeWire:Interface:Node","info":{"state":"suspended","props":{"media.class":"Audio/Source","node.name":"alsa_input.usb-mic.analog-stereo","node.description":"USB Microphone"}}},
+  {"id":12,"type":"PipeWire:Interface:Node","info":{"state":"idle","props":{"media.class":"Audio/Source","node.name":"alsa_output.pci.analog-stereo.monitor","node.description":"Monitor of Speakers"}}},
+  {"id":20,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"zoom","application.process.binary":"zoom","application.process.id":"4242","media.name":"Zoom Voice"}}},
+  {"id":21,"type":"PipeWire:Interface:Node","info":{"state":"idle","props":{"media.class":"Stream/Input/Audio","application.name":"Slack","application.process.binary":"slack","application.process.id":"4300"}}},
+  {"id":22,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"pw-record","application.process.binary":"pw-record","application.process.id":"999","stream.capture.sink":"true"}}},
+  {"id":23,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"Google Chrome input","application.process.binary":"chrome","application.process.id":"5000","media.name":"Meet - abc-defg-hij"}}},
+  {"id":24,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Input/Audio","application.name":"WhisperBrain","application.process.binary":"whisperbrain","application.process.id":"31337"}}},
+  {"id":30,"type":"PipeWire:Interface:Node","info":{"state":"running","props":{"media.class":"Stream/Output/Audio","application.name":"mpv"}}}
+]

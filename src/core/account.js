@@ -1,0 +1,90 @@
+'use strict';
+// "Account" for a local-only app: who you are, where your data lives, exporting it, and the danger zone.
+const fs = require('node:fs');
+const path = require('node:path');
+const { tx } = require('./db');
+
+function dirSize(dir) {
+  let total = 0;
+  try {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      total += e.isDirectory() ? dirSize(p) : (fs.statSync(p).size || 0);
+    }
+  } catch { /* missing */ }
+  return total;
+}
+
+class Account {
+  constructor({ db, notes, settings, speakers, models, dataDir, bus, knowledge }) { Object.assign(this, { db, notes, settings, speakers, models, dataDir, bus, knowledge }); }
+
+  summary() {
+    const c = (sql) => this.db.prepare(sql).get().c;
+    return {
+      name: this.settings.get('userName'),
+      dataDir: this.dataDir,
+      modelsDir: this.models.dir,
+      stats: {
+        notes: c('SELECT COUNT(*) c FROM notes'), spaces: c('SELECT COUNT(*) c FROM folders'), segments: c('SELECT COUNT(*) c FROM segments'),
+        voices: c('SELECT COUNT(*) c FROM voices'), chats: c('SELECT COUNT(*) c FROM chat_messages'),
+        topics: c('SELECT COUNT(*) c FROM topics'), glossary: c('SELECT COUNT(*) c FROM glossary'), actions: c('SELECT COUNT(*) c FROM action_items'), tags: c('SELECT COUNT(*) c FROM tags'),
+      },
+      sizes: { dataBytes: dirSize(this.dataDir) - (this.models.dir.startsWith(this.dataDir) ? dirSize(this.models.dir) : 0), modelBytes: dirSize(this.models.dir) },
+    };
+  }
+
+  // Full JSON backup (no secrets, no voice embeddings).
+  exportJson() {
+    const notes = this.notes.list({ limit: 100000 }).map((n) => ({
+      ...n, transcript: this.notes.segments(n.id).map(({ id, ...s }) => s), speakers: this.speakers.publicForNote(n.id), chat: this.notes.chatHistory(n.id),
+      ...(this.knowledge ? { tags: this.knowledge.noteTags(n.id).map((t) => t.name), topics: this.knowledge.noteTopics(n.id).map((t) => ({ name: t.name, summary: t.summary })),
+        actionItems: this.knowledge.actionItems({ noteId: n.id }).map((a) => ({ text: a.text, owner: a.owner, due: a.due, done: a.done })),
+        snippets: this.knowledge.snippets({ noteId: n.id }).map((x) => ({ text: x.text, speaker: x.speaker, startMs: x.startMs, label: x.label })),
+        links: this.knowledge.links(n.id).map(({ id, ...l }) => l) } : {}),
+    }));
+    const settings = this.settings.publicView();
+    delete settings.llm.apiKey;
+    for (const k of ['google', 'notion', 'linear']) delete settings[k];
+    settings.webhooks = settings.webhooks.map(({ secret, ...w }) => w);
+    const glossary = this.knowledge ? this.knowledge.glossary().map(({ id, noteId, noteTitle, ...g }) => g) : [];
+    return { app: 'whisperbrain', format: 2, exportedAt: new Date().toISOString(), spaces: this.notes.folders(), notes, glossary, templates: this.db.prepare('SELECT id, name, prompt FROM templates').all(), voices: this.speakers.publicVoices(), settings };
+  }
+
+  exportMarkdown() {
+    const spaces = Object.fromEntries(this.notes.folders().map((f) => [f.id, f.name]));
+    return this.notes.list({ limit: 100000 }).map((n) => {
+      const md = this.notes.exportMarkdown(n.id);
+      return n.folderId ? md.replace(/\n/, `\n\n_Space: ${spaces[n.folderId] || ''}_\n`) : md;
+    }).join('\n\n---\n\n');
+  }
+
+  // ---- danger zone ----
+  deleteTranscripts() {
+    const n = tx(this.db, () => {
+      const count = this.db.prepare('DELETE FROM segments').run().changes;
+      this.db.prepare('DELETE FROM note_speakers').run();
+      return count;
+    });
+    for (const { id } of this.db.prepare('SELECT id FROM notes').all()) this.notes.reindex(id);
+    this.bus?.publish('account.changed', { what: 'transcripts' });
+    return n;
+  }
+
+  deleteVoices() { const n = this.speakers.removeAllVoices(); this.bus?.publish('account.changed', { what: 'voices' }); return n; }
+
+  // Everything the user created. Downloaded models are kept unless removeModels is set (they are re-downloadable but large).
+  deleteEverything({ removeModels = false } = {}) {
+    tx(this.db, () => {
+      for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segments', 'note_speakers', 'search', 'notes', 'folders',
+        'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
+      this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
+    });
+    this.settings.cache = null;
+    this.db.exec('VACUUM');
+    if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
+    this.bus?.publish('account.changed', { what: 'all' });
+    return true;
+  }
+}
+
+module.exports = { Account };

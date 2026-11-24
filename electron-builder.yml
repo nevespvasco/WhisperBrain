@@ -1,0 +1,55 @@
+appId: com.whisperbrain.app
+productName: WhisperBrain
+copyright: Copyright © WhisperBrain contributors
+directories:
+  output: dist
+  buildResources: build
+files:
+  - electron/**
+  - src/**
+  - ui/**
+  - package.json
+  - "!**/*.md"
+  - "!**/test/**"
+# Native speech engine (sherpa-onnx .node + shared libs) cannot run from inside the asar archive.
+asarUnpack:
+  - "**/node_modules/sherpa-onnx-*/**"
+extraResources:
+  - from: resources
+    to: resources
+  - from: build/icon.png
+    to: build/icon.png
+linux:
+  target: [AppImage, deb]
+  category: Office
+  icon: build/icon.png
+  synopsis: Local-first AI notepad for meetings
+  maintainer: WhisperBrain contributors <noreply@whisperbrain.invalid>
+  # The AppImage cannot ship a setuid chrome-sandbox; the app only ever loads its own local UI.
+  executableArgs: ["--no-sandbox"]
+  extraResources:
+    - from: build/x11/whisperbrain-x11
+      to: bin/whisperbrain-x11
+deb:
+  depends: [libpipewire-0.3-0, pipewire-bin, xclip, libx11-6, libxtst6, libxi6]
+  recommends: [wl-clipboard, wtype]
+mac:
+  target: [dmg, zip]
+  category: public.app-category.productivity
+  icon: build/icon.png
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: WhisperBrain records your microphone to transcribe your meetings on this device.
+    NSAudioCaptureUsageDescription: WhisperBrain captures system audio to transcribe the other side of your calls on this device.
+    NSScreenCaptureUsageDescription: WhisperBrain needs screen recording access to capture system audio.
+    NSAppleEventsUsageDescription: WhisperBrain pastes dictated text into the focused app.
+win:
+  target: [nsis, portable]
+  icon: build/icon.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+publish: null

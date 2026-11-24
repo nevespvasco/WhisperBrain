@@ -1,0 +1,6 @@
+node_modules/
+dist/
+build/x11/
+*.log
+.DS_Store
+.models/

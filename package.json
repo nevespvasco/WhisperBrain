@@ -1,0 +1,35 @@
+{
+  "name": "whisperbrain",
+  "version": "0.1.0",
+  "description": "Local-first AI notepad: record meetings, transcribe on-device, summarize and chat with your own LLM.",
+  "main": "electron/main.js",
+  "private": true,
+  "license": "MIT",
+  "author": "WhisperBrain",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node scripts/start.js",
+    "serve": "node src/server/cli.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "build:x11": "bash scripts/build-x11.sh",
+    "models": "node scripts/fetch-models.js",
+    "dist": "electron-builder",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "predist:linux": "npm run build:x11",
+    "predist": "node scripts/make-icons.js",
+    "pack": "electron-builder --dir"
+  },
+  "dependencies": {
+    "sherpa-onnx-node": "2.0.3"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "26.18.0"
+  },
+  "homepage": "https://github.com/nevespvasco/WhisperBrain",
+  "desktopName": "whisperbrain.desktop"
+}

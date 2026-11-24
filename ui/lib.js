@@ -1,0 +1,224 @@
+// Shared UI state and building blocks: formatting, toasts, dialogs, popover menus, avatars, cards.
+import { api, ApiError } from './api.js';
+import { t, getLang } from './i18n.js';
+import { esc } from './md.js';
+import { icon } from './icons.js';
+
+export { api, ApiError, t, esc, icon };
+export const $ = (sel, root = document) => root.querySelector(sel);
+export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
+
+export const S = {
+  settings: null, state: null, models: [], templates: [], spaces: [], tags: [], counts: {}, view: { name: 'home' },
+  rec: { active: false }, level: { mic: 0, system: 0 }, liveText: '', detector: null, streaming: null, integrations: null,
+};
+
+// ---------- formatting ----------
+export const loc = () => (getLang() === 'pt' ? 'pt-PT' : undefined);
+export const fmtDur = (ms) => { if (ms > 0 && ms < 60000) return `${Math.max(1, Math.round(ms / 1000))}s`; const m = Math.round((ms || 0) / 60000); if (m < 60) return `${m}m`; return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`; };
+export const fmtClock = (ms) => { const s = Math.floor((ms || 0) / 1000); const h = Math.floor(s / 3600); const p = (n) => String(n).padStart(2, '0'); return h ? `${h}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}` : `${Math.floor(s / 60)}:${p(s % 60)}`; };
+export const fmtTimer = (ms) => { const s = Math.floor(ms / 1000); const p = (n) => String(n).padStart(2, '0'); const h = Math.floor(s / 3600); return h ? `${h}:${p(Math.floor(s / 60) % 60)}:${p(s % 60)}` : `${p(Math.floor(s / 60))}:${p(s % 60)}`; };
+export const fmtDate = (ms, opts = { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' }) => new Date(ms).toLocaleDateString(loc(), opts);
+export const fmtHour = (ms) => new Date(ms).toLocaleTimeString(loc(), { hour: '2-digit', minute: '2-digit' });
+export const dayStart = (d = new Date()) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+export function relDay(ms) {
+  const d0 = dayStart(), d = dayStart(new Date(ms));
+  if (d === d0) return t('Today');
+  if (d === d0 - 86400000) return t('Yesterday');
+  if (d === d0 + 86400000) return t('Tomorrow');
+  return fmtDate(ms, { weekday: 'short', day: 'numeric', month: 'short' });
+}
+export function dateGroup(ms) {
+  const d0 = dayStart();
+  if (ms >= d0) return t('Today');
+  if (ms >= d0 - 86400000) return t('Yesterday');
+  if (ms >= d0 - 7 * 86400000) return t('Last week');
+  if (ms >= d0 - 30 * 86400000) return t('Last month');
+  return new Date(ms).toLocaleDateString(loc(), { month: 'long', year: 'numeric' });
+}
+export function groupBy(items, keyFn) {
+  const out = [];
+  for (const it of items) { const k = keyFn(it); let g = out.find((x) => x.key === k); if (!g) { g = { key: k, items: [] }; out.push(g); } g.items.push(it); }
+  return out;
+}
+export const debounce = (fn, ms) => { let id; return (...a) => { clearTimeout(id); id = setTimeout(() => fn(...a), ms); }; };
+export const plural = (n, one, many) => `${n} ${n === 1 ? t(one) : t(many)}`;
+export const safeSnippet = (html) => String(html || '').replace(/#{1,6}\s+|\*\*/g, '').replace(/&/g, '&amp;').replace(/<(?!\/?mark>)/g, '&lt;');
+
+// ---------- colours ----------
+const PALETTE = ['#7c5cff', '#ef6f6c', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#14b8a6', '#8b5cf6', '#f97316', '#0ea5e9', '#84cc16', '#e11d48'];
+export function hashColor(s) { let h = 0; for (const c of String(s || '?')) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
+export function speakerColor(id, label) { if (!id || !/^[ms]\d+$/.test(id)) return hashColor(label || id); const n = id[0] === 'm' ? Number(id.slice(1)) - 1 : 2 + Number(id.slice(1)); return PALETTE[((n % PALETTE.length) + PALETTE.length) % PALETTE.length]; }
+export function initials(name) { const w = String(name || '?').trim().split(/\s+/).filter(Boolean); return ((w[0]?.[0] || '?') + (w.length > 1 ? w[w.length - 1][0] : w[0]?.[1] || '')).toUpperCase(); }
+export const avatar = (name, { cls = '', color } = {}) => `<span class="av ${cls}" style="background:${color || hashColor(name)}" title="${esc(name)}">${esc(initials(name))}</span>`;
+export function avatarStack(names, max = 4) {
+  if (!names?.length) return '';
+  const shown = names.slice(0, max);
+  return `<span class="avstack">${shown.map((n) => avatar(n, { cls: 'sm' })).join('')}${names.length > max ? `<span class="more">+${names.length - max}</span>` : ''}</span>`;
+}
+
+// ---------- sources ----------
+export const SOURCES = {
+  recorded: { icon: 'mic', label: 'Recorded' }, manual: { icon: 'edit', label: 'Notes only' }, audio: { icon: 'waves', label: 'Audio file' },
+  file: { icon: 'file', label: 'Imported file' }, notion: { icon: 'doc', label: 'Notion' }, obsidian: { icon: 'book', label: 'Obsidian' },
+  linear: { icon: 'checksq', label: 'Linear' }, calendar: { icon: 'calendar', label: 'Calendar' },
+};
+export const PLATFORMS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Microsoft Teams', slack: 'Slack', discord: 'Discord', webex: 'Webex', whereby: 'Whereby', jitsi: 'Jitsi', facetime: 'FaceTime', browser: 'Browser' };
+export const srcIcon = (src) => `<span class="srcicon" title="${esc(t(SOURCES[src]?.label || src))}">${icon(SOURCES[src]?.icon || 'file')}</span>`;
+
+// ---------- toasts ----------
+export function toast(message, { error = false, ok = false, actions = [], timeout = 6000, iconName } = {}) {
+  const el = document.createElement('div');
+  el.className = `toast${error ? ' error' : ''}${ok ? ' ok' : ''}`;
+  el.setAttribute('role', error ? 'alert' : 'status');
+  el.innerHTML = `<div class="msg"><span class="ti">${icon(iconName || (error ? 'alert' : ok ? 'ok' : 'info'))}</span><div class="grow">${esc(message)}</div><button class="btn ghost icon xs" aria-label="${t('Dismiss')}">${icon('x', 'sm')}</button></div>`;
+  el.querySelector('.msg button').onclick = () => el.remove();
+  if (actions.length) {
+    const row = document.createElement('div'); row.className = 'row';
+    for (const a of actions) { const b = document.createElement('button'); b.className = `btn sm${a.primary ? ' primary' : ''}`; b.textContent = a.label; b.onclick = () => { el.remove(); a.run(); }; row.append(b); }
+    el.append(row);
+  }
+  $('#toasts').append(el);
+  while ($('#toasts').children.length > 4) $('#toasts').firstElementChild.remove();
+  if (timeout) setTimeout(() => el.remove(), timeout);
+  return el;
+}
+export const fail = (e) => { console.error(e); return toast(e instanceof Error ? e.message : String(e), { error: true, timeout: 9000 }); };
+export const done = (msg = t('Done')) => toast(msg, { ok: true, timeout: 3000 });
+
+// ---------- dialogs ----------
+// modal({ title, body, foot, wide, onMount }) → Promise resolving with the value passed to close(v).
+export function modal({ title = '', body = '', foot = '', wide = false, cls = '', onMount } = {}) {
+  return new Promise((resolve) => {
+    const d = document.createElement('dialog');
+    d.className = `${wide ? 'wide' : ''} ${cls}`;
+    d.innerHTML = `<div class="dlg">${title !== null ? `<div class="dlg-head"><h2>${esc(title)}</h2><button class="btn ghost icon sm" data-close aria-label="${t('Close')}">${icon('x')}</button></div>` : ''}<div class="dlg-body">${body}</div>${foot ? `<div class="dlg-foot">${foot}</div>` : ''}</div>`;
+    document.body.append(d);
+    let value;
+    const close = (v) => { value = v; d.close(); };
+    d.addEventListener('close', () => { d.remove(); resolve(value); });
+    d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-close]')) close(undefined); });
+    d.showModal();
+    onMount?.(d, close);
+  });
+}
+
+export function confirmDialog(message, { ok = t('Delete'), danger = true, title = t('Are you sure?') } = {}) {
+  return modal({
+    title, body: `<p style="margin:0">${esc(message)}</p>`,
+    foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn ${danger ? 'danger' : 'primary'}" data-ok>${esc(ok)}</button>`,
+    onMount: (d, close) => { const b = $('[data-ok]', d); b.onclick = () => close(true); b.focus(); },
+  }).then((v) => v === true);
+}
+
+export function promptDialog(title, value = '', { ok = t('Save'), placeholder = '', hint = '', extra = '', multiline = false } = {}) {
+  return modal({
+    title,
+    body: `<form class="stack" id="pf">${multiline ? `<textarea id="pf-in" placeholder="${esc(placeholder)}">${esc(value)}</textarea>` : `<input id="pf-in" value="${esc(value)}" placeholder="${esc(placeholder)}" autocomplete="off">`}${hint ? `<div class="hint">${esc(hint)}</div>` : ''}${extra}</form>`,
+    foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" data-ok>${esc(ok)}</button>`,
+    onMount: (d, close) => {
+      const input = $('#pf-in', d);
+      const submit = () => close({ value: input.value.trim(), dialog: d, data: Object.fromEntries([...d.querySelectorAll('[name]')].map((x) => [x.name, x.type === 'checkbox' ? x.checked : x.value])) });
+      $('[data-ok]', d).onclick = submit;
+      $('#pf', d).onsubmit = (e) => { e.preventDefault(); submit(); };
+      input.focus(); input.select?.();
+      d.addEventListener('click', (e) => { const s = e.target.closest('[data-suggest]'); if (s) { input.value = s.dataset.suggest; input.focus(); } });
+    },
+  }).then((r) => (r && !extra ? r.value : r));
+}
+
+// ---------- popover menu ----------
+let openMenu = null;
+export function closeMenu() { openMenu?.remove(); openMenu = null; }
+// items: [{ label, icon, run, danger, disabled, selected, href } | 'sep' | { header }]
+export function menu(anchor, items, { align = 'start' } = {}) {
+  closeMenu();
+  const m = document.createElement('div');
+  m.className = 'menu';
+  m.setAttribute('role', 'menu');
+  m.innerHTML = items.map((it, i) => {
+    if (it === 'sep') return '<div class="sep"></div>';
+    if (it.header) return `<div class="mh">${esc(it.header)}</div>`;
+    const cls = `${it.danger ? 'danger' : ''} ${it.selected ? 'sel' : ''}`;
+    if (it.href) return `<a role="menuitem" class="${cls}" href="${esc(it.href)}" ${it.download ? 'download' : ''} ${it.external ? 'target="_blank" rel="noopener noreferrer"' : ''} data-i="${i}">${it.icon ? icon(it.icon) : ''}<span class="grow ellipsis">${esc(it.label)}</span></a>`;
+    return `<button role="menuitem" class="${cls}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${it.icon ? icon(it.icon) : ''}<span class="grow ellipsis">${esc(it.label)}</span>${it.hint ? `<span class="xsmall faint">${esc(it.hint)}</span>` : ''}</button>`;
+  }).join('');
+  document.body.append(m);
+  const r = anchor.getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  let left = align === 'end' ? r.right - mw : r.left;
+  left = Math.max(8, Math.min(left, innerWidth - mw - 8));
+  let top = r.bottom + 6;
+  if (top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  m.style.left = `${left}px`; m.style.top = `${top}px`;
+  m.addEventListener('click', async (e) => {
+    const el = e.target.closest('[data-i]');
+    if (!el) return;
+    const it = items[Number(el.dataset.i)];
+    if (!it.href) e.preventDefault();
+    closeMenu();
+    try { await it.run?.(); } catch (err) { fail(err); }
+  });
+  m.addEventListener('keydown', (e) => {
+    const btns = [...m.querySelectorAll('button:not(:disabled), a')];
+    const i = btns.indexOf(document.activeElement);
+    if (e.key === 'ArrowDown') { e.preventDefault(); btns[(i + 1) % btns.length]?.focus(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
+    else if (e.key === 'Escape') { closeMenu(); anchor.focus(); }
+  });
+  openMenu = m;
+  setTimeout(() => m.querySelector('button:not(:disabled), a')?.focus(), 0);
+  return m;
+}
+document.addEventListener('mousedown', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
+window.addEventListener('resize', closeMenu);
+document.addEventListener('scroll', closeMenu, true);
+
+// ---------- small components ----------
+export const empty = (ic, title, text = '', action = '') => `<div class="empty">${icon(ic)}<h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${action}</div>`;
+export const tagChip = (tg) => `<a class="tagchip" href="#/meetings?tag=${tg.id}"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</a>`;
+export const switchEl = (id, on, label = '') => `<label class="switch" title="${esc(label)}"><input type="checkbox" id="${id}" ${on ? 'checked' : ''} aria-label="${esc(label)}"><i></i></label>`;
+export const field = (id, label, input, hint) => `<div class="field"><label for="${id}">${esc(label)}</label>${input}${hint ? `<div class="hint">${hint}</div>` : ''}</div>`;
+export const seg = (name, options, value) => `<div class="seg-ctl" role="tablist" data-seg="${name}">${options.map(([v, label, ic]) => `<button type="button" role="tab" data-v="${esc(v)}" aria-selected="${v === value}">${ic ? icon(ic, 'sm') : ''}${esc(label)}</button>`).join('')}</div>`;
+
+export function meetingCard(n) {
+  const people = n.people || [];
+  const tags = (n.tags || []).slice(0, 2);
+  return `<a class="card hover mcard" href="#/note/${n.id}">
+    <div class="top"><h3 class="clamp2">${esc(n.title || t('Untitled meeting'))}</h3>${n.external ? `<span class="badge info" title="${t('Attendees from outside your organisation')}">${t('External')}</span>` : ''}${srcIcon(n.source)}</div>
+    <div class="meta"><span>${icon('calendar', 'sm')}${fmtDate(n.createdAt, { weekday: 'short', day: 'numeric', month: 'short' })}</span>${n.durationMs ? `<span>${icon('clock', 'sm')}${fmtDur(n.durationMs)}</span>` : ''}${n.platform ? `<span>${icon('video', 'sm')}${esc(PLATFORMS[n.platform] || n.platform)}</span>` : ''}${n.actions?.open ? `<span>${icon('checksq', 'sm')}${n.actions.open}</span>` : ''}</div>
+    <div class="excerpt clamp3">${esc(n.excerpt || '') || `<span class="faint">${n.status === 'processing' ? t('Transcribing…') : n.status === 'recording' ? t('Recording…') : t('No summary yet')}</span>`}</div>
+    <div class="foot"><div class="row wrap" style="gap:6px">${tags.map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</span>`).join('')}${!tags.length && n.topics?.[0] ? `<span class="tagchip">${icon('hash', 'sm')}${esc(n.topics[0].name)}</span>` : ''}</div>${avatarStack(people, 3)}</div>
+  </a>`;
+}
+
+export function meetingRow(n, { snippet } = {}) {
+  return `<a class="li" href="#/note/${n.id}">${srcIcon(n.source)}
+    <div class="main-t"><div class="t">${esc(n.title || t('Untitled meeting'))}</div><div class="s">${snippet ? safeSnippet(snippet) : esc(n.excerpt || fmtDate(n.createdAt))}</div></div>
+    <div class="side"><span class="row hide-sm" style="gap:4px">${(n.tags || []).slice(0, 2).map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</span>`).join('')}</span>${n.external ? `<span class="badge info hide-sm">${t('External')}</span>` : ''}<span class="hide-sm">${avatarStack(n.people || [], 3)}</span><span>${n.durationMs ? fmtDur(n.durationMs) + ' · ' : ''}${fmtHour(n.createdAt)}</span></div></a>`;
+}
+
+// Download helper: fetch a URL (cookie-authenticated) and save the response as a file.
+export async function download(url, fallbackName = 'export') {
+  const r = await fetch(url, typeof url === 'string' ? undefined : url);
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new ApiError(j.error || r.statusText, r.status, j.code); }
+  const blob = await r.blob();
+  const cd = r.headers.get('content-disposition') || '';
+  const name = decodeURIComponent(/filename\*=UTF-8''([^;]+)/.exec(cd)?.[1] || /filename="([^"]+)"/.exec(cd)?.[1] || fallbackName);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  return name;
+}
+export async function postDownload(path, body, fallbackName) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new ApiError(j.error || r.statusText, r.status, j.code); }
+  const blob = await r.blob();
+  const cd = r.headers.get('content-disposition') || '';
+  const name = decodeURIComponent(/filename\*=UTF-8''([^;]+)/.exec(cd)?.[1] || fallbackName);
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.append(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+  return name;
+}
+
+export const go = (h) => { if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else location.hash = h; };

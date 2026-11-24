@@ -1,0 +1,189 @@
+// Connect WhisperBrain to Google Calendar, Notion, Linear, Obsidian and webhooks. Tokens stay on this device.
+import { S, $, $$, api, t, esc, icon, fail, done, toast, modal, debounce, switchEl, field, confirmDialog } from '../lib.js';
+import { openImport } from './transfer.js';
+
+const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); return S.settings; };
+const MASK = '********';
+
+export async function render(main) {
+  const ints = S.integrations = await api('GET', '/api/integrations');
+  const s = S.settings;
+  const g = ints.google;
+  main.innerHTML = `<div class="page">
+    <div class="page-head"><div><h1>${t('Integrations')}</h1><div class="sub">${t('Bring meetings in from other tools and send notes out to them. Keys are stored only on this computer.')}</div></div></div>
+    <div class="cols-2">
+      ${card('google', '#4285f4', 'calendar', 'Google Calendar', g.connected ? `${t('Connected')} · ${esc(g.email || '')}` : t('See meetings, get reminded, recognise and record them'), g.connected, `
+        ${g.connected ? `<div class="stack tight">${(g.calendars || []).length ? `<div class="xsmall muted strong">${t('Calendars to use')}</div><div class="picklist" style="max-height:200px">${g.calendars.map((c) => `<label><input type="checkbox" class="cbx" data-gcal="${esc(c.id)}" ${c.selected ? 'checked' : ''}><span class="dot" style="width:10px;height:10px;border-radius:50%;background:${esc(c.color || '#888')}"></span><span class="grow ellipsis">${esc(c.summary)}</span>${c.primary ? `<span class="badge">${t('primary')}</span>` : ''}</label>`).join('')}</div>` : ''}
+          <div class="row"><button class="btn sm" data-act="g-refresh">${icon('refresh', 'sm')} ${t('Refresh list')}</button><button class="btn sm danger-outline" data-act="g-disconnect">${t('Disconnect')}</button></div></div>` : `
+        <div class="seg-ctl full" role="tablist"><button type="button" role="tab" data-gmode="oauth" aria-selected="true">${t('Sign in with Google')}</button><button type="button" role="tab" data-gmode="ical" aria-selected="false">${t('Secret iCal link')}</button></div>
+        <div data-gpane="oauth" class="stack">
+          <ol class="steps"><li>${t('In Google Cloud Console create a project and enable the')} <b>Google Calendar API</b>.</li><li>${t('Credentials → Create credentials → OAuth client ID → type')} <b>${t('Desktop app')}</b>.</li><li>${t('Paste the client ID and secret here and press Connect. Your browser opens to approve read-only access.')}</li></ol>
+          ${field('g-id', t('Client ID'), `<input id="g-id" value="${esc(s.google.clientId)}" placeholder="…apps.googleusercontent.com" autocomplete="off">`)}
+          ${field('g-secret', t('Client secret'), `<input id="g-secret" type="password" value="${s.google.clientSecret ? MASK : ''}" autocomplete="off">`)}
+          <div class="row"><button class="btn primary" data-act="g-connect">${icon('lock', 'sm')} ${t('Connect')}</button><span class="small muted" id="g-status"></span></div></div>
+        <div data-gpane="ical" class="stack" hidden>
+          <ol class="steps"><li>${t('Google Calendar → Settings → your calendar → Integrate calendar.')}</li><li>${t('Copy the “Secret address in iCal format” and paste it here.')}</li></ol>
+          ${field('cal-url', t('Calendar feed URL (iCal / webcal)'), '<input id="cal-url" type="url" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics">', t('Works for Outlook, iCloud and Fastmail too.'))}
+          <div class="row"><button class="btn primary" data-act="cal-add">${t('Add calendar')}</button><span class="small" id="cal-result"></span></div></div>`}
+        ${s.calendar.sources.length ? `<div class="divider"></div><div class="xsmall muted strong">${t('iCal feeds')}</div>${s.calendar.sources.map((c) => `<div class="row"><span class="srcicon">${icon('calendar')}</span><span class="grow ellipsis small">${esc(c.name)}</span><button class="btn ghost xs" data-cal-del="${c.id}">${t('Remove')}</button></div>`).join('')}` : ''}`)}
+
+      ${card('notion', '#111', 'doc', 'Notion', ints.notion.configured ? (ints.notion.parentTitle ? `${t('Exports into')} “${esc(ints.notion.parentTitle)}”` : t('Connected — choose where notes go')) : t('Export meeting notes as pages; import pages as meetings'), ints.notion.configured, `
+        <ol class="steps"><li>${t('Create an internal integration at')} <a href="https://www.notion.so/my-integrations" target="_blank" rel="noopener noreferrer">notion.so/my-integrations</a>.</li><li>${t('In Notion, open the page or database for meeting notes → ••• → Connections → add your integration.')}</li><li>${t('Paste the secret, then pick that page below.')}</li></ol>
+        ${field('n-token', t('Integration secret'), `<input id="n-token" type="password" value="${ints.notion.configured ? MASK : ''}" placeholder="ntn_… / secret_…" autocomplete="off">`)}
+        ${ints.notion.configured ? `<div class="field"><span class="lbl">${t('Export into')}</span><div class="row"><span class="grow small ellipsis">${ints.notion.parentTitle ? `${icon(ints.notion.parentKind === 'database' ? 'layers' : 'doc', 'sm')} ${esc(ints.notion.parentTitle)}` : `<span class="muted">${t('Not chosen yet')}</span>`}</span><button class="btn sm" data-act="n-pick">${t('Choose…')}</button></div></div>
+          <label class="row between"><span class="small">${t('Export automatically after enhancing a meeting')}</span>${switchEl('n-auto', ints.notion.autoExport)}</label>` : ''}
+        <div class="row"><button class="btn primary" data-act="n-save">${t('Save & test')}</button>${ints.notion.configured ? `<button class="btn" data-act="import-notion">${icon('download', 'sm')} ${t('Import pages')}</button><button class="btn ghost sm" data-act="n-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="n-status"></span></div>`)}
+
+      ${card('linear', '#5e6ad2', 'checksq', 'Linear', ints.linear.configured ? (ints.linear.teamName ? `${t('Team')} ${esc(ints.linear.teamName)}` : t('Connected — choose a team')) : t('Turn action items into issues; link and import issues'), ints.linear.configured, `
+        <ol class="steps"><li>${t('Linear → Settings → Security & access → Personal API keys → New key.')}</li><li>${t('Paste it here and choose the team new issues go to.')}</li></ol>
+        ${field('l-key', t('Personal API key'), `<input id="l-key" type="password" value="${ints.linear.configured ? MASK : ''}" placeholder="lin_api_…" autocomplete="off">`)}
+        ${ints.linear.configured ? field('l-team', t('Team for new issues'), `<select id="l-team"><option value="">${t('Loading…')}</option></select>`) : ''}
+        <div class="row"><button class="btn primary" data-act="l-save">${t('Save & test')}</button>${ints.linear.configured ? `<button class="btn" data-act="import-linear">${icon('download', 'sm')} ${t('Import issues')}</button><button class="btn ghost sm" data-act="l-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="l-status"></span></div>`)}
+
+      ${card('obsidian', '#7c3aed', 'book', 'Obsidian', ints.obsidian.configured ? esc(ints.obsidian.vaultPath) : t('Write meetings into your vault with [[links]] to people and topics'), ints.obsidian.configured, `
+        ${field('o-path', t('Vault folder'), `<input id="o-path" value="${esc(s.obsidian.vaultPath)}" placeholder="/home/you/Documents/MyVault">`, t('The folder that contains your vault’s .obsidian directory.'))}
+        ${field('o-folder', t('Folder inside the vault'), `<input id="o-folder" value="${esc(s.obsidian.folder)}" placeholder="Meetings">`)}
+        <label class="row between"><span class="small">${t('Include the transcript')}</span>${switchEl('o-tr', s.obsidian.transcript)}</label>
+        <label class="row between"><span class="small">${t('Export automatically after enhancing a meeting')}</span>${switchEl('o-auto', s.obsidian.autoExport)}</label>
+        <div class="row"><button class="btn primary" data-act="o-save">${t('Save & test')}</button>${ints.obsidian.configured ? `<button class="btn" data-act="import-obsidian">${icon('download', 'sm')} ${t('Import notes')}</button><button class="btn" data-act="o-all">${icon('upload', 'sm')} ${t('Export all meetings')}</button>` : ''}<span class="small" id="o-status"></span></div>`)}
+
+      ${card('webhook', '#0ea5e9', 'webhook', t('Webhooks'), t('Send meetings anywhere: Zapier, Make, n8n, Slack, your own server'), ints.webhooks.length > 0, `
+        <div class="stack tight">${ints.webhooks.map((w) => `<div class="row card" style="padding:10px 12px"><div class="grow"><div class="strong ellipsis">${esc(w.name)}</div><div class="xsmall muted ellipsis">${esc(w.url)}</div></div>${switchEl('', w.auto, t('Send automatically')).replace('id=""', `data-hook-auto="${w.id}"`)}<button class="btn ghost xs" data-hook-test="${w.id}">${t('Test')}</button><button class="btn ghost icon xs" data-hook-del="${w.id}" aria-label="${t('Remove')}">${icon('trash', 'sm')}</button></div>`).join('')}</div>
+        <div class="hint">${t('Each POST carries the meeting as JSON (summary, notes, action items, topics, transcript, Markdown). With a secret, it is signed in X-WhisperBrain-Signature (HMAC-SHA256).')}</div>
+        <div class="row"><button class="btn" data-act="hook-add">${icon('plus', 'sm')} ${t('Add webhook')}</button></div>`)}
+
+      ${card('files', '#10b981', 'upload', t('Files'), t('Audio, video, transcripts (VTT, SRT, TXT, JSON), documents (Markdown, DOCX, HTML, CSV)'), true, `
+        <div class="small muted">${t('Zoom, Teams and Meet transcript exports, Otter and other tools’ text exports, Whisper/AssemblyAI/Deepgram JSON and WhisperBrain backups are recognised with their speakers. Imported meetings are kept apart under “From outside”.')}</div>
+        <div class="row"><button class="btn primary" data-act="import-files">${icon('upload', 'sm')} ${t('Import files')}</button></div>`)}
+    </div></div>`;
+  bind(main, ints);
+  if (ints.linear.configured) loadTeams(ints).catch((e) => { const st = $('#l-status'); if (st) st.textContent = `✗ ${e.message}`; });
+}
+
+function card(key, color, ic, title, sub, connected, body) {
+  return `<section class="panel int-card" data-int="${key}"><div class="head"><span class="int-logo" style="background:${color}">${icon(ic)}</span><div class="grow"><h3 style="font-size:16px">${esc(title)}</h3><div class="small muted">${sub}</div></div>${connected ? `<span class="badge ok">${icon('check', 'sm')} ${t('On')}</span>` : ''}</div>${body}</section>`;
+}
+
+async function loadTeams(ints) {
+  const sel = $('#l-team');
+  if (!sel) return;
+  const teams = await api('GET', '/api/integrations/linear/teams');
+  sel.innerHTML = `<option value="">${t('Choose a team')}</option>${teams.map((tm) => `<option value="${tm.id}" data-name="${esc(tm.name)}" ${tm.id === ints.linear.teamId ? 'selected' : ''}>${esc(tm.name)} (${esc(tm.key)})</option>`).join('')}`;
+}
+
+function bind(main, ints) {
+  const status = (id, ok, msg) => { const el = $(id, main); if (el) { el.textContent = `${ok ? '✓' : '✗'} ${msg}`; el.style.color = ok ? 'var(--ok)' : 'var(--danger)'; } };
+  main.onclick = async (e) => {
+    const gm = e.target.closest('[data-gmode]');
+    if (gm) { $$('[data-gmode]', main).forEach((b) => b.setAttribute('aria-selected', String(b === gm))); $$('[data-gpane]', main).forEach((p) => { p.hidden = p.dataset.gpane !== gm.dataset.gmode; }); return; }
+    const b = e.target.closest('button');
+    if (!b) return;
+    const a = b.dataset.act;
+    try {
+      if (a === 'g-connect') {
+        b.disabled = true;
+        const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim() });
+        $('#g-status').innerHTML = `${t('Waiting for you to approve in the browser…')} ${r.opened ? '' : `<a href="${esc(r.authUrl)}" target="_blank" rel="noopener noreferrer">${t('Open the Google sign-in page')}</a>`}`;
+        if (!r.opened) window.open(r.authUrl, '_blank', 'noopener');
+        const onEv = (ev) => { if (ev.detail.type === 'google.connected' || ev.detail.type === 'google.error') { window.removeEventListener('wb:event', onEv); render(main); } };
+        window.addEventListener('wb:event', onEv);
+      } else if (a === 'g-disconnect') { if (await confirmDialog(t('Disconnect Google Calendar? Meetings you already recorded are kept.'), { ok: t('Disconnect') })) { await api('POST', '/api/google/disconnect'); S.settings = await api('GET', '/api/settings'); render(main); } }
+      else if (a === 'g-refresh') { await api('GET', '/api/google/calendars'); S.settings = await api('GET', '/api/settings'); render(main); }
+      else if (b.dataset.calDel) { await api('DELETE', `/api/calendar/sources/${b.dataset.calDel}`); S.settings = await api('GET', '/api/settings'); render(main); }
+      else if (a === 'cal-add') {
+        const url = $('#cal-url').value.trim();
+        if (!url) return;
+        await api('POST', '/api/calendar/sources', { kind: 'url', location: url });
+        S.settings = await api('GET', '/api/settings');
+        const r = await api('GET', '/api/calendar/events?refresh=1');
+        if (r.errors.length) toast(r.errors[0].error, { error: true }); else done(t('{n} upcoming events found', { n: r.events.length }));
+        render(main);
+      } else if (a === 'n-save') {
+        const token = $('#n-token').value.trim();
+        await save({ notion: { token } });
+        const r = await api('POST', '/api/integrations/notion/test');
+        status('#n-status', true, `${r.name || 'OK'}${r.workspace ? ' · ' + r.workspace : ''}`);
+        setTimeout(() => render(main), 900);
+      } else if (a === 'n-pick') await pickNotionParent(main);
+      else if (a === 'n-remove') { await save({ notion: { token: '', parentId: '', parentTitle: '', autoExport: false } }); render(main); }
+      else if (a === 'l-save') {
+        await save({ linear: { apiKey: $('#l-key').value.trim() } });
+        const r = await api('POST', '/api/integrations/linear/test');
+        status('#l-status', true, `${r.viewer.name} · ${r.teams.length} ${t('teams')}`);
+        if (!S.settings.linear.teamId && r.teams.length === 1) await save({ linear: { teamId: r.teams[0].id, teamName: r.teams[0].name } });
+        setTimeout(() => render(main), 900);
+      } else if (a === 'l-remove') { await save({ linear: { apiKey: '', teamId: '', teamName: '' } }); render(main); }
+      else if (a === 'o-save') {
+        await save({ obsidian: { vaultPath: $('#o-path').value.trim(), folder: $('#o-folder').value.trim() || 'Meetings', transcript: $('#o-tr').checked, autoExport: $('#o-auto').checked } });
+        const r = await api('POST', '/api/integrations/obsidian/test');
+        status('#o-status', true, `${r.isVault ? t('Obsidian vault') : t('Folder (no .obsidian found)')} · ${r.notes} ${t('notes')}`);
+        setTimeout(() => render(main), 1200);
+      } else if (a === 'o-all') {
+        if (!(await confirmDialog(t('Write every meeting into your Obsidian vault? Existing exports are updated in place.'), { ok: t('Export'), danger: false }))) return;
+        const ids = (await api('GET', '/api/meetings?limit=5000')).map((n) => n.id);
+        b.disabled = true;
+        const r = await api('POST', '/api/send', { ids, target: 'obsidian' });
+        const ok = r.results.filter((x) => x.ok).length;
+        toast(t('{ok} of {n} exported', { ok, n: r.results.length }), { ok: ok === r.results.length, error: ok < r.results.length });
+        b.disabled = false;
+      } else if (a === 'hook-add') await addHook(main);
+      else if (b.dataset.hookTest) { const r = await api('POST', `/api/integrations/webhooks/${b.dataset.hookTest}/test`); done(t('Delivered (HTTP {s})', { s: r.status })); }
+      else if (b.dataset.hookDel) { await save({ webhooks: S.settings.webhooks.filter((w) => w.id !== b.dataset.hookDel) }); render(main); }
+      else if (a === 'import-notion') openImport({ tab: 'notion' });
+      else if (a === 'import-linear') openImport({ tab: 'linear' });
+      else if (a === 'import-obsidian') openImport({ tab: 'obsidian' });
+      else if (a === 'import-files') openImport();
+    } catch (err) {
+      fail(err); b.disabled = false;
+      const map = { 'n-save': '#n-status', 'l-save': '#l-status', 'o-save': '#o-status', 'g-connect': '#g-status' };
+      if (map[a]) status(map[a], false, err.message);
+    }
+  };
+  main.onchange = async (e) => {
+    try {
+      if (e.target.dataset.gcal !== undefined) { const sel = $$('[data-gcal]', main).filter((x) => x.checked).map((x) => x.dataset.gcal); await api('PUT', '/api/google/calendars', { selected: sel }); S.settings = await api('GET', '/api/settings'); done(); }
+      else if (e.target.id === 'n-auto') { await save({ notion: { autoExport: e.target.checked } }); done(); }
+      else if (e.target.id === 'l-team') { const o = e.target.selectedOptions[0]; await save({ linear: { teamId: e.target.value, teamName: o?.dataset.name || '' } }); done(); }
+      else if (e.target.dataset.hookAuto) { await save({ webhooks: S.settings.webhooks.map((w) => (w.id === e.target.dataset.hookAuto ? { ...w, auto: e.target.checked } : w)) }); done(); }
+    } catch (err) { fail(err); }
+  };
+  void ints;
+}
+
+function pickNotionParent(main) {
+  return modal({
+    title: t('Where should meeting notes go?'),
+    body: `<div class="hint">${t('Only pages and databases shared with your integration appear here.')}</div><div class="search-in" style="max-width:none">${icon('search', 'sm')}<input id="np-q" placeholder="${t('Search Notion…')}"></div><div class="picklist" id="np-list"><div class="empty"><div class="skel" style="width:50%"></div></div></div>`,
+    onMount: (d, close) => {
+      const list = $('#np-list', d);
+      const load = debounce(async (q) => {
+        try {
+          const items = await api('GET', `/api/integrations/notion/search?q=${encodeURIComponent(q)}`);
+          list.innerHTML = items.map((it, i) => `<label data-i="${i}">${icon(it.kind === 'database' ? 'layers' : 'doc')}<span class="grow ellipsis">${esc(it.title || t('Untitled'))}</span><span class="badge">${it.kind === 'database' ? t('database') : t('page')}</span></label>`).join('') || `<div class="empty"><p>${t('Nothing shared with the integration yet.')}</p></div>`;
+          list.onclick = async (ev) => {
+            const row = ev.target.closest('[data-i]'); if (!row) return;
+            const it = items[Number(row.dataset.i)];
+            await save({ notion: { parentId: it.id, parentKind: it.kind, parentTitle: it.title || 'Untitled' } });
+            done(); close(); render(main);
+          };
+        } catch (e) { list.innerHTML = `<div class="banner danger">${esc(e.message)}</div>`; }
+      }, 250);
+      $('#np-q', d).addEventListener('input', (e) => load(e.target.value.trim()));
+      load('');
+    },
+  });
+}
+
+function addHook(main) {
+  return modal({
+    title: t('Add a webhook'),
+    body: `${field('wh-name', t('Name'), '<input id="wh-name" placeholder="Zapier">')}${field('wh-url', 'URL', '<input id="wh-url" type="url" placeholder="https://hooks.zapier.com/…">')}${field('wh-secret', t('Signing secret (optional)'), '<input id="wh-secret" autocomplete="off">')}
+      <label class="check"><input type="checkbox" id="wh-auto"> ${t('Send every meeting automatically after it is enhanced')}</label>`,
+    foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" data-ok>${t('Add')}</button>`,
+    onMount: (d, close) => {
+      $('[data-ok]', d).onclick = async () => {
+        try { await save({ webhooks: [...S.settings.webhooks, { name: $('#wh-name', d).value, url: $('#wh-url', d).value.trim(), secret: $('#wh-secret', d).value, auto: $('#wh-auto', d).checked }] }); close(true); render(main); } catch (e) { fail(e); }
+      };
+    },
+  });
+}
