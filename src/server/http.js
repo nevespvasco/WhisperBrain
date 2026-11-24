@@ -13,6 +13,8 @@ const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
 
 const { noticeText } = require('../consent/notice');
+const { attachTranscript } = require('../meet/attach');
+const { MAX_TEXT_BYTES } = require('../importers');
 const noticeRoute = (app, query) => ({ text: noticeText({ preset: query.preset || app.settings.get('consentPreset'), lang: query.lang || app.settings.get('language') }) });
 
 // speaker ids: m1 (microphone), s1 (system audio), d<snowflake> (a person on Discord)
@@ -152,6 +154,14 @@ function createRoutes(app) {
     q: query.q || '', scope: query.scope || 'all', folderId: query.space || undefined, from: query.from, to: query.to,
     speaker: query.speaker || undefined, attendee: query.attendee || undefined, has: query.has || undefined, limit: Number(query.limit) || 50,
   }).map((r) => ({ ...r.note, snippet: r.snippet, quotes: r.quotes })));
+
+  // a platform's own transcript (Teams / Zoom / Meet export): its speaker names become evidence for the voices
+  add('POST', '/api/notes/:id/attach-transcript', async ({ params, req, query }) => {
+    noteOr404(params.id);
+    const buf = await readBody(req, MAX_TEXT_BYTES);
+    if (!buf.length) throw new HttpError(400, 'empty file');
+    try { return attachTranscript(app, params.id, buf, query.filename); } catch (e) { throw e.status ? new HttpError(e.status, e.message) : e; }
+  });
 
   // the "this call is recorded" notice, to paste into the meeting chat
   add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));

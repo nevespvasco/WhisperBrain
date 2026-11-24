@@ -264,3 +264,62 @@ test('recording notice: text follows the language and preset (or the query), and
   assert.equal((await s.json('PATCH', `/api/notes/${n.id}`, { consent: 'announced' })).consent, 'announced');
   await assert.rejects(s.json('PATCH', `/api/notes/${n.id}`, { consent: 'whatever' }), (e) => e.status === 400);
 });
+
+// ---- attaching a platform transcript ----
+const SAID = [
+  ['s1', 2000, 7000, 'Good morning everyone thanks for joining the planning call today'],
+  ['s2', 8000, 13000, 'Happy to be here I wanted to start with the budget for the second quarter'],
+  ['s3', 14000, 20000, 'Before the budget we should settle the hiring plan for the platform team'],
+  ['s1', 21000, 26000, 'Agreed let us take hiring first and then the budget discussion'],
+  ['s2', 27000, 33000, 'The recruiter said we can close two engineers by the end of March'],
+  ['s3', 34000, 40000, 'That works for me but I need a decision on the contractor by Friday'],
+];
+const NAMES = { s1: 'Ana Silva', s2: 'Bruno Costa', s3: 'Carla Dias' };
+const ts = (ms) => { const t = Math.max(0, ms); return `${String(Math.floor(t / 3600000)).padStart(2, '0')}:${String(Math.floor(t / 60000) % 60).padStart(2, '0')}:${String(Math.floor(t / 1000) % 60).padStart(2, '0')}.${String(t % 1000).padStart(3, '0')}`; };
+const vtt = (offset = 30000) => `WEBVTT\n\n${SAID.map(([id, a, b, text], i) => `${i + 1}\n${ts(a + offset)} --> ${ts(b + offset)}\n<v ${NAMES[id]}>${text.replace(/ the /, ' ')}</v>`).join('\n\n')}\n`;
+
+async function recordedMeeting(s) {
+  const n = await s.json('POST', '/api/notes', { title: 'Planning' });
+  s.app.notes.addSegments(n.id, SAID.map(([speakerId, startMs, endMs, text]) => ({ speaker: 'them', speakerId, startMs, endMs, text })));
+  for (const id of ['s1', 's2', 's3']) s.app.speakers.save(n.id, { speakerId: id, channel: 'system', centroid: new Float32Array(4).fill(id === 's1' ? 1 : id === 's2' ? -1 : 0.5), count: 4 });
+  return n;
+}
+const attach = (s, id, body, filename = 'meeting.vtt') => s.json('POST', `/api/notes/${id}/attach-transcript?filename=${encodeURIComponent(filename)}`, Buffer.from(body));
+
+test('attach a platform transcript: the voices take the names it wrote, and the evidence is kept', async (t) => {
+  const s = await boot(t);
+  const n = await recordedMeeting(s);
+  const r = await attach(s, n.id, vtt());
+  assert.ok(Math.abs(r.offsetMs - -30000) <= 1000);
+  assert.deepEqual(r.named.map((x) => [x.speakerId, x.name]).sort(), [['s1', 'Ana Silva'], ['s2', 'Bruno Costa'], ['s3', 'Carla Dias']]);
+  const spk = await s.json('GET', `/api/notes/${n.id}/speakers`);
+  assert.deepEqual(spk.map((x) => [x.speakerId, x.label, x.nameSource]), [['s1', 'Ana Silva', 'transcript'], ['s2', 'Bruno Costa', 'transcript'], ['s3', 'Carla Dias', 'transcript']]);
+  assert.equal(s.app.evidence.forNote(n.id, { kind: 'transcript' }).length, 6);
+  assert.deepEqual((await s.json('GET', `/api/notes/${n.id}/transcript`)).map((x) => x.label).slice(0, 3), ['Ana Silva', 'Bruno Costa', 'Carla Dias']);
+  await attach(s, n.id, vtt());                                    // again: replaced, not doubled
+  assert.equal(s.app.evidence.forNote(n.id, { kind: 'transcript' }).length, 6);
+});
+
+test('attach a platform transcript: a name the person typed is not replaced, an earlier guess is', async (t) => {
+  const s = await boot(t);
+  const n = await recordedMeeting(s);
+  s.app.speakers.rename(n.id, 's1', 'Ana (typed)');
+  s.app.speakers.nameFromMeeting(n.id, 's2', 'Wrong Guess', { source: 'meeting:highlight', confidence: 0.7 });
+  const r = await attach(s, n.id, vtt());
+  assert.ok(r.kept.includes('s1'));
+  const by = Object.fromEntries((await s.json('GET', `/api/notes/${n.id}/speakers`)).map((x) => [x.speakerId, x.label]));
+  assert.deepEqual([by.s1, by.s2, by.s3], ['Ana (typed)', 'Bruno Costa', 'Carla Dias']);
+});
+
+test('attach a platform transcript: SRT with "Name: text" lines works too; other meetings and junk are refused', async (t) => {
+  const s = await boot(t);
+  const n = await recordedMeeting(s);
+  const srt = SAID.map(([id, a, b, text], i) => `${i + 1}\n${ts(a + 5000).replace('.', ',')} --> ${ts(b + 5000).replace('.', ',')}\n${NAMES[id]}: ${text}\n`).join('\n');
+  assert.equal((await attach(s, n.id, srt, 'zoom.srt')).named.length, 3);
+  const other = 'WEBVTT\n\n1\n00:00:01.000 --> 00:00:06.000\n<v Ana Silva>Welcome to the quarterly retrospective for the design team everyone</v>\n\n2\n00:00:07.000 --> 00:00:12.000\n<v Bruno Costa>Our main finding was that onboarding takes far too long for newcomers</v>\n\n3\n00:00:13.000 --> 00:00:18.000\n<v Carla Dias>I suggest we record short videos that explain each of the steps</v>\n';
+  await assert.rejects(attach(s, n.id, other), (e) => e.status === 422 && /does not look like this meeting/.test(e.message));
+  await assert.rejects(attach(s, n.id, 'not a transcript at all', 'x.txt'), (e) => e.status === 422 && /no speaker names/.test(e.message), 'text with nobody speaking in it');
+  await assert.rejects(attach(s, n.id, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]), 'photo.png'), (e) => e.status === 400, 'a picture');
+  const empty = await s.json('POST', '/api/notes', { title: 'No recording' });
+  await assert.rejects(attach(s, empty.id, vtt()), (e) => e.status === 409 && /recorded/.test(e.message));
+});

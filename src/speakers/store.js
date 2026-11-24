@@ -58,12 +58,14 @@ class Speakers {
   // -> 'named' | 'agrees' (it is the person the voice already matched) | 'conflict' (the voice matched somebody else) |
   //    'kept' (the user already named it) | null (no such speaker)
   // source / confidence: which evidence named it ('meeting:highlight', 'meeting:caption', ...) and how sure that was (0..1)
-  nameFromMeeting(noteId, speakerId, name, { source = 'meeting', confidence = null } = {}) {
+  // replaceInferred: an earlier name that was itself inferred (meeting / transcript evidence) may be replaced by better evidence;
+  // a name the person typed, or from before this was recorded, never is
+  nameFromMeeting(noteId, speakerId, name, { source = 'meeting', confidence = null, replaceInferred = false } = {}) {
     const clean = String(name || '').trim().slice(0, 80);
     const all = this.forNote(noteId);
     const sp = all.find((x) => x.speakerId === speakerId);
     if (!sp || !clean) return null;
-    if (sp.name) return 'kept';
+    if (sp.name && !(replaceInferred && /^(meeting|transcript)/.test(sp.nameSource || ''))) return 'kept';
     const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
     if (sp.voiceId && sp.voiceName && !same(sp.voiceName, clean)) return 'conflict';
     const voice = this.voiceByName(clean);

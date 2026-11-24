@@ -109,6 +109,7 @@ function transcriptTab(body) {
   body.innerHTML = `<div class="tb">${recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
       <span class="spacer"></span>
+      ${!S.rec.active && N.segs.length ? `<label class="btn sm ghost" title="${t('Name the speakers from a Teams, Zoom or Meet transcript file (.vtt, .srt, .docx) of this meeting')}">${icon('users', 'sm')} ${t('Attach platform transcript')}<input type="file" id="attachtranscript" accept=".vtt,.srt,.docx,.txt,.md,.json,.html" hidden></label>` : ''}
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${t('Name this speaker')}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}</button>`).join('')}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
@@ -238,6 +239,7 @@ function bind(main) {
       else if (e.target.matches('#note-space')) { await api('PATCH', `/api/notes/${N.id}`, { folderId: e.target.value || null }); N.note.folderId = e.target.value || null; window.dispatchEvent(new Event('wb:refresh')); done(t('Moved')); }
       else if (e.target.matches('#sp-count')) { const v = e.target.value ? Number(e.target.value) : null; await api('PATCH', `/api/notes/${N.id}`, { speakerCount: v }); N.note.speakerCount = v; done(v ? t('Speakers will be split into {n} voices when the recording stops', { n: v }) : t('Saved')); }
       else if (e.target.matches('#importfile')) await importAudio(e.target.files[0]);
+      else if (e.target.matches('#attachtranscript')) { await attachTranscript(e.target.files[0]); e.target.value = ''; }
       else if (e.target.matches('.seg-reassign')) { await api('POST', `/api/notes/${N.id}/segments/${e.target.dataset.seg}/speaker`, { speakerId: e.target.value }); await reloadTranscript(); }
       else if (e.target.matches('.act-row .cbx')) { const row = e.target.closest('.act-row'); await api('PATCH', `/api/actions/${row.dataset.aid}`, { done: e.target.checked }); row.classList.toggle('done', e.target.checked); const a = N.actions.find((x) => x.id === row.dataset.aid); if (a) a.done = e.target.checked; window.dispatchEvent(new Event('wb:refresh')); }
       else if (e.target.matches('.act-row [data-field="due"]')) { const row = e.target.closest('.act-row'); await api('PATCH', `/api/actions/${row.dataset.aid}`, { due: e.target.value }); }
@@ -369,6 +371,16 @@ async function addLink() {
       show('url');
     },
   });
+}
+
+// A Teams / Zoom / Meet transcript of this meeting names the voices: the server matches it to the recording by what was said.
+async function attachTranscript(file) {
+  if (!file) return;
+  try {
+    const r = await api('POST', `/api/notes/${N.id}/attach-transcript?filename=${encodeURIComponent(file.name)}`, file);
+    await reloadTranscript();
+    toast(r.named.length ? t('Named {n} speaker(s) from the transcript.', { n: r.named.length }) + (r.kept.length ? ` ${t('{n} you named yourself were left as they are.', { n: r.kept.length })}` : '') : t('The transcript matched, but it names nobody new.'), { ok: true });
+  } catch (e) { fail(e); }
 }
 
 // One person heard as two voices: fold one speaker into another (the server refuses voices that clearly differ).
