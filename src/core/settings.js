@@ -3,6 +3,7 @@
 const os = require('node:os');
 const { SecretBox } = require('./secret-box');
 const { PRESETS: CONSENT_PRESETS } = require('../consent/notice');
+const { isLocalUrl } = require('./policy');
 
 // Speech-model threads: about half the logical CPUs (they are usually SMT siblings), 2..8. Decoding stops scaling near 8.
 function defaultAsrThreads(cpus = os.availableParallelism()) {
@@ -54,6 +55,8 @@ const DEFAULTS = {
   autoRecord: 'ask',            // when a meeting is detected: off | ask | always
   autoStop: true,               // stop an auto-started recording when the meeting app releases the microphone
   captureCalendar: 'off',       // start recording when a calendar meeting starts: off | selected | all
+  voiceprints: true,            // voice prints at all: saving a voice and recognising saved ones (an organisation can switch it off, see policy.js)
+  retentionDays: 0,             // delete meetings older than this many days (0 = keep them; set by an organisation, see policy.js)
   perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux, macOS 14.2+, Windows with the helper); off = everything the computer plays
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
@@ -140,7 +143,9 @@ class Settings {
   // secretBox (optional): where secrets rest. With one, call `await init()` once before use: until then secrets that were
   // sealed read as '' (never as their sealed text). Reads and updates stay synchronous; the sealed write of a secret
   // follows in order (`await flush()` to wait for it, e.g. at quit).
-  constructor(db, bus, secretBox = null) {
+  // policy: what an organisation fixes (src/core/policy.js); locked settings have its values and refuse to change
+  constructor(db, bus, secretBox = null, policy = null) {
+    this.policy = policy || { locked: {}, requireLocalLlm: false, problems: [] };
     this.db = db;
     this.bus = bus;
     this.box = secretBox;
@@ -208,9 +213,30 @@ class Settings {
           out[row.key] = validate(row.key, v);
         } catch { /* keep default */ }
       }
+      this.applyPolicy(out);
       this.cache = out;
     }
     return structuredClone(this.cache);
+  }
+
+  // locked settings take the policy's value, and an AI server that is not local is not used when the policy says so
+  applyPolicy(all) {
+    for (const [pathStr, value] of Object.entries(this.policy.locked)) {
+      const [a, b] = pathStr.split('.');
+      if (b === undefined) all[a] = value; else all[a][b] = value;
+    }
+    if (this.policy.requireLocalLlm && !isLocalUrl(all.llm.baseUrl)) all.llm.baseUrl = '';
+  }
+
+  // refuses a change to what the policy fixes (saying what it already says is not a change)
+  checkPolicy(next) {
+    for (const [pathStr, value] of Object.entries(this.policy.locked)) {
+      const [a, b] = pathStr.split('.');
+      if (!(a in next)) continue;
+      const now = b === undefined ? next[a] : next[a]?.[b];
+      if (JSON.stringify(now) !== JSON.stringify(value)) throw new Error(`${b ?? a} is managed by your organisation and cannot be changed`);
+    }
+    if (this.policy.requireLocalLlm && next.llm && !isLocalUrl(next.llm.baseUrl)) throw new Error('the AI server must be on this computer or the local network: managed by your organisation');
   }
 
   get(key) { return this.all()[key]; }
@@ -220,6 +246,7 @@ class Settings {
     const s = this.all();
     for (const [key, fields] of Object.entries(SECRETS)) for (const f of fields) if (s[key][f]) s[key][f] = MASK;
     s.webhooks = s.webhooks.map((w) => ({ ...w, secret: w.secret ? MASK : '' }));
+    s.managed = [...Object.keys(this.policy.locked), ...(this.policy.requireLocalLlm ? ['llm.baseUrl (local servers only)'] : [])];
     return s;
   }
 
@@ -280,6 +307,7 @@ class Settings {
       if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => (w?.secret === MASK ? { ...w, secret: current.webhooks.find((x) => x.id === w.id)?.secret || '' } : w));
       next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);
     }
+    this.checkPolicy(next);
     const before = current.secretStorage;
     const sync = Object.entries(next).filter(([k]) => !(this.box && hasSecrets(k)));
     if (sync.length) this.write(sync);

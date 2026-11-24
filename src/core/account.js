@@ -59,6 +59,16 @@ class Account {
   }
 
   // ---- danger zone ----
+  // Delete the meetings older than `days` (0 = keep everything). A meeting still being recorded is never touched. -> how many
+  applyRetention({ days, now = Date.now() } = {}) {
+    if (!(days > 0)) return 0;
+    const cutoff = now - days * 86400000;
+    const old = this.db.prepare("SELECT id FROM notes WHERE status != 'recording' AND COALESCE(ended_at, created_at) < ?").all(cutoff);
+    for (const { id } of old) this.notes.remove(id);
+    if (old.length) this.bus?.publish('account.changed', { what: 'retention', deleted: old.length });
+    return old.length;
+  }
+
   deleteTranscripts() {
     const n = tx(this.db, () => {
       const count = this.db.prepare('DELETE FROM segments').run().changes;

@@ -28,17 +28,19 @@ const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
+const { loadPolicy } = require('../core/policy');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null } = {}) {
+function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy() } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
   const conn = db.open(path.join(dataDir, 'whisperbrain.sqlite'));
   const notes = new Notes(conn, bus);
-  const settings = new Settings(conn, bus, secretBox);
+  const settings = new Settings(conn, bus, secretBox, policy);
   const templates = new Templates(conn);
   const speakers = new Speakers(conn, bus);
   const evidence = new Evidence(conn);
+  speakers.enabled = () => settings.get('voiceprints');
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
@@ -108,6 +110,11 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   };
   const ready = settings.init();
   // Work that reads secrets (the extension's pairing token, the Discord token) starts once they are opened.
+  // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day
+  const sweep = () => { try { account.applyRetention({ days: settings.get('retentionDays') }); } catch (e) { bus.publish('account.error', { message: `retention: ${e.message}` }); } };
+  ready.then(sweep).catch(() => {});
+  const retentionTimer = detect ? setInterval(sweep, 86400000) : null;
+  retentionTimer?.unref();
   if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }).catch(() => {});
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
@@ -134,11 +141,13 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
         detector: typeof detector.status === 'function' ? detector.status() : null,
         pdf: !!renderPdf,
         secrets: settings.secretStatus(),
+        policy: { managed: settings.publicView().managed, problems: policy.problems, file: policy.file },
       };
     },
     close() {
       self.pendingGoogleAuth?.cancel?.();
       detector.stop();
+      clearInterval(retentionTimer);
       meet.close().catch(() => {});
       discord.logout().catch(() => {});
       engine.stop();

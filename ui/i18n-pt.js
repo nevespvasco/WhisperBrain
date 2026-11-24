@@ -360,6 +360,8 @@ export const PT = {
   '{n}% sure': '{n}% de certeza',
   'overlap': 'sobreposição',
   'Somebody else was talking at the same time here: some words may be less reliable, and they are not used to learn a voice.': 'Outra pessoa estava a falar ao mesmo tempo: algumas palavras podem ser menos fiáveis e não servem para aprender uma voz.',
+  'The policy file on this computer could not be used, so nothing is managed:': 'O ficheiro de política deste computador não pôde ser usado, por isso nada é gerido:',
+  'Your organisation manages these settings, and they cannot be changed here:': 'A tua organização gere estas definições e não podem ser alteradas aqui:',
   'Merge speakers': 'Juntar oradores',
   'Merge': 'Juntar',
   'Two names for the same person? Join them.': 'Dois nomes para a mesma pessoa? Junta-os.',

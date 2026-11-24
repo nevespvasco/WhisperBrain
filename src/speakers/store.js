@@ -18,7 +18,7 @@ function defaultLabel(speakerId, channelSpeaker, userName = '') {
 }
 
 class Speakers {
-  constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.adapt = true; }   // mean: the average voice that prints are centred on, see cluster.js
+  constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.adapt = true; this.enabled = () => true; }   // enabled(): voice prints at all (an organisation can switch them off)   // mean: the average voice that prints are centred on, see cluster.js
 
   // ---- per-note speakers ----
   forNote(noteId) {
@@ -97,7 +97,7 @@ class Speakers {
   // first name, and a wrong highlight must not teach a profile somebody else's voice. Refused too unless the caller
   // attests consent ({ consent: true }: the "remember voices the call named" setting is on). -> true when learned
   learnFromMeeting(noteId, speakerId, { consent = false } = {}) {
-    if (consent !== true) return false;
+    if (consent !== true || !this.enabled()) return false;
     const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
     if (!sp?.name || !sp.centroid || sp.talkMs - this.overlapMs(noteId, speakerId) < 8000) return false; // a voice print needs some seconds of clean speech to mean anything
     const existing = this.voiceByName(sp.name);
@@ -160,7 +160,7 @@ class Speakers {
         voiceId = null;
       }
     }
-    if (remember && clean && sp.centroid && CONSENT_SOURCES.has(consentSource)) {
+    if (remember && clean && sp.centroid && CONSENT_SOURCES.has(consentSource) && this.enabled()) {
       const existing = voiceId ? this.voice(voiceId) : this.voiceByName(clean);
       // overlapped speech is two people at once: it does not count as this person's clean speech
       const seconds = sp.talkMs > 0 ? Math.max(0, sp.talkMs - this.overlapMs(noteId, speakerId)) / 1000 : Math.max(1, sp.count) * 3;
@@ -270,6 +270,7 @@ class Speakers {
   // named are left alone; links made automatically earlier (live, on a few utterances) are judged again on what is known
   // now, so a better voice print can correct a wrong guess. -> number of speakers linked.
   autoMatch(noteId, threshold = MATCH.threshold, opts = {}) {
+    if (!this.enabled()) return 0;   // no voice prints, no recognising them
     const all = this.forNote(noteId);
     const used = new Set(all.filter((s) => s.name).map((s) => s.voiceId).filter(Boolean));
     const free = all.filter((s) => !s.name && s.centroid);

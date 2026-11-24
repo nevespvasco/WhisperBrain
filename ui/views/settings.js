@@ -49,6 +49,14 @@ const fitBadge = (id) => { const f = FIT[S.state?.modelAdvice?.models[id]?.fit];
 const whenLine = (id) => { const w = WHEN[S.state?.modelAdvice?.models[id]?.when]; return w ? `<div class="small mt-s"><b>${t('When to use')}:</b> ${t(w)}</div>` : ''; };
 
 // How API keys and tokens rest on disk (src/core/secret-box.js). Only worth a line when the protection is weak.
+// What an organisation fixed on this computer (src/core/policy.js): shown so that a setting that will not change is not a mystery.
+const policyBanner = () => {
+  const p = S.state?.policy;
+  if (!p || (!p.managed?.length && !p.problems?.length)) return '';
+  if (p.problems?.length && !p.managed?.length) return `<div class="banner warn small mb" role="alert">${icon('lock')}<div class="grow">${t('The policy file on this computer could not be used, so nothing is managed:')} ${esc(p.problems[0])}</div></div>`;
+  return `<div class="banner small mb">${icon('lock')}<div class="grow">${t('Your organisation manages these settings, and they cannot be changed here:')} <b>${esc(p.managed.join(', '))}</b></div></div>`;
+};
+
 const secretsBanner = () => {
   const st = S.state?.secrets;
   if (!st || !st.warning) return '';
@@ -62,7 +70,7 @@ const secretsBanner = () => {
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
   const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
-    ${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
+    ${policyBanner()}${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
     <div id="secbody" class="set-section" data-sec="${sec}">${inner}</div></div></div>`;
   // Re-rendering the section already on screen (removing a model, a download finishing…) must not jump the page:
   // build the new content first, swap it in one go, and put the scroll position back.
