@@ -8,6 +8,8 @@ export const setConsent = (noteId, consent) => api('PATCH', `/api/notes/${encode
 // afterwards ("I told them"). Rejects when the clipboard is not available.
 export async function copyNotice() {
   const { text } = await api('GET', '/api/consent/notice');
-  await navigator.clipboard.writeText(text);
+  // The floating recorder cannot take focus, so there the main process owns the clipboard write.
+  if (window.wbWidget?.copyText) await window.wbWidget.copyText(text);
+  else await navigator.clipboard.writeText(text);
   return text;
 }

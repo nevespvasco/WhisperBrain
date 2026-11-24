@@ -21,6 +21,7 @@ let win = null;
 let tray = null;
 let pill = null;
 let float = null;           // the floating recorder window
+let floatDrag = null;       // its bounds when the current drag began
 let floatExpanded = false;
 let floatAnchorRight = false;
 let floatKeepUntil = 0;      // keep it up briefly after Stop so "Notes saved" is seen
@@ -280,12 +281,19 @@ function setFloatExpanded(expanded) {
 function wireFloat() {
   const mine = (e) => float && !float.isDestroyed() && e.sender === float.webContents;
   ipcMain.on('widget:expanded', (e, expanded) => { if (mine(e)) setFloatExpanded(!!expanded); });
-  ipcMain.on('widget:move', (e, dx, dy) => {
-    if (!mine(e) || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
-    const b = float.getBounds();
-    float.setBounds(placeWithin({ ...b, x: b.x + dx, y: b.y + dy }, workAreas()));
-    rememberFloat();
+  ipcMain.on('widget:drag-start', (e) => { if (mine(e)) floatDrag = float.getBounds(); });
+  ipcMain.on('widget:drag-move', (e, dx, dy) => {
+    if (!mine(e) || !floatDrag || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const b = placeWithin({ ...floatDrag, x: floatDrag.x + dx, y: floatDrag.y + dy }, workAreas());
+    const cur = float.getBounds();
+    if (b.x !== cur.x || b.y !== cur.y) float.setPosition(b.x, b.y);
   });
+  ipcMain.handle('widget:copy', (e, text) => {
+    if (!mine(e) || typeof text !== 'string' || text.length > 4000) throw new Error('not allowed');
+    clipboard.writeText(text);
+    return true;
+  });
+  ipcMain.on('widget:drag-end', (e) => { if (!mine(e)) return; floatDrag = null; rememberFloat(); });
   ipcMain.on('widget:open', (e, noteId) => {
     if (!mine(e)) return;
     showWindow();
@@ -307,7 +315,7 @@ async function smoke() {
     let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200);
     applyFloat(true); // the floating recorder must open, load its page and have its native bridge
     await new Promise((res) => { const t0 = Date.now(); const poll = () => (float && !float.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
-    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.move, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
+    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.dragMove, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
     console.log('SMOKE_FLOAT ' + JSON.stringify(fl));
     if (!fl || fl.bridge !== 'function' || !fl.pill) ok = false;
     hideFloat();
