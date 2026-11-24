@@ -245,6 +245,29 @@ const MIGRATIONS = [
   `
   ALTER TABLE notes ADD COLUMN consent TEXT NOT NULL DEFAULT 'unknown';
   `,
+  // v10: what names are based on, kept instead of dropped when a recording stops. kind: 'highlight' (who the meeting window
+  // lit up, raw: the source's lag is in meta), 'roster' (who is on the call), 'caption' (a name and the words they said),
+  // 'stream' (a Discord bot heard this person), 'transcript' (a platform's own transcript), 'calendar' (an invited attendee).
+  // participant_key = the name folded for comparison; t0/t1 = timeline ms of the recording (t1 NULL for a point).
+  // And each speaker records which kind of evidence named it ('user', 'voice', 'stream', 'meeting:highlight'...) and how
+  // sure that was (0..1); '' = of unknown origin, as every name from before this is.
+  `
+  CREATE TABLE evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    participant_key TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    t0 INTEGER,
+    t1 INTEGER,
+    weight REAL NOT NULL DEFAULT 1,
+    meta TEXT
+  );
+  CREATE INDEX evidence_note ON evidence(note_id, kind);
+  ALTER TABLE note_speakers ADD COLUMN name_source TEXT NOT NULL DEFAULT '';
+  ALTER TABLE note_speakers ADD COLUMN name_confidence REAL;
+  `,
 ];
 
 function open(file) {

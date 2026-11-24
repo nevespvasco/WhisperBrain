@@ -2,7 +2,7 @@
 // What one recording learns from the meeting window: who was highlighted when, who is on the call, the captions.
 // Created when a recording starts, asked at the end (names for the voices, how many voices to expect).
 const { nameKey } = require('./protocol');
-const { activeIntervals, speechOf, nameSpeakers, remoteHeadCount } = require('./names');
+const { activeIntervals, rawIntervals, speechOf, nameSpeakers, remoteHeadCount } = require('./names');
 const { alignCaptions, mergeIntervals } = require('./captions');
 
 const MAX_EVENTS = 20000;   // an hour of a lively call is a few thousand highlights
@@ -35,7 +35,7 @@ class MeetingCollector {
       this.rosters.set(source, { t, participants: msg.participants });
     } else if (msg.type === 'caption') {
       if (msg.self && msg.name) this.selfKeys.add(nameKey(msg.name));
-      if (this.captions.length < MAX_EVENTS) this.captions.push({ t, name: msg.self ? null : msg.name, text: msg.text, final: msg.final, lagMs });
+      if (this.captions.length < MAX_EVENTS) this.captions.push({ t, name: msg.self ? null : msg.name, text: msg.text, final: msg.final, lagMs, source });
     }
   }
 
@@ -66,6 +66,20 @@ class MeetingCollector {
       if (ms > bestMs) { best = iv; bestMs = ms; }
     }
     return best;
+  }
+
+  // Everything seen, as evidence rows for src/meet/evidence.js: highlights as raw intervals (arrival of one highlight to the
+  // arrival of the next; the source's lag goes in meta, for the aligner to take off), the latest roster of each source, and the
+  // captions with their words. The user's own highlights are left out: they name nobody else.
+  toEvidence({ endMs = Infinity } = {}) {
+    const rows = [];
+    for (const [source, list] of this.events) {
+      const lag = list.find((e) => e.lagMs != null)?.lagMs ?? null;
+      for (const iv of rawIntervals(list, { endMs })) rows.push({ kind: 'highlight', source, key: nameKey(iv.name), name: iv.name, t0: iv.startMs, t1: iv.endMs, weight: 1, meta: { lagMs: lag } });
+    }
+    for (const [source, r] of this.rosters) for (const p of r.participants) rows.push({ kind: 'roster', source, key: nameKey(p.name), name: p.name, t0: r.t, weight: 1, meta: { self: !!p.self } });
+    for (const c of this.captions) if (c.name) rows.push({ kind: 'caption', source: c.source || 'captions', key: nameKey(c.name), name: c.name, t0: c.t, weight: 1, meta: { text: c.text, final: !!c.final, lagMs: c.lagMs ?? null } });
+    return rows;
   }
 
   // The utterances of this recording's system audio (the part of the note after earlier recordings of it)

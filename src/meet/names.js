@@ -33,6 +33,19 @@ function activeIntervals(events, { lagMs = DEFAULTS.lagMs, minMs = DEFAULTS.minM
   return out;
 }
 
+// The highlights as they arrived, with no lag taken off and nothing dropped: [{ startMs, endMs, name }], one per highlight,
+// each running to the arrival of the next event. What is kept as evidence (the lag is a property of the source, applied later).
+function rawIntervals(events, { endMs = Infinity, maxMs = DEFAULTS.maxMs } = {}) {
+  const ev = events.filter((e) => Number.isFinite(e.t)).sort((a, b) => a.t - b.t);
+  const out = [];
+  for (let i = 0; i < ev.length; i++) {
+    if (!ev[i].name) continue;
+    const stop = Math.min(i + 1 < ev.length ? ev[i + 1].t : endMs, ev[i].t + maxMs);
+    if (stop > ev[i].t) out.push({ startMs: ev[i].t, endMs: stop, name: ev[i].name });
+  }
+  return out;
+}
+
 const overlap = (a0, a1, b0, b1) => Math.max(0, Math.min(a1, b1) - Math.max(a0, b0));
 
 // Segments of one utterance split where the speaker pauses, so a pause does not count as speech.
@@ -129,4 +142,4 @@ function remoteHeadCount(participants, { max = 6, selfKeys = [] } = {}) {
   return seen.size >= 1 && seen.size <= max ? seen.size : null;
 }
 
-module.exports = { nameSpeakers, activeIntervals, speechOf, remoteHeadCount, DEFAULTS };
+module.exports = { nameSpeakers, activeIntervals, rawIntervals, speechOf, remoteHeadCount, DEFAULTS };

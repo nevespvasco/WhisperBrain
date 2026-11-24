@@ -63,6 +63,7 @@ class Account {
     const n = tx(this.db, () => {
       const count = this.db.prepare('DELETE FROM segments').run().changes;
       this.db.prepare('DELETE FROM note_speakers').run();
+      this.db.prepare('DELETE FROM evidence').run();
       return count;
     });
     for (const { id } of this.db.prepare('SELECT id FROM notes').all()) this.notes.reindex(id);

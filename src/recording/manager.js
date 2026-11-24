@@ -8,6 +8,7 @@ const { refineNote, describeUtterance } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
 const { MeetingCollector } = require('../meet/collector');
+const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
 const { speechOf } = require('../meet/names');
 const { Spool } = require('./spool');
@@ -37,8 +38,8 @@ class RecordingManager {
   // discord: the Discord voice bot (src/discord/bot.js) or a stand-in with join()/leave()/on('audio'): when it joins the call,
   // every person arrives on a channel of their own ('dc:<user id>') and replaces the mixed system audio.
   // meet: the SignalHub (src/meet/hub.js) the meeting window's readers report to: who is speaking and who is on the call.
-  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null }) {
-    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet });
+  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null, evidence = null }) {
+    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet, evidence });
     if (spoolDir) Spool.sweep(spoolDir);
     this.active = null;
     this.engine.on('segment', (s) => this.onSegment(s));
@@ -500,11 +501,13 @@ class RecordingManager {
       if (fixed.merged || fixed.moved) res = run();
       const named = [], conflicts = [];
       for (const n of res.named) {
-        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name);
+        const source = n.via === 'sole' ? 'meeting:roster' : res.captionNamed ? 'meeting:caption' : 'meeting:highlight';
+        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.share });
         if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
       }
       let learned = 0;
       if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
+      try { this.evidence?.add(a.noteId, a.meet.toEvidence({ endMs: a.accMs })); } catch { /* a record, never a reason to fail the stop */ }
       a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
@@ -569,6 +572,7 @@ class RecordingManager {
       a.spool[ch] = null; // no raw audio is kept for these: each person is already known, so there is nothing for the after-recording speaker pass to do
       a.fed[ch] = 0; a.epoch[ch] = 0; a.base[ch] = 0; a.stretches[ch] = []; a.env[ch] = new EnergyEnvelope();
       try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system'); } catch { /* the label falls back to the id */ }
+      try { this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'discord', key: nameKey(name), name, t0: this.elapsed(a), weight: 1, meta: { userId, speakerId: r.speakerId } }]); } catch { /* evidence is a record, never a reason to lose audio */ }
     }
     r.chain = r.chain.then(() => this.feedDiscord(a, ch, r, pcm, ts)).catch((e) => this.bus.publish('recording.warning', { message: `Discord audio: ${e.message}` }));
   }

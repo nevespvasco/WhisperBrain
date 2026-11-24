@@ -23,7 +23,7 @@ class Speakers {
   // ---- per-note speakers ----
   forNote(noteId) {
     const rows = this.db.prepare(`
-      SELECT ns.speaker_id AS speakerId, ns.channel, ns.name, ns.voice_id AS voiceId, v.name AS voiceName, ns.count, ns.centroid, ns.pitch,
+      SELECT ns.speaker_id AS speakerId, ns.channel, ns.name, ns.name_source AS nameSource, ns.name_confidence AS nameConfidence, ns.voice_id AS voiceId, v.name AS voiceName, ns.count, ns.centroid, ns.pitch,
              (SELECT COALESCE(SUM(end_ms - start_ms), 0) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS talkMs,
              (SELECT COUNT(*) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS segments
       FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id
@@ -44,8 +44,10 @@ class Speakers {
   // A speaker whose identity is known from outside the audio (a Discord user): no voice print, named from the start.
   // A name the user has already changed is kept.
   ensureNamed(noteId, speakerId, name, channel = 'system') {
-    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, count, name) VALUES(?, ?, ?, 0, ?)
-      ON CONFLICT(note_id, speaker_id) DO UPDATE SET name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END`)
+    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, count, name, name_source, name_confidence) VALUES(?, ?, ?, 0, ?, 'stream', 1)
+      ON CONFLICT(note_id, speaker_id) DO UPDATE SET name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END,
+        name_source = CASE WHEN note_speakers.name = '' THEN 'stream' ELSE note_speakers.name_source END,
+        name_confidence = CASE WHEN note_speakers.name = '' THEN 1 ELSE note_speakers.name_confidence END`)
       .run(noteId, speakerId, channel, String(name || '').slice(0, 80));
     this.bus?.publish('speakers.updated', { noteId });
   }
@@ -55,7 +57,8 @@ class Speakers {
   // voice with the name is linked to the speaker only when the two sound alike.
   // -> 'named' | 'agrees' (it is the person the voice already matched) | 'conflict' (the voice matched somebody else) |
   //    'kept' (the user already named it) | null (no such speaker)
-  nameFromMeeting(noteId, speakerId, name) {
+  // source / confidence: which evidence named it ('meeting:highlight', 'meeting:caption', ...) and how sure that was (0..1)
+  nameFromMeeting(noteId, speakerId, name, { source = 'meeting', confidence = null } = {}) {
     const clean = String(name || '').trim().slice(0, 80);
     const all = this.forNote(noteId);
     const sp = all.find((x) => x.speakerId === speakerId);
@@ -69,7 +72,7 @@ class Speakers {
       const fits = sp.voiceId === voice.id || (sp.centroid && matchVoices([{ id: sp.speakerId, centroid: sp.centroid, channel: sp.channel }], [voice], MATCH.threshold - 0.2, null, { mu: this.channelMeans() }).has(sp.speakerId));
       if (fits || !sp.centroid) link = voice.id;
     }
-    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id) WHERE note_id = ? AND speaker_id = ?').run(clean, link, noteId, speakerId);
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id), name_source = ?, name_confidence = ? WHERE note_id = ? AND speaker_id = ?').run(clean, link, source, confidence, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
     return sp.voiceId && sp.voiceName && same(sp.voiceName, clean) ? 'agrees' : 'named';
   }
@@ -157,7 +160,7 @@ class Speakers {
         });
       }
     }
-    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, noteId, speakerId);
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ?, name_source = ?, name_confidence = ? WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, clean ? 'user' : '', clean ? 1 : null, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
     return this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
   }
@@ -262,7 +265,8 @@ class Speakers {
     for (const s of free) {
       const next = matches.get(s.speakerId)?.voiceId || null;
       if (next === (s.voiceId || null)) continue;
-      this.db.prepare('UPDATE note_speakers SET voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(next, noteId, s.speakerId);
+      const score = next ? matches.get(s.speakerId).score : null;
+      this.db.prepare("UPDATE note_speakers SET voice_id = ?, name_source = CASE WHEN ? IS NOT NULL THEN 'voice' WHEN name_source = 'voice' THEN '' ELSE name_source END, name_confidence = CASE WHEN ? IS NOT NULL THEN ? WHEN name_source = 'voice' THEN NULL ELSE name_confidence END WHERE note_id = ? AND speaker_id = ?").run(next, next, next, score, noteId, s.speakerId);
       changed++;
     }
     if (changed) this.bus?.publish('speakers.updated', { noteId });

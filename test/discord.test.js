@@ -68,7 +68,7 @@ function setup({ bot = new FakeBot(), discord = { enabled: true, token: 'tok', u
   const created = [];
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad.onnx' };
   const platform = { capture: { mic: 'renderer', system: 'renderer' }, createMicSource: () => new PushSource(), createSystemSource: async () => { const s = new PushSource(); created.push(s); return s; } };
-  const mgr = new RecordingManager({ notes, engine, models, settings, platform, bus, speakers, discord: bot });
+  const mgr = new RecordingManager({ notes, engine, models, settings, platform, bus, speakers, discord: bot, evidence: new (require('../src/meet/evidence').Evidence)(db) });
   return { db, bus, events, notes, settings, speakers, engine, mgr, bot, created };
 }
 const chunk = (ms) => Buffer.alloc(ms * 16 * 2);
@@ -125,6 +125,18 @@ test('each Discord person keeps their own channel on the saved line, instead of 
   engine.emit('segment', { ch: 'dc:8', startMs: 500, endMs: 1800, text: 'no wait, the tests fail' });
   await mgr.stop();
   assert.deepEqual(notes.segments(n.id).map((s) => [s.speaker, s.channel]), [['them', 'dc:7'], ['them', 'dc:8']]);
+});
+
+test('a Discord person is evidence in their own right: kept as kind "stream", and the speaker says so', async () => {
+  const { mgr, notes, db, speakers } = setup();
+  const n = notes.create({});
+  await mgr.start(n.id);
+  say(mgr, '7', 'Ana', 200, Date.now());
+  await settleAll(mgr);
+  await mgr.stop();
+  const rows = new (require('../src/meet/evidence').Evidence)(db).forNote(n.id, { kind: 'stream' });
+  assert.deepEqual(rows.map((r) => [r.name, r.source, r.key, r.meta.userId, r.meta.speakerId]), [['Ana', 'discord', 'ana', '7', 'd7']]);
+  assert.equal(speakers.forNote(n.id).find((s) => s.speakerId === 'd7').nameSource, 'stream');
 });
 
 test('a person who renamed a speaker keeps the new name', async () => {

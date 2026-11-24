@@ -11,6 +11,7 @@ const { Bus } = require('../src/core/events');
 const { Notes } = require('../src/core/notes');
 const { Settings } = require('../src/core/settings');
 const { Speakers } = require('../src/speakers/store');
+const { Evidence } = require('../src/meet/evidence');
 const { RecordingManager } = require('../src/recording/manager');
 const { SignalHub } = require('../src/meet/hub');
 const { nameSpeakers, activeIntervals, speechOf } = require('../src/meet/names');
@@ -77,7 +78,8 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, le
   const engine = new FakeEngine();
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk', segmentationInstalled: () => true, segmentationPath: () => '/seg' };
   const hub = new SignalHub();
-  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, meet: hub });
+  const evidence = new Evidence(db);
+  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, meet: hub, evidence });
   const n = notes.create({});
   const events = [];
   bus.subscribe((e) => events.push(e));
@@ -99,7 +101,7 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, le
   }
   const labels = () => notes.segments(n.id).filter((s) => s.speaker === 'them').map((s) => s.label);
   const voices = () => speakers.forNote(n.id).filter((s) => s.channel === 'system' && s.segments > 0);
-  return { db, mgr, notes, speakers, n, call, labels, voices, events, hub, settings, newNote: () => notes.create({}) };
+  return { db, mgr, notes, speakers, n, call, labels, voices, events, hub, settings, evidence, newNote: () => notes.create({}) };
 }
 const T = (name, emb, i) => [name, emb, i * 7000, i * 7000 + 6000];
 
@@ -151,6 +153,31 @@ test('voices: with the default settings nothing is remembered, however clearly t
   assert.deepEqual(r.labels().includes('Ana'), true, 'named for this meeting');
   assert.equal(r.speakers.voices().length, 0, 'but no voice print saved');
   assert.equal(r.events.find((e) => e.type === 'recording.meet-names').data.learned, 0);
+});
+
+test('evidence: what the meeting window showed is kept after the recording, and each name says what it came from', async (t) => {
+  const r = rig(t);
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  const rows = r.evidence.forNote(r.n.id, { kind: 'highlight' });
+  assert.deepEqual([...new Set(rows.map((x) => x.name))].sort(), ['Ana', 'Bruno']);
+  assert.equal(rows.length, 4, 'one row per highlight');
+  assert.ok(rows.every((x) => x.source === 'x' && x.meta.lagMs === 400 && x.t1 > x.t0));
+  const named = r.voices().filter((v) => v.name);
+  assert.equal(named.length, 2);
+  for (const v of named) {
+    assert.equal(v.nameSource, 'meeting:highlight');
+    assert.ok(v.nameConfidence > 0.6 && v.nameConfidence <= 1, `confidence ${v.nameConfidence}`);
+  }
+});
+
+test('evidence: a name the person typed stays theirs, with the evidence still on record', async (t) => {
+  const r = rig(t);
+  r.speakers.ensureNamed(r.n.id, 's1', 'Typed', 'system');
+  r.speakers.rename(r.n.id, 's1', 'Typed');
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  const typed = r.speakers.forNote(r.n.id).find((s) => s.speakerId === 's1');
+  assert.deepEqual([typed.name, typed.nameSource], ['Typed', 'user']);
+  assert.ok(r.evidence.forNote(r.n.id).length > 0);
 });
 
 test('voices: a name that is only briefly highlighted teaches nothing', async (t) => {

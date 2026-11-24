@@ -239,6 +239,7 @@ class Notes {
   clearTranscript(noteId) {
     this.db.prepare('DELETE FROM segments WHERE note_id = ?').run(noteId);
     this.db.prepare('DELETE FROM note_speakers WHERE note_id = ?').run(noteId);
+    this.db.prepare('DELETE FROM evidence WHERE note_id = ?').run(noteId);   // who was on the call and who spoke goes with the transcript
     this.reindex(noteId);
   }
 

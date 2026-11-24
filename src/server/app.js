@@ -27,6 +27,7 @@ const { Integrations } = require('../integrations/service');
 const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
+const { Evidence } = require('../meet/evidence');
 
 function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
@@ -37,6 +38,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const settings = new Settings(conn, bus, secretBox);
   const templates = new Templates(conn);
   const speakers = new Speakers(conn, bus);
+  const evidence = new Evidence(conn);
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
@@ -45,7 +47,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
   const meet = new MeetService({ settings, bus, version, llm, captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
@@ -111,7 +113,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   return Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
