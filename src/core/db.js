@@ -240,6 +240,11 @@ const MIGRATIONS = [
     WHEN speaker_id GLOB 'd[0-9]*' THEN 'dc:' || substr(speaker_id, 2)
     ELSE 'system' END;
   `,
+  // v9: whether the other people on the call were told it is being recorded: 'unknown' (nothing said yet) | 'announced' |
+  // 'declined' (somebody objected). Kept on the meeting so it can be seen again, and exported with it.
+  `
+  ALTER TABLE notes ADD COLUMN consent TEXT NOT NULL DEFAULT 'unknown';
+  `,
 ];
 
 function open(file) {
