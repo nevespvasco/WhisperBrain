@@ -25,6 +25,7 @@ const DEFAULTS = {
   speakerDetection: true,       // tell voices apart ("Speaker 1", "Ana"…) with an on-device voice model
   speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
+  speakerCountHint: true,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only)
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {

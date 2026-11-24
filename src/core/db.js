@@ -200,6 +200,32 @@ const MIGRATIONS = [
   ALTER TABLE segments ADD COLUMN logprob_mean REAL;
   ALTER TABLE segments ADD COLUMN logprob_min REAL;
   `,
+  // v6: a saved voice keeps several voice prints (exemplars) instead of one blended mean: one per meeting or microphone,
+  // near-duplicates merged, at most a handful. voices.embedding stays as the weighted mean of them (what older versions
+  // read). weight = seconds of speech behind the print; channel = 'mic' | 'system' | '' (unknown); source = "<note>:<speaker>"
+  // so that confirming the same speaker twice replaces the print instead of counting it twice. negative = 1 marks a voice
+  // the user said is NOT this person (a corrected automatic link), see Speakers.rename.
+  // Existing profiles get one exemplar each from their mean, so they keep matching exactly as before.
+  `
+  CREATE TABLE voice_exemplars (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    voice_id TEXT NOT NULL REFERENCES voices(id) ON DELETE CASCADE,
+    embedding BLOB NOT NULL,
+    weight REAL NOT NULL DEFAULT 1,
+    channel TEXT NOT NULL DEFAULT '',
+    pitch REAL,
+    negative INTEGER NOT NULL DEFAULT 0,
+    source TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX voice_exemplars_voice ON voice_exemplars(voice_id);
+  INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at)
+    SELECT id, embedding, samples * 4.0, '', pitch, 0, NULL, updated_at FROM voices;
+  `,
+  // v7: how many other people the user says are on the call (the voices on the system audio). NULL = work it out.
+  `
+  ALTER TABLE notes ADD COLUMN speaker_count INTEGER;
+  `,
 ];
 
 function open(file) {

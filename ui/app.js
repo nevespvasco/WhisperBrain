@@ -30,6 +30,13 @@ export function applyTheme() {
   document.documentElement.dataset.theme = S.settings.theme;
   setLang(S.settings.language);
   appEl.classList.toggle('collapsed', !!S.settings.sidebarCollapsed);
+  const sk = $('.skip'); if (sk) sk.textContent = t('Skip to content');
+}
+
+// ---------- drawer (phone/tablet sidebar) ----------
+function setDrawer(open) {
+  appEl.classList.toggle('drawer', open);
+  $('[data-top="drawer"]')?.setAttribute('aria-expanded', String(open));
 }
 
 // ---------- routing ----------
@@ -46,13 +53,17 @@ async function route() {
   if (name === 'search') { openPalette(params.get('q') || ''); name = ''; }
   const view = ROUTES[name] || home;
   S.view = { name: name || 'home', parts, params };
-  appEl.classList.remove('drawer');
+  setDrawer(false);
   renderSidebar();
   main.scrollTop = 0;
+  const slow = setTimeout(() => { appEl.classList.add('loading'); main.setAttribute('aria-busy', 'true'); }, 220);
   try { await view.render(main, { parts, params, name }); } catch (e) {
     if (e instanceof ApiError && e.status === 404) { toast(t('That item no longer exists.'), { error: true }); go('#/'); return; }
     fail(e);
-    main.innerHTML = `<div class="page"><div class="banner danger mt">${icon('alert')}<div class="grow">${esc(e.message)}</div><a class="btn sm" href="#/">${t('Home')}</a></div></div>`;
+    main.innerHTML = `<div class="page"><div class="banner danger mt" role="alert">${icon('alert')}<div class="grow">${esc(e.message)}</div><a class="btn sm" href="#/">${t('Home')}</a></div></div>`;
+  } finally {
+    clearTimeout(slow);
+    appEl.classList.remove('loading'); main.removeAttribute('aria-busy');
   }
 }
 window.addEventListener('hashchange', route);
@@ -140,28 +151,45 @@ export function renderTopbar() {
   const rec = S.rec.active;
   const det = S.detector?.active && !rec;
   topbar.innerHTML = `
-    <button class="btn ghost icon menu-btn" data-top="drawer" aria-label="${t('Menu')}">${icon('menu')}</button>
+    <button class="btn ghost icon menu-btn" data-top="drawer" aria-label="${t('Menu')}" aria-controls="sidebar" aria-expanded="${appEl.classList.contains('drawer')}">${icon('menu')}</button>
     <button class="searchpill" data-top="search">${icon('search')}<span>${t('Search meetings, topics, people, quotes…')}</span><kbd>${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'} K</kbd></button>
     <span class="spacer"></span>
-    ${rec ? `<button class="live-ind" data-top="live"><span class="dot-rec"></span>${t('Recording')}</button>` : det ? `<button class="live-ind detected" data-top="detected">${icon('video', 'sm')}${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.[0] || t('Meeting'))} · ${t('live')}</button>` : ''}
+    ${rec ? `<button class="live-ind" data-top="live"><span class="dot-rec"></span><span class="t">${t('Recording')}</span></button>` : det ? `<button class="live-ind detected" data-top="detected" aria-label="${esc(`${PLATFORMS[S.detector.platform] || S.detector.apps?.[0] || t('Meeting')} · ${t('live')} — ${t('Take notes')}`)}">${icon('video', 'sm')}<span class="t">${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.[0] || t('Meeting'))} · ${t('live')}</span></button>` : ''}
     <button class="btn" data-top="import" title="${t('Import')}" aria-label="${t('Import')}">${icon('upload')}<span class="lbl-sm">${t('Import')}</span></button>
     ${rec ? '' : `<button class="btn primary" data-top="record">${icon('mic')}<span class="lbl-sm">${t('Record')}</span></button>`}`;
 }
 topbar.addEventListener('click', async (e) => {
   const a = e.target.closest('[data-top]')?.dataset.top;
   if (!a) return;
-  if (a === 'drawer') appEl.classList.toggle('drawer');
+  if (a === 'drawer') setDrawer(!appEl.classList.contains('drawer'));
   else if (a === 'search') openPalette();
   else if (a === 'import') openImport();
   else if (a === 'record') startRecording(null);
   else if (a === 'live') go(`#/note/${S.rec.noteId}`);
   else if (a === 'detected') takeNotesFor(S.detector.event ? { title: S.detector.event.summary, uid: S.detector.event.uid, start: S.detector.event.start, attendees: S.detector.event.attendees, platform: S.detector.platform } : { platform: S.detector.platform, title: S.detector.title || '' }, { record: true });
 });
-$('.scrim').addEventListener('click', () => appEl.classList.remove('drawer'));
+$('.scrim').addEventListener('click', () => setDrawer(false));
+
+// skip link: first stop for keyboard users (a button, so it never touches the hash router)
+const skip = document.createElement('button');
+skip.className = 'skip'; skip.type = 'button'; skip.textContent = t('Skip to content');
+skip.addEventListener('click', () => main.focus());
+document.body.prepend(skip);
 main.addEventListener('scroll', () => topbar.classList.toggle('scrolled', main.scrollTop > 4), { passive: true });
 
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && appEl.classList.contains('drawer')) { setDrawer(false); $('[data-top="drawer"]')?.focus(); return; }
+  const tab = e.target.closest?.('[role="tab"]');
+  if (tab && !e.metaKey && !e.ctrlKey && !e.altKey && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) {
+    const tabs = [...tab.closest('[role="tablist"]')?.querySelectorAll('[role="tab"]') || []];
+    if (tabs.length > 1) {
+      e.preventDefault();
+      const i = tabs.indexOf(tab);
+      tabs[e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length].focus();
+      return;
+    }
+  }
   const mod = e.metaKey || e.ctrlKey;
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); openPalette(); }

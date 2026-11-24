@@ -586,7 +586,8 @@ class Knowledge {
 }
 
 function noteText(notes, n) { return [n.title, n.title, n.body, n.summary, notes.segments(n.id).map((s) => s.text).join('\n')].join('\n'); }
-function excerpt(md) { return String(md || '').replace(/```[\s\S]*?```/g, ' ').replace(/[#>*_`\[\]|-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220); }
+// Card preview text: drops code and heading lines so the excerpt starts with the first real sentence, not the word "Summary".
+function excerpt(md) { return String(md || '').replace(/```[\s\S]*?```/g, ' ').replace(/^\s{0,3}#{1,6}\s.*$/gm, ' ').replace(/[#>*_`\[\]|-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 220); }
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 function normDue(d) { const s = String(d || '').trim(); return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''; }
 function sourceMatch(src, want) { return want === 'imported' ? !['recorded', 'manual'].includes(src) : want === 'local' ? ['recorded', 'manual'].includes(src) : src === want; }

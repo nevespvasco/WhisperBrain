@@ -52,7 +52,7 @@ function header() {
         <span>${icon('calendar', 'sm')}${fmtDate(n.createdAt)}</span><span>${icon('clock', 'sm')}${range}${c.durationMs ? ` (${fmtDur(c.durationMs)})` : ''}</span>
         ${n.platform ? `<span>${icon('video', 'sm')}${esc(PLATFORMS[n.platform] || n.platform)}</span>` : ''}
         <span title="${t('Source')}">${icon(SOURCES[n.source]?.icon || 'file', 'sm')}${t(SOURCES[n.source]?.label || n.source)}</span>
-        ${c.external != null ? `<button class="badge ${c.external ? 'info' : ''}" data-act="external" title="${t('Click to change')}" style="border:0;cursor:pointer">${c.external ? t('External') : t('Internal')}</button>` : `<button class="badge" data-act="external" style="border:0;cursor:pointer" title="${t('Mark as internal or external')}">${t('Internal / external?')}</button>`}
+        ${c.external != null ? `<button class="badge ${c.external ? 'info' : ''}" data-act="external" title="${t('Click to change')}">${c.external ? t('External') : t('Internal')}</button>` : `<button class="badge unset" data-act="external" title="${t('Mark as internal or external')}">${icon('globe', 'sm')}${t('Internal / external?')}</button>`}
         <select id="note-space" aria-label="${t('Space')}"><option value="">${t('No space')}</option>${S.spaces.map((x) => `<option value="${x.id}" ${x.id === n.folderId ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
         <span class="row wrap" style="gap:6px" id="tagrow">${N.tags.map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}<button class="linkish x" data-untag="${esc(tg.name)}" aria-label="${t('Remove')}">${icon('x', 'sm')}</button></span>`).join('')}<button class="btn xs ghost" data-act="add-tag">${icon('tag', 'sm')} ${t('Tag')}</button></span>
       </div>
@@ -101,7 +101,7 @@ function actionsHtml() {
       ${a.extUrl ? `<a href="${esc(a.extUrl)}" target="_blank" rel="noopener noreferrer" class="badge accent">${icon('link', 'sm')} ${esc(a.extId || 'Linear')}</a>` : ''}</div></div>
     <div class="tools">${!a.extUrl && S.integrations?.linear?.configured ? `<button class="btn ghost icon xs" data-act="a-linear" title="${t('Create a Linear issue')}">${icon('checksq', 'sm')}</button>` : ''}<button class="btn ghost icon xs" data-act="a-del" title="${t('Delete')}">${icon('trash', 'sm')}</button></div></div>`).join('');
   return `<div id="actlist">${rows || `<div class="muted small" style="padding:4px 0 8px">${t('No action items yet. Enhancing or analysing the meeting finds them; you can also add your own.')}</div>`}</div>
-    <form class="row mt-s" id="a-add"><input id="a-new" placeholder="${t('Add an action item… (use @name for the owner)')}" style="height:34px"><button class="btn sm">${icon('plus', 'sm')}</button></form>`;
+    <form class="row mt-s" id="a-add"><input id="a-new" placeholder="${t('Add an action item…')}" aria-label="${t('Add an action item… (use @name for the owner)')}" title="${t('Add an action item… (use @name for the owner)')}"><button class="btn icon soft" aria-label="${t('Add')}">${icon('plus', 'sm')}</button></form>`;
 }
 
 function transcriptTab(body) {
@@ -199,8 +199,13 @@ function renderAside() {
   if (!box) return;
   const sp = N.analytics.speakers;
   const attendees = N.note.attendees || [];
+  // How many other people are on the call: the speaker pass at Stop splits the call audio into exactly that many voices.
+  const count = N.note.source === 'recorded' ? `<div class="row" style="gap:8px;margin:0 0 10px" title="${t('How many other people talk on the call (not counting you). Set it before you press Stop: who said what is worked out when the recording ends.')}">
+      <label class="xsmall muted grow" for="sp-count">${t('Others on the call')}</label>
+      <select id="sp-count" style="width:auto"><option value="">${t('Auto')}</option>${Array.from({ length: 12 }, (_, i) => `<option value="${i + 1}" ${N.note.speakerCount === i + 1 ? 'selected' : ''}>${i + 1}</option>`).join('')}</select></div>` : '';
   box.innerHTML = `
     <section class="panel"><div class="panel-head"><h3>${icon('users')} ${t('Speakers')} <span class="badge">${sp.length}</span></h3></div>
+      ${count}
       ${sp.length ? `<table class="sp-table"><thead><tr><th>${t('Participant')}</th><th title="${t('Words per minute')}">WPM</th><th>${t('Talk')}</th><th>${t('Talk / listen')}</th></tr></thead><tbody>${sp.map((s) => `<tr>
         <td><div class="sp-name">${avatar(s.label, { cls: 'sm', color: speakerColor(s.speakerId, s.label) })}<div style="min-width:0"><b>${esc(s.label)}</b><span class="xsmall muted">${s.turns} ${t('turns')}${s.questions ? ` · ${s.questions} ?` : ''}</span></div></div></td>
         <td>${s.wpm || '—'}</td><td>${fmtDur(s.talkMs)}</td>
@@ -231,6 +236,7 @@ function bind(main) {
     try {
       if (e.target.matches('#tpl')) { N.note.templateId = e.target.value; await api('PATCH', `/api/notes/${N.id}`, { templateId: e.target.value }); }
       else if (e.target.matches('#note-space')) { await api('PATCH', `/api/notes/${N.id}`, { folderId: e.target.value || null }); N.note.folderId = e.target.value || null; window.dispatchEvent(new Event('wb:refresh')); done(t('Moved')); }
+      else if (e.target.matches('#sp-count')) { const v = e.target.value ? Number(e.target.value) : null; await api('PATCH', `/api/notes/${N.id}`, { speakerCount: v }); N.note.speakerCount = v; done(v ? t('Speakers will be split into {n} voices when the recording stops', { n: v }) : t('Saved')); }
       else if (e.target.matches('#importfile')) await importAudio(e.target.files[0]);
       else if (e.target.matches('.seg-reassign')) { await api('POST', `/api/notes/${N.id}/segments/${e.target.dataset.seg}/speaker`, { speakerId: e.target.value }); await reloadTranscript(); }
       else if (e.target.matches('.act-row .cbx')) { const row = e.target.closest('.act-row'); await api('PATCH', `/api/actions/${row.dataset.aid}`, { done: e.target.checked }); row.classList.toggle('done', e.target.checked); const a = N.actions.find((x) => x.id === row.dataset.aid); if (a) a.done = e.target.checked; window.dispatchEvent(new Event('wb:refresh')); }

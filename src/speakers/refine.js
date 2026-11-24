@@ -256,7 +256,9 @@ function findMerge(stats, threshold, ident = new Map()) {
 // speakers: [{ id, centroid?: Float32Array, count, name?, voiceId? }]   (the channel's current speakers)
 // -> { assignments: Map(segmentId -> speakerId) (changes only), speakers: [{ id, centroid, count, pitch, isNew }],
 //      removed: Map(speakerId -> mergedIntoId), stats: { moved, split, merged, described } }
-function refineChannel({ segments, speakers, prefix = 's', threshold = 0.6 }) {
+// structure: false when the number of speakers is settled (the user said how many people are on the call): no split
+// or merge, utterances are only re-assigned between the speakers there are.
+function refineChannel({ segments, speakers, prefix = 's', threshold = 0.6, structure = true }) {
   const segs = segments.map((s) => ({ ...s }));
   const hasAcoustics = zSpace(segs);
   const assign = new Map(segs.map((s) => [s.id, s.speakerId || null]));
@@ -270,7 +272,7 @@ function refineChannel({ segments, speakers, prefix = 's', threshold = 0.6 }) {
   // Structure first (on the online labels, which this pass has not yet bent), then re-assign utterances to the settled speakers.
   for (let round = 0; round < 3; round++) {
     let changed = false;
-    if (hasAcoustics) {
+    if (hasAcoustics && structure) {
       const st = groupStats(segs, assign, prior);
       for (const g of st.groups.values()) {
         const sp = trySplit(g, threshold);
@@ -318,7 +320,8 @@ const MIN_UTTERANCE_BYTES = 16000; // < 0.5 s of audio is not worth describing
 // Re-examine a finished note. refs say where each stored utterance's audio is: [{ segId, ch, from, to }] (sample
 // offsets); read(ch, from, to) returns that audio as s16le mono 16 kHz. Heavy, so it is cooperative: it yields to
 // the event loop between utterances and gives up describing more audio at `deadline` (labels are still refined).
-async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadline = Date.now() + 120000 }) {
+// settled: channels whose number of speakers must not change (see refineChannel's `structure`).
+async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadline = Date.now() + 120000, settled = [] }) {
   const rows = speakers.segmentVoices(noteId);
   const byId = new Map(rows.map((r) => [r.id, r]));
   let described = 0;
@@ -340,7 +343,7 @@ async function refineNote({ speakers, noteId, refs, read, threshold = 0.6, deadl
     const segments = rows.filter((r) => r.channel === channel);
     if (!segments.length) continue;
     const sp = current.filter((s) => s.channel === channel).map((s) => ({ id: s.speakerId, centroid: s.centroid, count: s.count, name: s.name, voiceId: s.voiceId }));
-    const res = refineChannel({ segments, speakers: sp, prefix, threshold });
+    const res = refineChannel({ segments, speakers: sp, prefix, threshold, structure: !settled.includes(channel) });
     speakers.applyRefinement(noteId, channel, res);
     out.moved += res.stats.moved; out.split += res.stats.split; out.merged += res.stats.merged;
   }

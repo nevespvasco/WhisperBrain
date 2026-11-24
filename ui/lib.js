@@ -50,7 +50,9 @@ const PALETTE = ['#7c5cff', '#ef6f6c', '#f59e0b', '#10b981', '#3b82f6', '#ec4899
 export function hashColor(s) { let h = 0; for (const c of String(s || '?')) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
 export function speakerColor(id, label) { if (!id || !/^[ms]\d+$/.test(id)) return hashColor(label || id); const n = id[0] === 'm' ? Number(id.slice(1)) - 1 : 2 + Number(id.slice(1)); return PALETTE[((n % PALETTE.length) + PALETTE.length) % PALETTE.length]; }
 export function initials(name) { const w = String(name || '?').trim().split(/\s+/).filter(Boolean); return ((w[0]?.[0] || '?') + (w.length > 1 ? w[w.length - 1][0] : w[0]?.[1] || '')).toUpperCase(); }
-export const avatar = (name, { cls = '', color } = {}) => `<span class="av ${cls}" style="background:${color || hashColor(name)}" title="${esc(name)}">${esc(initials(name))}</span>`;
+const lum = (hex) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
+export const inkOn = (hex) => (/^#[0-9a-f]{6}$/i.test(hex) && 1.05 / (lum(hex) + .05) < (lum(hex) + .05) / 0.06 ? '#1c1a29' : '#fff');
+export const avatar = (name, { cls = '', color } = {}) => { const bg = color || hashColor(name); return `<span class="av ${cls}" style="background:${bg};color:${inkOn(bg)}" title="${esc(name)}">${esc(initials(name))}</span>`; };
 export function avatarStack(names, max = 4) {
   if (!names?.length) return '';
   const shown = names.slice(0, max);

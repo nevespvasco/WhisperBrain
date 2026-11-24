@@ -5,7 +5,8 @@ const { words } = require('./text');
 const { defaultLabel } = require('../speakers/store');
 const { toBlob } = require('../speakers/cluster');
 
-const NOTE_COLS = 'id, title, body, summary, template_id, folder_id, status, pinned, event_uid, event_start, attendees, created_at, updated_at, started_at, ended_at, source, source_ref, platform, insights, external';
+const NOTE_COLS = 'id, title, body, summary, template_id, folder_id, status, pinned, event_uid, event_start, attendees, created_at, updated_at, started_at, ended_at, source, source_ref, platform, insights, external, speaker_count';
+const MAX_SPEAKER_COUNT = 12; // the most other people the user can say are on a call
 // Where a meeting came from. Recorded/manual live here; the rest arrived from outside.
 const SOURCES = ['recorded', 'manual', 'audio', 'file', 'notion', 'obsidian', 'linear', 'calendar'];
 
@@ -19,6 +20,7 @@ function rowToNote(r) {
     createdAt: r.created_at, updatedAt: r.updated_at, startedAt: r.started_at, endedAt: r.ended_at,
     source: r.source || 'recorded', sourceRef: r.source_ref || null, platform: r.platform || null,
     insights: parseJson(r.insights), external: r.external == null ? null : !!r.external,
+    speakerCount: r.speaker_count || null,
   };
 }
 function parseJson(s) { if (!s) return null; try { return JSON.parse(s); } catch { return null; } }
@@ -69,6 +71,11 @@ class Notes {
     if ('attendees' in patch) { sets.push('attendees = ?'); vals.push(JSON.stringify(patch.attendees || [])); }
     if ('insights' in patch) { sets.push('insights = ?'); vals.push(patch.insights ? JSON.stringify(patch.insights) : ''); }
     if ('external' in patch) { sets.push('external = ?'); vals.push(patch.external == null ? null : patch.external ? 1 : 0); }
+    if ('speakerCount' in patch) {
+      const n = patch.speakerCount == null || patch.speakerCount === '' ? null : Number(patch.speakerCount);
+      if (n !== null && !(Number.isInteger(n) && n >= 1 && n <= MAX_SPEAKER_COUNT)) throw new Error(`speakerCount must be 1-${MAX_SPEAKER_COUNT} or null`);
+      sets.push('speaker_count = ?'); vals.push(n);
+    }
     if ('source' in patch && !SOURCES.includes(patch.source)) throw new Error('invalid source');
     if (!sets.length) return cur;
     sets.push('updated_at = ?');

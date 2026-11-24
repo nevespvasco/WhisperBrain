@@ -43,13 +43,14 @@ async function play(rec, config, engine, models) {
   const warnings = [];
   bus.subscribe((e) => { if (e.type === 'recording.warning') warnings.push(e.data.message); });
   const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
-  settings.update(Object.fromEntries(Object.entries({ asrModel: 'parakeet-tdt-0.6b-v3', echoDedupe: false, ...config }).filter(([k]) => k in DEFAULTS)));
+  settings.update(Object.fromEntries(Object.entries({ asrModel: 'parakeet-tdt-0.6b-v3', echoDedupe: false, speakerCountHint: opt('--attendees', 0) > 0, ...config }).filter(([k]) => k in DEFAULTS)));
   const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-eval-'));
   const diarization = {};
   if (opt('--threshold')) diarization.threshold = Number(opt('--threshold'));
   if (opt('--window-shift')) diarization.windowShift = Number(opt('--window-shift'));
+  if (opt('--speakers')) diarization.numSpeakers = Number(opt('--speakers'));
   const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, diarization });
-  const note = notes.create({});
+  const note = notes.create({ attendees: Array.from({ length: Number(opt('--attendees', 0)) }, (_, i) => ({ name: `Person ${i + 1}`, email: `p${i + 1}@example.com`, status: 'ACCEPTED' })) });
   const pcm = Object.fromEntries(Object.entries(rec.channels).map(([ch, f]) => [ch, floatToPcm16(parseWav(fs.readFileSync(path.join(rec.dir, f))).samples)]));
   await mgr.start(note.id, { mic: !!pcm.mic, system: !!pcm.system });
   const t0 = Date.now();

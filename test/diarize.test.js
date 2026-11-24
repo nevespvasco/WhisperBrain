@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { hungarian } = require('../src/speakers/hungarian');
 const { toTimeline, assignWords, mapSpeakers, splitByWords, planChannel, soloStretches } = require('../src/speakers/diarize');
-const { diarizeChannel } = require('../src/speakers/final');
+const { diarizeChannel, foldStarved } = require('../src/speakers/final');
+const { expectedSpeakers, headCount } = require('../src/speakers/hint');
 const { score, wder, normalize } = require('../eval/metrics');
 const { open } = require('../src/core/db');
 const { Bus } = require('../src/core/events');
@@ -225,4 +226,42 @@ test('recording: a failing diarization leaves the live labels and still stops cl
   assert.match(warnings.join(), /speaker diarization \(system\): model missing/);
   assert.deepEqual(fs.readdirSync(spoolDir), []);
   fs.rmSync(spoolDir, { recursive: true, force: true });
+});
+
+test('expectedSpeakers: the attendees minus the user are the voices on the system channel; big or empty lists give no hint', () => {
+  const at = (n, extra = []) => [...Array.from({ length: n }, (_, i) => ({ name: `P${i}`, email: `p${i}@x.org`, status: 'ACCEPTED' })), ...extra];
+  assert.equal(expectedSpeakers({ attendees: at(4), channel: 'system' }), 3);
+  assert.equal(expectedSpeakers({ attendees: at(4), channel: 'mic' }), null, 'the microphone carries the user and the room: no hint');
+  assert.equal(expectedSpeakers({ attendees: at(2), channel: 'system' }), 1, 'a one-to-one call has one voice on the line');
+  assert.equal(expectedSpeakers({ attendees: at(1), channel: 'system' }), null, 'only the user: nothing to learn');
+  assert.equal(expectedSpeakers({ attendees: at(12), channel: 'system' }), null, 'a big meeting: nobody knows who speaks');
+  assert.equal(expectedSpeakers({ attendees: at(3, [{ name: 'Gone', email: 'g@x.org', status: 'DECLINED' }]), channel: 'system' }), 2, 'declined invitations are not counted');
+  assert.equal(headCount([{ email: 'A@x.org' }, { email: 'a@x.org' }, 'Bea', '']), 2, 'the same address twice is one person; blanks are nobody');
+  assert.equal(expectedSpeakers({ attendees: undefined, channel: 'system' }), null);
+});
+
+test('foldStarved: a voice with almost no speech joins its nearest neighbour; clear voices stay', () => {
+  const v = (k) => Float32Array.from({ length: 4 }, (_, i) => (i === k ? 1 : 0.1));
+  const res = {
+    turns: [{ start: 0, end: 60, speaker: 0 }, { start: 60, end: 120, speaker: 1 }, { start: 120, end: 122, speaker: 2 }],
+    voices: [{ speaker: 0, centroid: v(0) }, { speaker: 1, centroid: v(1) }, { speaker: 2, centroid: v(1) }],
+  };
+  const got = foldStarved(res, { minShare: 0.05, minSeconds: 8 });
+  assert.equal(got.folded, 1);
+  assert.deepEqual(got.turns.map((t) => t.speaker), [0, 1, 1]);
+  assert.deepEqual(got.voices.map((x) => x.speaker), [0, 1]);
+  assert.equal(foldStarved({ turns: res.turns.slice(0, 2), voices: res.voices.slice(0, 2) }, { minShare: 0.05, minSeconds: 8 }).folded, 0);
+});
+
+test('diarizeChannel: the calendar count is passed to the clustering as a soft hint and a starved extra voice is folded away', async () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, new Bus()), speakers = new Speakers(db, new Bus());
+  const n = notes.create({});
+  const [a] = notes.addSegments(n.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 60000, text: 'hello there', words: [['hello', 0, 400], ['there', 500, 900]] }]);
+  speakers.save(n.id, { speakerId: 's1', channel: 'system', centroid: Float32Array.from([1, 0, 0, 0]), count: 1 });
+  const seen = [];
+  const fake = async (o) => { seen.push(o.numSpeakers); return { turns: [{ start: 0, end: 60, speaker: 0 }, { start: 59, end: 60, speaker: 1 }], voices: [{ speaker: 0, centroid: Float32Array.from([1, 0, 0, 0]), pitch: 120, ms: 60000 }, { speaker: 1, centroid: Float32Array.from([0.9, 0.1, 0, 0]), pitch: 121, ms: 1000 }] }; };
+  const out = await diarizeChannel({ diarize: fake, notes, speakers, noteId: n.id, channel: 'system', source: { file: '/x' }, stretches: [{ at: 0, ms: 0 }], segIds: [a.id], segmentation: '/s', embedding: '/e', options: { expected: 2 } });
+  assert.deepEqual(seen, [2]);
+  assert.equal(out.speakers, 1, 'the one-second extra voice was folded into the first');
 });

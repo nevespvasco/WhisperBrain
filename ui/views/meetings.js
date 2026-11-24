@@ -15,10 +15,11 @@ export async function render(main, { params }) {
     <div class="toolbar">
       <div class="search-in">${icon('search', 'sm')}<input id="m-q" type="search" placeholder="${t('Filter meetings…')}" value="${esc(f.q)}"></div>
       <div class="seg-ctl" role="tablist" aria-label="${t('Source')}">${[['', t('All')], ['local', t('Recorded here')], ['imported', t('From outside')]].map(([v, l]) => `<button type="button" role="tab" data-src="${v}" aria-selected="${(f.source === v) || (v === 'imported' && !['', 'local', 'imported'].includes(f.source))}">${l}</button>`).join('')}</div>
+      <span class="newline"></span>
       <button class="btn sm" data-act="more-filters">${icon('filter', 'sm')} ${t('Filters')}${[f.tag, f.space, f.external, !['', 'local', 'imported'].includes(f.source) ? f.source : ''].filter(Boolean).length ? ` <span class="badge accent">${[f.tag, f.space, f.external, !['', 'local', 'imported'].includes(f.source) ? f.source : ''].filter(Boolean).length}</span>` : ''}</button>
       <button class="btn sm" data-act="sort">${icon('sort', 'sm')} ${{ newest: t('Newest'), oldest: t('Oldest'), title: t('Title') }[f.sort]}</button>
       <span class="grow"></span>
-      <button class="btn sm ghost" data-act="select">${icon('checksq', 'sm')} ${t('Select')}</button>
+      <button class="btn sm ghost" data-act="select" aria-label="${t('Select')}" title="${t('Select')}">${icon('checksq', 'sm')}<span class="lbl-sm">${t('Select')}</span></button>
       <div class="seg-ctl" role="tablist" aria-label="${t('View')}"><button type="button" role="tab" data-viewm="grid" aria-selected="${viewMode === 'grid'}" title="${t('Cards')}" aria-label="${t('Cards')}">${icon('layers', 'sm')}</button><button type="button" role="tab" data-viewm="list" aria-selected="${viewMode === 'list'}" title="${t('List')}" aria-label="${t('List')}">${icon('list', 'sm')}</button></div>
     </div>
     <div id="bulk" class="banner mb" hidden></div>

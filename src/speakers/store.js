@@ -1,7 +1,7 @@
 'use strict';
 const { newId } = require('../core/ids');
 const { tx } = require('../core/db');
-const { toBlob, fromBlob, blend, norm, mergeClusters, matchVoices } = require('./cluster');
+const { toBlob, fromBlob, norm, blend, mergeClusters, matchVoices, addPrint, populationMean, MATCH, MAX_REJECTS, VOICE_MEAN } = require('./cluster');
 const { semitones } = require('../audio/features');
 
 const PITCH_VETO = 4;   // semitones: two voices this far apart in pitch are never the same person
@@ -16,7 +16,7 @@ function defaultLabel(speakerId, channelSpeaker, userName = '') {
 }
 
 class Speakers {
-  constructor(db, bus) { this.db = db; this.bus = bus; }
+  constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.adapt = true; }   // mean: the average voice that prints are centred on, see cluster.js
 
   // ---- per-note speakers ----
   forNote(noteId) {
@@ -40,22 +40,40 @@ class Speakers {
   }
 
   // Name a speaker in one note. With remember=true the voice is saved (or reinforced) as a profile, so future
-  // meetings recognise this person automatically.
+  // meetings recognise this person automatically: the speaker's voice print is added to the profile as one more print
+  // (a speaker confirmed twice replaces its own print), weighted by the seconds this person spoke.
+  // Naming a speaker that was linked to a profile under another name is a correction: that profile is told "this voice
+  // is not you" (a rejected print, so the same wrong match is not made again) and the speaker goes with the new name.
+  // Only a link the user had already confirmed under that very name and now renames to a new name nobody has is read as
+  // renaming the profile itself.
   rename(noteId, speakerId, name, { remember = false } = {}) {
     const sp = this.forNote(noteId).find((s) => s.speakerId === speakerId);
     if (!sp) return null;
     const clean = String(name || '').trim().slice(0, 80);
+    const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
+    const source = `${noteId}:${speakerId}`;
     let voiceId = sp.voiceId;
+    const linked = voiceId && clean ? this.voice(voiceId) : null;
+    if (linked && !same(linked.name, clean)) {
+      const confirmedHere = sp.name && same(sp.name, linked.name);
+      if (!confirmedHere || this.voiceByName(clean)) {
+        if (sp.centroid) this.reject(linked.id, sp.centroid, source);
+        voiceId = null;
+      }
+    }
     if (remember && clean && sp.centroid) {
-      const existing = voiceId ? this.voice(voiceId) : this.voices().find((v) => v.name.toLowerCase() === clean.toLowerCase());
+      const existing = voiceId ? this.voice(voiceId) : this.voiceByName(clean);
+      const seconds = sp.talkMs > 0 ? sp.talkMs / 1000 : Math.max(1, sp.count) * 3;
+      const print = { embedding: sp.centroid, weight: Math.min(30, seconds), channel: sp.channel === 'mic' ? 'mic' : 'system', pitch: sp.pitch, source };
       if (existing) {
-        const emb = blend(existing.embedding, existing.samples, sp.centroid, Math.max(1, sp.count));
-        const pitch = existing.pitch && sp.pitch ? (existing.pitch * existing.samples + sp.pitch * Math.max(1, sp.count)) / (existing.samples + Math.max(1, sp.count)) : (sp.pitch || existing.pitch || null);
-        this.db.prepare('UPDATE voices SET name = ?, embedding = ?, samples = samples + ?, pitch = ?, updated_at = ? WHERE id = ?').run(clean, toBlob(emb), Math.max(1, sp.count), pitch, Date.now(), existing.id);
+        this.reinforce(existing.id, print, { name: clean, utterances: Math.max(1, sp.count) });
         voiceId = existing.id;
       } else {
         voiceId = newId();
-        this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now());
+        tx(this.db, () => {
+          this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now());
+          this.writePrints(voiceId, addPrint([], print));
+        });
       }
     }
     this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, noteId, speakerId);
@@ -146,18 +164,37 @@ class Speakers {
     this.bus?.publish('speakers.updated', { noteId });
   }
 
-  // Link unnamed speakers of a note to saved voices they sound like (each voice used once per note).
-  autoMatch(noteId, threshold = 0.65) {
+  // Link unnamed speakers of a note to the saved voices they sound like, each voice to at most one speaker. Speakers the user
+  // named are left alone; links made automatically earlier (live, on a few utterances) are judged again on what is known
+  // now, so a better voice print can correct a wrong guess. -> number of speakers linked.
+  autoMatch(noteId, threshold = MATCH.threshold, opts = {}) {
     const all = this.forNote(noteId);
-    const used = new Set(all.map((s) => s.voiceId).filter(Boolean));
-    const free = all.filter((s) => !s.voiceId && !s.name && s.centroid).map((s) => ({ id: s.speakerId, centroid: s.centroid }));
+    const used = new Set(all.filter((s) => s.name).map((s) => s.voiceId).filter(Boolean));
+    const free = all.filter((s) => !s.name && s.centroid);
     if (!free.length) return 0;
     const pitchOf = new Map(all.map((s) => [s.speakerId, s.pitch]));
     const voices = this.voices().filter((v) => !used.has(v.id));
-    const matches = matchVoices(free, voices, threshold, (s, v) => !(pitchOf.get(s.id) && v.pitch && semitones(pitchOf.get(s.id), v.pitch) > PITCH_VETO));
-    for (const [speakerId, { voiceId }] of matches) this.db.prepare('UPDATE note_speakers SET voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(voiceId, noteId, speakerId);
-    if (matches.size) this.bus?.publish('speakers.updated', { noteId });
+    const cands = free.map((s) => ({ id: s.speakerId, centroid: s.centroid, channel: s.channel }));
+    const matches = matchVoices(cands, voices, threshold, (s, v) => !(pitchOf.get(s.id) && v.pitch && semitones(pitchOf.get(s.id), v.pitch) > PITCH_VETO), { mu: this.channelMeans(), ...opts });
+    let changed = 0;
+    for (const s of free) {
+      const next = matches.get(s.speakerId)?.voiceId || null;
+      if (next === (s.voiceId || null)) continue;
+      this.db.prepare('UPDATE note_speakers SET voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(next, noteId, s.speakerId);
+      changed++;
+    }
+    if (changed) this.bus?.publish('speakers.updated', { noteId });
     return matches.size;
+  }
+
+  // The average voice of each channel, to centre voice prints on (see cluster.js): the shipped mean pulled towards the
+  // distinct voices heard on that channel so far, i.e. every speaker of every note and every saved print. -> channel -> mean
+  channelMeans() {
+    const per = { mic: [], system: [] };
+    for (const r of this.db.prepare('SELECT channel, centroid FROM note_speakers WHERE centroid IS NOT NULL ORDER BY rowid DESC LIMIT 800').all()) if (per[r.channel] && per[r.channel].length < 250) per[r.channel].push(fromBlob(r.centroid));
+    for (const r of this.db.prepare("SELECT channel, embedding FROM voice_exemplars WHERE negative = 0 AND channel != ''").all()) if (per[r.channel]) per[r.channel].push(fromBlob(r.embedding));
+    const mu = Object.fromEntries(Object.keys(per).map((ch) => [ch, this.adapt ? populationMean(per[ch], this.mean, MATCH.prior[ch]) : this.mean]));
+    return (channel) => mu[channel] || this.mean;
   }
 
   label(noteId, speakerId, channelSpeaker) {
@@ -166,13 +203,59 @@ class Speakers {
   }
 
   // ---- voice profiles ----
+  // A profile is its mean (voices.embedding, what older versions read) plus a few voice prints (voice_exemplars): one per
+  // kind of sound (a room microphone, a call), so a person who is heard both ways is recognised either way, and prints of
+  // voices the user said are not this person.
   voices() {
-    return this.db.prepare('SELECT id, name, embedding, samples, pitch, created_at AS createdAt FROM voices ORDER BY name COLLATE NOCASE').all()
-      .map((v) => ({ ...v, embedding: fromBlob(v.embedding) }));
+    const rows = this.db.prepare('SELECT id, name, embedding, samples, pitch, created_at AS createdAt FROM voices ORDER BY name COLLATE NOCASE').all();
+    const by = new Map();
+    for (const x of this.db.prepare('SELECT id, voice_id AS voiceId, embedding, weight, channel, pitch, negative, source FROM voice_exemplars ORDER BY id').all()) {
+      if (!by.has(x.voiceId)) by.set(x.voiceId, []);
+      by.get(x.voiceId).push({ id: x.id, embedding: fromBlob(x.embedding), weight: x.weight, channel: x.channel, pitch: x.pitch, negative: !!x.negative, source: x.source });
+    }
+    return rows.map((v) => ({ ...v, embedding: fromBlob(v.embedding), exemplars: by.get(v.id) || [] }));
   }
   voice(id) { return this.voices().find((v) => v.id === id) || null; }
+  voiceByName(name) { return this.voices().find((v) => v.name.toLowerCase() === String(name).toLowerCase()) || null; }
+
+  // Replace a voice's positive prints (rejected ones stay) and refresh the mean and pitch kept on the profile.
+  writePrints(voiceId, prints) {
+    this.db.prepare('DELETE FROM voice_exemplars WHERE voice_id = ? AND negative = 0').run(voiceId);
+    const ins = this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at) VALUES(?, ?, ?, ?, ?, 0, ?, ?)');
+    let mean = null, w = 0, pw = 0, pitch = 0;
+    for (const p of prints) {
+      ins.run(voiceId, toBlob(p.embedding), p.weight, p.channel || '', p.pitch || null, p.source || null, Date.now());
+      mean = mean ? blend(mean, w, p.embedding, p.weight) : norm(p.embedding);
+      w += p.weight;
+      if (p.pitch) { pitch += p.pitch * p.weight; pw += p.weight; }
+    }
+    if (mean) this.db.prepare('UPDATE voices SET embedding = ?, pitch = ? WHERE id = ?').run(toBlob(mean), pw ? pitch / pw : null, voiceId);
+  }
+
+  // Add what a speaker sounded like to a saved voice. print: { embedding, weight (seconds), channel, pitch, source }.
+  reinforce(voiceId, print, { name, utterances = 1 } = {}) {
+    const v = this.voice(voiceId);
+    if (!v) return false;
+    tx(this.db, () => {
+      const known = v.exemplars.filter((x) => !x.negative);
+      this.writePrints(voiceId, addPrint(known.length ? known : [{ embedding: v.embedding, weight: (v.samples || 1) * 4, channel: '', pitch: v.pitch, source: null }], print));
+      this.db.prepare('UPDATE voices SET name = ?, samples = samples + ?, updated_at = ? WHERE id = ?').run(name || v.name, utterances, Date.now(), voiceId);
+    });
+    return true;
+  }
+
+  // Remember that this voice print is NOT the saved voice (the user corrected an automatic link).
+  reject(voiceId, embedding, source) {
+    tx(this.db, () => {
+      if (source) this.db.prepare('DELETE FROM voice_exemplars WHERE voice_id = ? AND negative = 1 AND source = ?').run(voiceId, source);
+      this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at) VALUES(?, ?, 1, \'\', NULL, 1, ?, ?)').run(voiceId, toBlob(norm(embedding)), source || null, Date.now());
+      this.db.prepare('DELETE FROM voice_exemplars WHERE negative = 1 AND voice_id = ? AND id NOT IN (SELECT id FROM voice_exemplars WHERE negative = 1 AND voice_id = ? ORDER BY id DESC LIMIT ?)').run(voiceId, voiceId, MAX_REJECTS);
+    });
+  }
+
   publicVoices() {
-    return this.db.prepare(`SELECT v.id, v.name, v.samples, v.created_at AS createdAt, (SELECT COUNT(DISTINCT note_id) FROM note_speakers ns WHERE ns.voice_id = v.id) AS meetings FROM voices v ORDER BY v.name COLLATE NOCASE`).all();
+    return this.db.prepare(`SELECT v.id, v.name, v.samples, v.created_at AS createdAt, (SELECT COUNT(DISTINCT note_id) FROM note_speakers ns WHERE ns.voice_id = v.id) AS meetings,
+      (SELECT COUNT(*) FROM voice_exemplars e WHERE e.voice_id = v.id AND e.negative = 0) AS prints FROM voices v ORDER BY v.name COLLATE NOCASE`).all();
   }
   renameVoice(id, name) { return this.db.prepare('UPDATE voices SET name = ?, updated_at = ? WHERE id = ?').run(String(name).trim(), Date.now(), id).changes > 0; }
   removeVoice(id) { return this.db.prepare('DELETE FROM voices WHERE id = ?').run(id).changes > 0; }

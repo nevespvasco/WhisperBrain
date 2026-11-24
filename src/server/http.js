@@ -94,7 +94,7 @@ function createRoutes(app) {
   });
   add('POST', '/api/notes', async ({ body }) => app.notes.create({ source: 'manual', ...body }));
   add('GET', '/api/notes/:id', async ({ params }) => noteOr404(params.id));
-  add('PATCH', '/api/notes/:id', async ({ params, body }) => { noteOr404(params.id); return app.notes.update(params.id, body); });
+  add('PATCH', '/api/notes/:id', async ({ params, body }) => { noteOr404(params.id); try { return app.notes.update(params.id, body); } catch (e) { throw new HttpError(400, e.message); } });
   add('DELETE', '/api/notes/:id', async ({ params }) => {
     if (app.recording.status().noteId === params.id) throw new HttpError(409, 'stop the recording first');
     if (!app.notes.remove(params.id)) throw new HttpError(404, 'note not found');

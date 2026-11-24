@@ -24,8 +24,8 @@ export async function render(main) {
   const hasCal = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   main.innerHTML = `<div class="page">
     <div class="page-head hello"><div><h1>${greet}${S.settings.userName ? `, ${esc(S.settings.userName.split(' ')[0])}` : ''}</h1><div class="sub">${new Date().toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div></div>
+    ${S.detector?.active && !S.rec.active ? `<div class="banner ok mb" role="status">${icon('video')}<div class="grow"><b>${t('You are in a meeting')}</b><div class="small muted">${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.join(', ') || '')}${S.detector.event ? ' — ' + esc(S.detector.event.summary) : ''}</div></div><button class="btn sm primary" data-act="detected">${icon('mic', 'sm')} ${t('Take notes')}</button></div>` : ''}
     ${needModel ? `<div class="banner mb">${icon('mic')}<div class="grow"><b>${t('Set up on-device transcription')}</b><div class="small muted">${t('Download a speech model once. Audio never leaves this computer.')}</div></div><a class="btn sm primary" href="#/settings/audio">${t('Choose a model')}</a></div>` : ''}
-    ${S.detector?.active && !S.rec.active ? `<div class="banner ok mb">${icon('video')}<div class="grow"><b>${t('You are in a meeting')}</b><div class="small muted">${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.join(', ') || '')}${S.detector.event ? ' — ' + esc(S.detector.event.summary) : ''}</div></div><button class="btn sm primary" data-act="detected">${icon('mic', 'sm')} ${t('Take notes')}</button></div>` : ''}
     <div class="cols-main">
       <div class="stack loose">
         <section class="panel newmeeting">

@@ -6,6 +6,7 @@ const { EnergyEnvelope } = require('../audio/envelope');
 const { SpeakerTracker } = require('../speakers/cluster');
 const { refineNote } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
+const { expectedSpeakers } = require('../speakers/hint');
 const { Spool } = require('./spool');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
@@ -86,6 +87,7 @@ class RecordingManager {
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
       draft: null,                         // { requested, on, reason }: live draft captions for this recording (see applyDraft)
       drafts: { mic: null, system: null }, // the draft line on each channel right now: { startMs, text, shown, echo }. Never stored.
+      settled: new Set(),                  // channels whose number of speakers is known (user or calendar): refine keeps it
       recentSystem: [],                    // the last few final system segments, to tell a mic draft that merely echoes them
     };
     try {
@@ -168,11 +170,12 @@ class RecordingManager {
       return prev && seg.startMs - prev.endMs <= CARRY_MS ? prev.id : null;
     }
     const tr = a.trackers[ch];
+    if (ch === 'system') tr.max = this.notes.get(a.noteId)?.speakerCount || 0; // the user may set it while recording
     const r = tr.assign(embedding);
     const sp = tr.speakers.find((x) => x.id === r.id);
     this.speakers.save(a.noteId, { speakerId: r.id, channel: ch, centroid: sp.centroid, count: sp.count });
     // recognise saved voices as soon as a speaker appears, and again once we have heard them a bit more
-    if (r.isNew || sp.count === 3 || sp.count === 8) this.speakers.autoMatch(a.noteId, VOICE_MATCH);
+    if (r.isNew || sp.count === 3 || sp.count === 8) this.speakers.autoMatch(a.noteId);
     if (r.isNew) this.bus.publish('speakers.updated', { noteId: a.noteId });
     return r.id;
   }
@@ -359,10 +362,10 @@ class RecordingManager {
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
         if (s.speakerDiarize) diarized = await this.diarize(a, s);
         if (s.speakerRefine) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
-          try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
+          try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled] }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
-      try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId, VOICE_MATCH); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
     }
     this.closeSpools(a);
     this.active = null;
@@ -381,15 +384,21 @@ class RecordingManager {
     const m = this.models;
     const done = [];
     if (!m.segmentationInstalled?.() || !m.speakerInstalled?.()) return done;
+    const note = this.notes.get(a.noteId);
+    const attendees = s.speakerCountHint ? note?.attendees : null;
     for (const ch of Object.keys(a.spool)) {
       const spool = a.spool[ch];
       if (!spool || spool.broken || !spool.samples) continue;
       const refs = a.refs.filter((r) => r.ch === ch);
+      // the number of others on the call the user gave is forced on the system audio; the calendar is only a hint
+      const told = ch === 'system' && note?.speakerCount ? { numSpeakers: note.speakerCount } : null;
+      const expected = told ? null : expectedSpeakers({ attendees, channel: ch });
+      if (told || expected) a.settled.add(ch); // the head count is known: the acoustic pass must not change how many speakers there are
       try {
         const out = await diarizeChannel({
           diarize: this.diarization.run, notes: this.notes, speakers: this.speakers, noteId: a.noteId, channel: ch,
           source: { file: spool.file }, stretches: a.stretches[ch], segIds: refs.map((r) => r.segId),
-          segmentation: m.segmentationPath(), embedding: m.speakerPath(), threads: s.asrThreads, options: this.diarization,
+          segmentation: m.segmentationPath(), embedding: m.speakerPath(), threads: s.asrThreads, options: { ...(expected ? { expected } : {}), ...told, ...this.diarization },
         });
         // utterances that were cut keep pointing at their own audio, for the acoustic pass that may follow
         for (const [id, parts] of out?.splits || []) {
