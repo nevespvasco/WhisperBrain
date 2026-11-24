@@ -22,6 +22,14 @@ Then enhance the notes and chat with them using any LLM you choose.
 
 WhisperBrain is a meeting notepad that keeps everything on your computer. Audio is transcribed on-device with [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx), notes live in a local SQLite file, and the only text that ever leaves the machine goes to the LLM server **you** configure (Ollama, LM Studio, OpenRouter, or any OpenAI-compatible endpoint).
 
+<div align="center">
+
+![A meeting summary with overview, key points, speakers and topics](docs/screenshots/meeting-summary.png)
+
+![The transcript with each voice labelled, the timeline of who spoke, and dark mode](docs/screenshots/transcript.png)
+
+</div>
+
 ## Highlights
 
 <table>
@@ -205,7 +213,7 @@ Only three things differ per OS; everything else is shared code.
 | [Names from the meeting window](docs/meeting-names.md) | How speaker names are read from Meet, and what is verified |
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
-| [Plans](docs/plans.md) | Speaker-ID and translation ideas, not built yet |
+| [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |
 | [Testing](docs/testing.md) | What the 400+ tests cover |
 
 ## Development
