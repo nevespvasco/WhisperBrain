@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, run: npm run build:ax }
+          - { os: macos-14, run: npm run build:ax && npm run build:tap }
           - { os: windows-latest, run: 'powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/whisperbrain-uia.ps1 -Mode selftest' }
     runs-on: ${{ matrix.os }}
     steps:
@@ -37,6 +37,21 @@ jobs:
       - run: ${{ matrix.run }}
       - if: runner.os == 'macOS'
         run: ./build/ax/whisperbrain-ax windows | head -c 400
+      # The capture helpers cannot hear a call on a CI machine (no audio device, no permission), so what is checked here is what
+      # does not need one: that they build, that the conversion to 16 kHz mono s16 gives the right samples and pitch (selftest),
+      # that they say what they can do (probe), and that asking for a process that does not exist is refused cleanly (exit 2).
+      - if: runner.os == 'macOS'
+        run: |
+          ./build/tap/whisperbrain-tap selftest
+          ./build/tap/whisperbrain-tap probe
+          ./build/tap/whisperbrain-tap system --pid 999999 || test $? -eq 2
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/build-loopback.ps1
+          ./build/loopback/whisperbrain-loopback.exe selftest; if ($LASTEXITCODE -ne 0) { throw 'selftest failed' }
+          ./build/loopback/whisperbrain-loopback.exe probe
+          ./build/loopback/whisperbrain-loopback.exe system --pid 999999; if ($LASTEXITCODE -ne 2) { throw "expected exit 2, got $LASTEXITCODE" }
 
   dist:
     needs: test

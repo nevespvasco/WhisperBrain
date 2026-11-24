@@ -51,6 +51,8 @@ mac:
   extraResources:
     - from: build/ax/whisperbrain-ax
       to: bin/whisperbrain-ax
+    - from: build/tap/whisperbrain-tap
+      to: bin/whisperbrain-tap
   extendInfo:
     NSMicrophoneUsageDescription: WhisperBrain records your microphone to transcribe your meetings on this device.
     NSAudioCaptureUsageDescription: WhisperBrain captures system audio to transcribe the other side of your calls on this device.
@@ -63,6 +65,8 @@ win:
   extraResources:
     - from: native/windows/whisperbrain-uia.ps1
       to: bin/whisperbrain-uia.ps1
+    - from: build/loopback/whisperbrain-loopback.exe
+      to: bin/whisperbrain-loopback.exe
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
