@@ -54,6 +54,7 @@ const DEFAULTS = {
   captureCalendar: 'off',       // start recording when a calendar meeting starts: off | selected | all
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
+  consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
   secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
   google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] },
   notion: { token: '', parentId: '', parentKind: 'page', parentTitle: '', autoExport: false },
@@ -112,6 +113,7 @@ function validate(key, value) {
     return merged;
   }
   if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
+  if (key === 'consentPreset' && !require('../consent/notice').PRESETS.includes(value)) throw new Error('consentPreset must be general, eu or us');
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');

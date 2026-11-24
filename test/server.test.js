@@ -252,3 +252,15 @@ test('speakers: a line can be moved to a Discord person, and one speaker can be 
   await assert.rejects(merge('s9', 's1'), (e) => e.status === 409, 'unknown speakers, or voices that clearly differ, are refused');
   await assert.rejects(merge('s1', 'nope'), (e) => e.status === 400);
 });
+
+test('recording notice: text follows the language and preset (or the query), and a note remembers what was said', async (t) => {
+  const s = await boot(t);
+  assert.match((await s.json('GET', '/api/consent/notice')).text, /recording this meeting with WhisperBrain/);
+  await s.json('PUT', '/api/settings', { consentPreset: 'eu', language: 'pt' });
+  assert.match((await s.json('GET', '/api/consent/notice')).text, /apago/, 'defaults come from the settings');
+  assert.match((await s.json('GET', '/api/consent/notice?lang=en&preset=us')).text, /By staying on the call/, 'the query wins');
+  const n = await s.json('POST', '/api/notes', { title: 'Call' });
+  assert.equal(n.consent, 'unknown');
+  assert.equal((await s.json('PATCH', `/api/notes/${n.id}`, { consent: 'announced' })).consent, 'announced');
+  await assert.rejects(s.json('PATCH', `/api/notes/${n.id}`, { consent: 'whatever' }), (e) => e.status === 400);
+});

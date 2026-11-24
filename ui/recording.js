@@ -1,5 +1,6 @@
 // Recording state, the floating recording bar and taking notes for a meeting.
-import { S, $, api, t, esc, icon, toast, fail, go, fmtTimer } from './lib.js';
+import { S, $, api, t, esc, icon, toast, fail, go, fmtTimer, menu } from './lib.js';
+import { getConsent, setConsent, copyNotice } from './consent.js';
 import { startCapture, stopAllCapture } from './capture.js';
 
 const recbar = $('#recbar');
@@ -10,6 +11,7 @@ export async function startRecording(noteId, extra = {}) {
   try {
     const st = await api('POST', '/api/recording/start', noteId ? { noteId } : { templateId: S.settings.defaultTemplate, ...extra });
     S.rec = { active: true, noteId: st.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0 };
+    loadRecConsent(st.noteId);
     S.liveText = '';
     renderRecbar(); renderTop(); bump();
     if (!(S.view.name === 'note' && S.view.parts[1] === st.noteId)) go(`#/note/${st.noteId}?tab=transcript`);
@@ -48,6 +50,15 @@ function showDraft(d) {
   S.liveDraft = live ? `${live.speaker === 'me' ? t('Me') : t('Them')}: ${live.text}` : '';
 }
 
+// Were the others on the call told? Shown on the bar for the whole recording: a warning until it is dealt with.
+const CONSENT_LABEL = { unknown: 'Tell the others', announced: 'Others told', declined: 'Someone objected' };
+const consentChip = () => {
+  const c = S.rec.consent || 'unknown';
+  return `<button class="btn sm ${c === 'unknown' ? 'warn' : c === 'declined' ? 'danger' : 'ghost'}" data-rec="consent" title="${t('Were the other people on the call told this is being recorded?')}">${icon(c === 'announced' ? 'check' : 'alert', 'sm')} ${t(CONSENT_LABEL[c])}</button>`;
+};
+export function setRecConsent(consent) { if (S.rec.active) { S.rec.consent = consent; renderRecbar(); } }
+async function loadRecConsent(noteId) { try { setRecConsent(await getConsent(noteId)); } catch { /* the bar still shows the warning */ } }
+
 export function renderRecbar() {
   if (!S.rec.active) { recbar.hidden = true; return; }
   recbar.hidden = false;
@@ -56,13 +67,26 @@ export function renderRecbar() {
     <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? (S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…')) : S.rec.paused ? t('Paused') : S.liveDraft ? `<span class="draft">${esc(S.liveDraft)}</span>` : esc(S.liveText || t('Listening…'))}</a>
     <span class="lvl" title="${t('Microphone')}${S.rec.aec?.active ? ` · ${t('echo cancelled')}` : ''}">${icon('mic', 'sm')}${bars(S.level.mic)}</span><span class="lvl" title="${t('System audio')}">${icon('waves', 'sm')}${bars(S.level.system)}</span>
     <button class="btn sm icon" data-rec="pause" ${S.rec.finalizing ? 'disabled' : ''} title="${S.rec.paused ? t('Resume') : t('Pause')}" aria-label="${S.rec.paused ? t('Resume') : t('Pause')}">${icon(S.rec.paused ? 'play' : 'pause')}</button>
+    ${consentChip()}
     <button class="btn sm danger" data-rec="stop" ${S.rec.finalizing ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`;
 }
 recbar.addEventListener('click', async (e) => {
   const b = e.target.closest('[data-rec]');
   if (!b) return;
+  if (b.dataset.rec === 'consent') { consentMenu(b); return; }
   try { if (b.dataset.rec === 'stop') await stopRecording(); else await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`); } catch (err) { fail(err); }
 });
+function consentMenu(anchor) {
+  const id = S.rec.noteId;
+  const mark = (c) => () => setConsent(id, c).then(() => setRecConsent(c)).catch(fail);
+  menu(anchor, [
+    { label: t('Copy notice for the meeting chat'), icon: 'copy', run: () => copyNotice(id).then(() => { toast(t('Notice copied: paste it into the meeting chat.'), { ok: true }); setRecConsent('announced'); }).catch(fail) },
+    { label: t('I told them'), icon: 'check', selected: S.rec.consent === 'announced', run: mark('announced') },
+    { label: t('Someone objected'), icon: 'alert', selected: S.rec.consent === 'declined', run: mark('declined') },
+    'sep',
+    { label: t('Stop recording'), icon: 'stop', danger: true, run: () => stopRecording().catch(fail) },
+  ]);
+}
 setInterval(() => {
   if (S.rec.active && !S.rec.paused && !S.rec.finalizing && S.rec.base) {
     S.rec.elapsedMs = (S.rec.baseMs || 0) + (Date.now() - S.rec.base);
@@ -74,6 +98,7 @@ export function syncRec(st) {
   if (st?.active) S.rec = { active: true, noteId: st.noteId, paused: st.paused, finalizing: st.finalizing, stage: st.stage || null, baseMs: st.elapsedMs, base: Date.now(), elapsedMs: st.elapsedMs, aec: st.echo?.cancellation || null };
   else S.rec = { active: false };
   renderRecbar(); renderTop();
+  if (st?.active) loadRecConsent(st.noteId);
 }
 
 export async function handleCaptureRequest(d) {
@@ -89,7 +114,7 @@ export async function handleCaptureRequest(d) {
 export function recEvents({ renderTopbar }) {
   renderTop = renderTopbar;
   return {
-    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0, aec: d.echoCancellation || null }; S.liveText = ''; S.liveDraft = ''; renderRecbar(); renderTopbar(); bump(); },
+    'recording.started': (d) => { S.rec = { active: true, noteId: d.noteId, paused: false, baseMs: 0, base: Date.now(), elapsedMs: 0, aec: d.echoCancellation || null }; S.liveText = ''; S.liveDraft = ''; renderRecbar(); renderTopbar(); bump();  loadRecConsent(d.noteId); },
     'recording.paused': () => { S.liveDraft = ''; S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; renderRecbar(); },
     'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); renderRecbar(); },
     'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d?.stage || null; renderRecbar(); },

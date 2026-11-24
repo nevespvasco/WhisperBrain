@@ -6,6 +6,7 @@ import { setLang, t } from './i18n.js';
 import { esc } from './md.js';
 import { icon } from './icons.js';
 import { speakerColor, fmtTimer } from './lib.js';
+import { getConsent, setConsent, copyNotice } from './consent.js';
 
 const root = document.getElementById('w');
 const bridge = window.wbWidget || null; // present only inside the desktop app
@@ -40,6 +41,21 @@ function linesHtml() {
   }).join('');
 }
 
+// Were the others on the call told it is recorded? A strip in the card (and a mark on the pill) until it is dealt with.
+const consentUnknown = () => S.rec.active && (S.rec.consent || 'unknown') === 'unknown';
+function consentStrip() {
+  if (!S.rec.active || S.rec.finalizing) return '';
+  const c = S.rec.consent || 'unknown';
+  if (c === 'announced') return `<div class="consent ok">${icon('check', 'sm')} ${esc(t('Others told'))}</div>`;
+  if (c === 'declined') return `<div class="consent bad">${icon('alert', 'sm')} ${esc(t('Someone objected'))}</div>`;
+  return `<div class="consent">${icon('alert', 'sm')}<span class="grow">${esc(t('Do the others on the call know?'))}</span>
+    <button class="btn sm" data-act="copy-notice">${icon('copy', 'sm')} ${esc(t('Copy notice'))}</button><button class="btn sm ghost" data-act="told">${esc(t('I told them'))}</button></div>`;
+}
+async function loadConsent() {
+  if (!S.rec.active || !S.rec.noteId) return;
+  try { S.rec.consent = await getConsent(S.rec.noteId); draw(); } catch { /* shows the warning */ }
+}
+
 function render() {
   const state = stateOf();
   root.dataset.state = state;
@@ -47,6 +63,7 @@ function render() {
     root.innerHTML = `<div class="pill" data-drag data-act="expand" role="button" tabindex="0" aria-label="${esc(t('Show live transcript'))}" title="${esc(t('Show live transcript'))}">
       <span class="dot"></span><span class="time">${fmtTimer(S.rec.elapsedMs || 0)}</span>
       ${state === 'recording' ? bars(Math.max(S.level.mic, S.level.system)) : `<span class="state">${esc(statusText())}</span>`}
+      ${consentUnknown() ? `<span class="warnmark" title="${esc(t('Were the other people on the call told this is being recorded?'))}">${icon('alert', 'sm')}</span>` : ''}
       <span class="grow"></span><span class="chev">${icon('chevdown', 'sm')}</span></div>`;
     return;
   }
@@ -58,6 +75,7 @@ function render() {
       <button class="btn sm icon ghost" data-act="open" title="${esc(t('Open WhisperBrain'))}" aria-label="${esc(t('Open WhisperBrain'))}">${icon('external', 'sm')}</button>
       <button class="btn sm icon ghost" data-act="collapse" title="${esc(t('Minimise'))}" aria-label="${esc(t('Minimise'))}">${icon('chevdown', 'sm')}</button></header>
     <div class="lines">${linesHtml()}</div>
+    ${consentStrip()}
     <footer>
       <button class="btn sm" data-act="pause" ${busy ? 'disabled' : ''}>${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button>
       <button class="btn sm stop" data-act="stop" ${busy ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>
@@ -96,14 +114,14 @@ function setRec(st) {
 async function sync() {
   try {
     setRec(await api('GET', '/api/recording'));
-    if (S.rec.active) await loadLines(); else S.lines = [];
+    if (S.rec.active) { await loadLines(); loadConsent(); } else S.lines = [];
     draw();
   } catch { /* the server is restarting */ }
 }
 
 events({
   open: sync,
-  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0 }); S.lines = []; S.drafts = {}; draw(); },
+  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0 }); S.lines = []; S.drafts = {}; draw(); loadConsent(); },
   'recording.paused': () => { S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; draw(); },
   'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); draw(); },
   'recording.finalizing': (d) => { S.rec.finalizing = true; S.rec.stage = d.stage || null; draw(); },
@@ -174,6 +192,8 @@ root.addEventListener('click', async (e) => {
   try {
     if (b.dataset.act === 'collapse') setExpanded(false);
     else if (b.dataset.act === 'open') { if (bridge) bridge.openApp(S.rec.noteId || ''); else window.open(`/#/note/${S.rec.noteId || ''}`, '_blank'); }
+    else if (b.dataset.act === 'copy-notice') { await copyNotice(S.rec.noteId); S.rec.consent = 'announced'; draw(); }
+    else if (b.dataset.act === 'told') { await setConsent(S.rec.noteId, 'announced'); S.rec.consent = 'announced'; draw(); }
     else if (b.dataset.act === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
     else if (b.dataset.act === 'stop') { b.disabled = true; await api('POST', '/api/recording/stop'); }
   } catch { b.disabled = false; }

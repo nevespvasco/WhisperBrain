@@ -69,20 +69,22 @@ export const PLATFORMS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Microsoft 
 export const srcIcon = (src) => `<span class="srcicon" title="${esc(t(SOURCES[src]?.label || src))}">${icon(SOURCES[src]?.icon || 'file')}</span>`;
 
 // ---------- toasts ----------
-export function toast(message, { error = false, ok = false, actions = [], timeout = 6000, iconName } = {}) {
+// sticky: no close button and no timeout; it goes away only when one of its actions is used
+export function toast(message, { error = false, ok = false, actions = [], timeout = 6000, iconName, sticky = false } = {}) {
   const el = document.createElement('div');
   el.className = `toast${error ? ' error' : ''}${ok ? ' ok' : ''}`;
   el.setAttribute('role', error ? 'alert' : 'status');
-  el.innerHTML = `<div class="msg"><span class="ti">${icon(iconName || (error ? 'alert' : ok ? 'ok' : 'info'))}</span><div class="grow">${esc(message)}</div><button class="btn ghost icon xs" aria-label="${t('Dismiss')}">${icon('x', 'sm')}</button></div>`;
-  el.querySelector('.msg button').onclick = () => el.remove();
+  el.innerHTML = `<div class="msg"><span class="ti">${icon(iconName || (error ? 'alert' : ok ? 'ok' : 'info'))}</span><div class="grow">${esc(message)}</div>${sticky ? '' : `<button class="btn ghost icon xs" aria-label="${t('Dismiss')}">${icon('x', 'sm')}</button>`}</div>`;
+  if (!sticky) el.querySelector('.msg button').onclick = () => el.remove();
   if (actions.length) {
     const row = document.createElement('div'); row.className = 'row';
     for (const a of actions) { const b = document.createElement('button'); b.className = `btn sm${a.primary ? ' primary' : ''}`; b.textContent = a.label; b.onclick = () => { el.remove(); a.run(); }; row.append(b); }
     el.append(row);
   }
   $('#toasts').append(el);
-  while ($('#toasts').children.length > 4) $('#toasts').firstElementChild.remove();
-  if (timeout) setTimeout(() => el.remove(), timeout);
+  while ($('#toasts').children.length > 4) ($('#toasts').querySelector('.toast:not(.sticky)') || $('#toasts').firstElementChild).remove();
+  if (timeout && !sticky) setTimeout(() => el.remove(), timeout);
+  if (sticky) el.classList.add('sticky');
   return el;
 }
 export const fail = (e) => { console.error(e); return toast(e instanceof Error ? e.message : String(e), { error: true, timeout: 9000 }); };

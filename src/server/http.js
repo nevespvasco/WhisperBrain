@@ -12,6 +12,9 @@ const COOKIE = 'wb_token';
 const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
 
+const { noticeText } = require('../consent/notice');
+const noticeRoute = (app, query) => ({ text: noticeText({ preset: query.preset || app.settings.get('consentPreset'), lang: query.lang || app.settings.get('language') }) });
+
 // speaker ids: m1 (microphone), s1 (system audio), d<snowflake> (a person on Discord)
 const SPEAKER_ID = /^(?:[ms]\d{1,3}|d\d{1,24})$/;
 
@@ -149,6 +152,9 @@ function createRoutes(app) {
     q: query.q || '', scope: query.scope || 'all', folderId: query.space || undefined, from: query.from, to: query.to,
     speaker: query.speaker || undefined, attendee: query.attendee || undefined, has: query.has || undefined, limit: Number(query.limit) || 50,
   }).map((r) => ({ ...r.note, snippet: r.snippet, quotes: r.quotes })));
+
+  // the "this call is recorded" notice, to paste into the meeting chat
+  add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));
 
   // speakers (who is talking) and saved voices
   add('GET', '/api/notes/:id/speakers', async ({ params }) => { noteOr404(params.id); return app.speakers.publicForNote(params.id, app.settings.get('userName')); });

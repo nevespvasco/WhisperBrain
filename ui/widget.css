@@ -37,3 +37,10 @@ body.widget { margin: 0; padding: 8px; user-select: none; -webkit-user-select: n
 .card footer { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line); background: var(--sunken); }
 .card footer .btn { flex: 1; justify-content: center; cursor: pointer; }
 .btn.stop { color: var(--danger); }
+
+.pill .warnmark { color: var(--warn); display: inline-flex; }
+.card .consent { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); background: var(--warn-soft); font-size: 12.5px; font-weight: 600; }
+.card .consent .grow { flex: 1; }
+.card .consent.ok { background: var(--ok-soft); color: var(--ok); }
+.card .consent.bad { background: var(--danger-soft); color: var(--danger); }
+.card .consent .btn { cursor: pointer; }

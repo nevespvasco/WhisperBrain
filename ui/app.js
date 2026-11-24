@@ -1,7 +1,8 @@
 import { S, $, $$, api, t, esc, icon, toast, fail, go, avatar, debounce, menu, menuIsOpen, promptDialog, confirmDialog, PLATFORMS } from './lib.js';
 import { setLang } from './i18n.js';
 import { events, ApiError } from './api.js';
-import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recEvents } from './recording.js';
+import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recEvents, setRecConsent } from './recording.js';
+import { copyNotice, setConsent } from './consent.js';
 import { openPalette } from './palette.js';
 import { openImport, openExport } from './views/transfer.js';
 import * as home from './views/home.js';
@@ -229,7 +230,16 @@ function connectEvents() {
         { label: t('Not now'), run: () => {} }] });
     },
     'meeting.ended': () => { S.detector = { active: false }; renderTopbar(); if (S.rec.active) toast(t('The call ended. Stop recording?'), { timeout: 20000, actions: [{ label: t('Stop'), primary: true, run: () => stopRecording().catch(fail) }, { label: t('Keep recording'), run: () => {} }] }); },
-    'meeting.autostarted': (d) => { toast(t('Recording started automatically'), { ok: true }); bump(); if (d.noteId) go(`#/note/${d.noteId}`); },
+    // A recording that started by itself is announced until the person has dealt with the others: told them (copy the
+    // notice, or say so), or stopped it. The toast has no close button on purpose.
+    'meeting.autostarted': (d) => {
+      toast(t('Recording started automatically. Do the others on the call know?'), { ok: true, sticky: true, actions: [
+        { label: t('Copy notice for the chat'), primary: true, run: () => copyNotice(d.noteId).then(() => { toast(t('Notice copied: paste it into the meeting chat.'), { ok: true }); setRecConsent('announced'); }).catch(fail) },
+        { label: t('I told them'), run: () => setConsent(d.noteId, 'announced').then(() => setRecConsent('announced')).catch(fail) },
+        { label: t('Stop recording'), run: () => stopRecording().catch(fail) },
+      ] });
+      bump(); if (d.noteId) go(`#/note/${d.noteId}`);
+    },
     'meeting.autostart-failed': (d) => fail(d.message),
     'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Dismiss'), run: () => {} }] }); },
     'model.installed': async () => { S.state = await api('GET', '/api/state'); S.models = await api('GET', '/api/models'); },
