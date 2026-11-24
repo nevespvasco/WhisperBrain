@@ -1,7 +1,7 @@
 // Home: start a meeting (online / in person / upload), recent meetings, today's calendar with auto-capture
 // toggles, and open action items.
-import { S, $, $$, api, t, esc, icon, fail, go, meetingCard, fmtHour, dayStart, relDay, switchEl, menu, done, empty, PLATFORMS, loc } from '../lib.js';
-import { startRecording, takeNotesFor } from '../recording.js';
+import { S, $, $$, api, t, esc, icon, fail, go, meetingCard, fmtHour, dayStart, relDay, switchEl, menu, done, empty, PLATFORMS, callLabel, loc } from '../lib.js';
+import { startRecording, takeNotesFor, recordDetected } from '../recording.js';
 import { openImport } from './transfer.js';
 
 const platformFromUrl = (u) => (/meet\.google/.test(u) ? 'meet' : /zoom\.us/.test(u) ? 'zoom' : /teams\.(microsoft|live)/.test(u) ? 'teams' : /webex/.test(u) ? 'webex' : /whereby/.test(u) ? 'whereby' : /jit\.si|jitsi/.test(u) ? 'jitsi' : null);
@@ -24,7 +24,7 @@ export async function render(main) {
   const hasCal = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   main.innerHTML = `<div class="page">
     <div class="page-head hello"><div><h1>${greet}${S.settings.userName ? `, ${esc(S.settings.userName.split(' ')[0])}` : ''}</h1><div class="sub">${new Date().toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div></div>
-    ${S.detector?.active && !S.rec.active ? `<div class="banner ok mb" role="status">${icon('video')}<div class="grow"><b>${t('You are in a meeting')}</b><div class="small muted">${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.join(', ') || '')}${S.detector.event ? ' — ' + esc(S.detector.event.summary) : ''}</div></div><button class="btn sm primary" data-act="detected">${icon('mic', 'sm')} ${t('Take notes')}</button></div>` : ''}
+    ${S.detector?.active && !S.rec.active ? `<div class="banner ok mb" role="status">${icon('video')}<div class="grow"><b>${t('You are in a meeting')}</b><div class="small muted">${esc(callLabel(S.detector) || S.detector.apps?.join(', ') || '')}${S.detector.event ? ' — ' + esc(S.detector.event.summary) : ''}</div></div><button class="btn sm primary" data-act="detected">${icon('mic', 'sm')} ${t('Take notes')}</button></div>` : ''}
     ${needModel ? `<div class="banner mb">${icon('mic')}<div class="grow"><b>${t('Set up on-device transcription')}</b><div class="small muted">${t('Download a speech model once. Audio never leaves this computer.')}</div></div><a class="btn sm primary" href="#/settings/audio">${t('Choose a model')}</a></div>` : ''}
     <div class="cols-main">
       <div class="stack loose">
@@ -68,7 +68,7 @@ export async function render(main) {
     try {
       if (a === 'rec') startRecording(null);
       else if (a === 'import') openImport();
-      else if (a === 'detected') takeNotesFor(S.detector.event ? { title: S.detector.event.summary, uid: S.detector.event.uid, start: S.detector.event.start, attendees: S.detector.event.attendees, platform: S.detector.platform } : { platform: S.detector.platform }, { record: true });
+      else if (a === 'detected') recordDetected(S.detector);
       else if (a === 'capture') {
         const set = async (v) => { S.settings = await api('PUT', '/api/settings', { captureCalendar: v }); render(main); };
         menu(e.target.closest('button'), [

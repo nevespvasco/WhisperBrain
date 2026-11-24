@@ -137,6 +137,10 @@ const FORMATS = [
 // ids: one note id (single) or many; with none, everything.
 export async function openExport(ids = null) {
   const ints = await integrations().catch(() => ({}));
+  // with translation on, an export can carry a translation: the languages chosen in Settings → Translation
+  const langs = S.settings?.translation?.enabled ? S.settings.translation.targets : [];
+  if (langs.length) S.languages ||= await api('GET', '/api/languages').catch(() => []);
+  const langName = (c) => S.languages?.find((l) => l.code === c)?.name || c;
   const single = Array.isArray(ids) && ids.length === 1 ? ids[0] : typeof ids === 'string' ? ids : null;
   const many = single ? null : (Array.isArray(ids) ? ids : []);
   const dests = [
@@ -153,6 +157,9 @@ export async function openExport(ids = null) {
     body: `<div class="field"><span class="lbl">${t('Where to')}</span><div class="opt-grid">${dests.map(([k, l, ic, s]) => `<button type="button" class="opt ${k === 'download' ? 'on' : ''}" data-dest="${esc(k)}" ${(['notion', 'obsidian', 'linear'].includes(k) && !ints[k]?.configured) ? 'data-off="1"' : ''}>${icon(ic)}<b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div></div>
       <div class="field" id="fmt-field"><span class="lbl">${t('Format')}</span><div class="opt-grid">${FORMATS.filter(([k]) => single || k !== 'pdf').map(([k, l, ic, s]) => `<button type="button" class="opt ${k === 'md' ? 'on' : ''}" data-fmt="${k}" ${k === 'pdf' && !S.state?.pdf ? 'title="' + t('Uses the print dialog in the browser') + '"' : ''}>${icon(ic)}<b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div></div>
       <div id="linear-opts" hidden class="stack"><div class="seg-ctl" role="tablist"><button type="button" role="tab" data-lmode="issue" aria-selected="true">${t('One issue with the summary')}</button><button type="button" role="tab" data-lmode="actions" aria-selected="false">${t('An issue per open action item')}</button></div></div>
+      ${langs.length ? `<div class="field"><span class="lbl">${t('Translation')}</span><div class="row" style="gap:8px"><select id="exp-lang" aria-label="${esc(t('Language'))}"><option value="">${t('Original only')}</option>${langs.map((c) => `<option value="${esc(c)}">${esc(langName(c))}</option>`).join('')}</select>
+        <select id="exp-mode" aria-label="${esc(t('Show'))}" hidden><option value="both">${t('Under the original')}</option><option value="translation">${t('Instead of the original')}</option></select></div>
+        <span class="xsmall muted">${t('Lines that are not translated yet stay as said.')}</span></div>` : ''}
       <label class="check"><input type="checkbox" id="exp-tr" checked> ${t('Include the transcript')}</label>`,
     foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" id="exp-go">${icon('share', 'sm')} ${t('Export')}</button>`,
     onMount: (d, close) => {
@@ -170,12 +177,14 @@ export async function openExport(ids = null) {
         const lm = e.target.closest('[data-lmode]');
         if (lm) { lmode = lm.dataset.lmode; $$('[data-lmode]', d).forEach((x) => x.setAttribute('aria-selected', String(x === lm))); }
       });
+      $('#exp-lang', d)?.addEventListener('change', (e) => { $('#exp-mode', d).hidden = !e.target.value; });
       $('#exp-go', d).onclick = async () => {
         const tr = $('#exp-tr', d).checked;
+        const lang = $('#exp-lang', d)?.value, tx = lang ? { lang, translation: $('#exp-mode', d).value } : {};
         const btn = $('#exp-go', d); btn.disabled = true;
         try {
-          if (single) await exportOne(single, { dest, fmt, tr, lmode });
-          else await exportMany(many, { dest, fmt, tr });
+          if (single) await exportOne(single, { dest, fmt, tr, lmode, tx });
+          else await exportMany(many, { dest, fmt, tr, tx });
           close();
         } catch (e) { fail(e); btn.disabled = false; }
       };
@@ -183,10 +192,10 @@ export async function openExport(ids = null) {
   });
 }
 
-async function exportOne(id, { dest, fmt, tr, lmode }) {
-  const q = `transcript=${tr ? 1 : 0}`;
+async function exportOne(id, { dest, fmt, tr, lmode, tx = {} }) {
+  const q = `transcript=${tr ? 1 : 0}${tx.lang ? `&lang=${encodeURIComponent(tx.lang)}&translation=${tx.translation}` : ''}`;
   if (dest === 'download') {
-    if (fmt === 'pdf' && !S.state?.pdf) return printNote(id, tr);
+    if (fmt === 'pdf' && !S.state?.pdf) return printNote(id, tr, q);
     const name = await download(`/api/notes/${id}/export?format=${fmt}&${q}`);
     return done(t('Saved {name}', { name }));
   }
@@ -203,16 +212,16 @@ async function exportOne(id, { dest, fmt, tr, lmode }) {
     location.href = `mailto:${encodeURIComponent(emails)}?subject=${encodeURIComponent(n.title || t('Meeting notes'))}&body=${encodeURIComponent(r.text.slice(0, 15000))}`;
     return null;
   }
-  if (dest === 'print') return printNote(id, tr);
-  if (dest.startsWith('hook:')) { await api('POST', `/api/notes/${id}/send`, { target: 'webhook', webhookId: dest.slice(5), transcript: tr }); return done(t('Sent')); }
-  const r = await api('POST', `/api/notes/${id}/send`, { target: dest, transcript: tr, mode: lmode });
+  if (dest === 'print') return printNote(id, tr, q);
+  if (dest.startsWith('hook:')) { await api('POST', `/api/notes/${id}/send`, { target: 'webhook', webhookId: dest.slice(5), transcript: tr, ...tx }); return done(t('Sent')); }
+  const r = await api('POST', `/api/notes/${id}/send`, { target: dest, transcript: tr, mode: lmode, ...tx });
   bump();
   if (dest === 'linear' && r.issues?.length > 1) return toast(t('{n} Linear issues created', { n: r.issues.length }), { ok: true });
   return toast(t('Exported to {dest}', { dest: dest[0].toUpperCase() + dest.slice(1) }), { ok: true, actions: r.url ? [{ label: t('Open'), run: () => window.open(r.url, '_blank') }] : [] });
 }
 
-async function printNote(id, tr) {
-  const r = await api('GET', `/api/notes/${id}/export?format=html&inline=1&transcript=${tr ? 1 : 0}`);
+async function printNote(id, tr, q = `transcript=${tr ? 1 : 0}`) {
+  const r = await api('GET', `/api/notes/${id}/export?format=html&inline=1&${q}`);
   const blob = new Blob([r.text], { type: 'text/html' });
   const frame = document.createElement('iframe');
   frame.style.cssText = 'position:fixed;width:0;height:0;border:0;right:0;bottom:0';
@@ -221,11 +230,11 @@ async function printNote(id, tr) {
   frame.onload = () => { try { frame.contentWindow.print(); } catch { window.open(frame.src, '_blank'); } setTimeout(() => { URL.revokeObjectURL(frame.src); frame.remove(); }, 60000); };
 }
 
-async function exportMany(ids, { dest, fmt, tr }) {
-  if (dest === 'download') { const name = await postDownload('/api/export', { ids, format: fmt, transcript: tr }, 'whisperbrain.zip'); return done(t('Saved {name}', { name })); }
+async function exportMany(ids, { dest, fmt, tr, tx = {} }) {
+  if (dest === 'download') { const name = await postDownload('/api/export', { ids, format: fmt, transcript: tr, ...tx }, 'whisperbrain.zip'); return done(t('Saved {name}', { name })); }
   const all = ids.length ? ids : (await api('GET', '/api/meetings?limit=5000')).map((n) => n.id);
   const body = dest.startsWith('hook:') ? { target: 'webhook', webhookId: dest.slice(5) } : { target: dest };
-  const r = await api('POST', '/api/send', { ids: all, ...body, transcript: tr });
+  const r = await api('POST', '/api/send', { ids: all, ...body, transcript: tr, ...tx });
   const ok = r.results.filter((x) => x.ok).length;
   bump();
   toast(t('{ok} of {n} exported', { ok, n: r.results.length }), { ok: ok === r.results.length, error: ok < r.results.length });

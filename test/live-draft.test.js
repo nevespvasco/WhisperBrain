@@ -107,7 +107,7 @@ function rig({ liveDraft = true, installed = true, enable = true } = {}) {
   const platform = { capture: { mic: 'renderer', system: 'renderer' }, createMicSource: () => new PushSource(), createSystemSource: async () => new PushSource() };
   const touched = [];
   const speakers = { // every way a segment could reach the voice code is recorded
-    forNote: () => [], save: () => touched.push('save'), autoMatch: () => touched.push('autoMatch'), label: () => 'Them', consolidate: () => {}, merge: () => {},
+    forNote: () => [], save: () => touched.push('save'), autoMatch: () => touched.push('autoMatch'), display: () => ({ shown: '', of: () => ({ label: 'Them', kind: 'them', n: null }) }), consolidate: () => {}, placeUnlabelled: () => 0, merge: () => {},
   };
   const events = [];
   bus.subscribe((e) => events.push(e));

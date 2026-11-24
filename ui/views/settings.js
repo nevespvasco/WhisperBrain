@@ -5,7 +5,7 @@ import { listMicrophones } from '../capture.js';
 import { openExport } from './transfer.js';
 import * as meetPanel from './meet-panel.js';
 
-const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
+const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['translation', 'Translation', 'globe'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
 let modelListener = null; // the Audio section's download listener (see bind)
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); document.documentElement.dataset.theme = S.settings.theme; return S.settings; };
 const row = (title, sub, control) => `<div class="set-row"><div class="l"><b>${esc(title)}</b>${sub ? `<span>${sub}</span>` : ''}</div>${control}</div>`;
@@ -48,10 +48,29 @@ const adviceCard = (adv) => {
 const fitBadge = (id) => { const f = FIT[S.state?.modelAdvice?.models[id]?.fit]; return f ? `<span class="badge ${f[0]}">${t(f[1])}</span>` : ''; };
 const whenLine = (id) => { const w = WHEN[S.state?.modelAdvice?.models[id]?.when]; return w ? `<div class="small mt-s"><b>${t('When to use')}:</b> ${t(w)}</div>` : ''; };
 
+// How API keys and tokens rest on disk (src/core/secret-box.js). Only worth a line when the protection is weak.
+// What an organisation fixed on this computer (src/core/policy.js): shown so that a setting that will not change is not a mystery.
+const policyBanner = () => {
+  const p = S.state?.policy;
+  if (!p || (!p.managed?.length && !p.problems?.length)) return '';
+  if (p.problems?.length && !p.managed?.length) return `<div class="banner warn small mb" role="alert">${icon('lock')}<div class="grow">${t('The policy file on this computer could not be used, so nothing is managed:')} ${esc(p.problems[0])}</div></div>`;
+  return `<div class="banner small mb">${icon('lock')}<div class="grow">${t('Your organisation manages these settings, and they cannot be changed here:')} <b>${esc(p.managed.join(', '))}</b></div></div>`;
+};
+
+const secretsBanner = () => {
+  const st = S.state?.secrets;
+  if (!st || !st.warning) return '';
+  if (st.warning === 'key-file') return `<div class="banner small mb">${icon('lock')}<div class="grow">${t('API keys and tokens are sealed with a key file next to your data. That keeps them out of a copied database, but anyone who can read both files can read them.')}</div></div>`;
+  const why = st.warning === 'no-backend' ? t('This computer has no system keystore available to protect your API keys and tokens.') : t('The system keystore on this computer gives no real protection (it is the “basic text” fallback), so your API keys and tokens are stored as plain text.');
+  if (st.needsChoice) return `<div class="banner warn small mb" role="alert">${icon('lock')}<div class="grow">${why} ${t('Choose what to do:')}</div>
+    <button class="btn xs" data-act="secrets-plaintext">${t('Keep them as plain text')}</button><button class="btn xs" data-act="secrets-never">${t('Do not save them')}</button></div>`;
+  return `<div class="banner small mb">${icon('lock')}<div class="grow">${why} ${st.policy === 'never' ? t('You chose not to save them: they are forgotten when the app closes.') : t('You chose to keep them as plain text.')}</div></div>`;
+};
+
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
   const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
-    <div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
+    ${policyBanner()}${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
     <div id="secbody" class="set-section" data-sec="${sec}">${inner}</div></div></div>`;
   // Re-rendering the section already on screen (removing a model, a download finishing…) must not jump the page:
   // build the new content first, swap it in one go, and put the scroll position back.
@@ -115,8 +134,10 @@ const SECTION = {
     return `<section class="panel"><div class="panel-head"><h3>${t('When I join a meeting')}</h3></div>
       ${tog('set-detect', s.detectMeetings, t('Recognise meetings'), t('Notices when Zoom, Teams, Meet (in a browser), Slack, Discord… start using the microphone, and matches it to your calendar.'))}
       ${row(t('Then'), '', `<select id="set-autorec"><option value="ask" ${s.autoRecord === 'ask' ? 'selected' : ''}>${t('Ask me')}</option><option value="always" ${s.autoRecord === 'always' ? 'selected' : ''}>${t('Start recording automatically')}</option><option value="off" ${s.autoRecord === 'off' ? 'selected' : ''}>${t('Do nothing')}</option></select>`)}
+      ${tog('set-perapp', s.perAppCapture, t('Capture only the meeting app'), t('Records the audio of the call itself, so music or a video playing next to it stays out of the transcript. If the app cannot be told, everything the computer plays is recorded.'))}
       ${tog('set-autostop', s.autoStop, t('Stop when the call ends'), t('Only for recordings that started automatically.'))}
       ${row(t('Calendar meetings'), t('Record calendar meetings when they start.'), `<select id="set-capture"><option value="off" ${s.captureCalendar === 'off' ? 'selected' : ''}>${t('Off — just remind me')}</option><option value="selected" ${s.captureCalendar === 'selected' ? 'selected' : ''}>${t('Only the ones I switch on')}</option><option value="all" ${s.captureCalendar === 'all' ? 'selected' : ''}>${t('Capture all')}</option></select>`)}
+      ${row(t('Recording notice'), t('The sentence you can paste into a meeting chat so the others know it is recorded. A template, not legal advice: what you must say depends on where the people are.'), `<select id="set-consent"><option value="general" ${s.consentPreset === 'general' ? 'selected' : ''}>${t('General: say it is recorded')}</option><option value="eu" ${s.consentPreset === 'eu' ? 'selected' : ''}>${t('EU / Portugal: also say what happens to it')}</option><option value="us" ${s.consentPreset === 'us' ? 'selected' : ''}>${t('US (all-party consent): also ask them to agree by staying')}</option></select>`)}
       ${tog('set-notify', s.notifyUpcoming, t('Remind me when a calendar meeting starts'), '')}
       <div class="xsmall muted mt-s">${S.state?.capabilities?.micActivity === false ? `${icon('alert', 'sm')} ${t('Microphone-use detection is not available on this system.')}` : ''}</div></section>
       <section class="panel"><div class="panel-head"><h3>${t('After a meeting')}</h3></div>
@@ -141,6 +162,7 @@ const SECTION = {
       ${s.speakerDetection ? tog('set-diarize', s.speakerDiarize, t('Work out who said what after recording'), t('When you stop, WhisperBrain listens to the whole meeting again and decides who spoke each word, including quick turn changes. It takes a little while on long meetings; capture is never slowed down and the audio is deleted right after.')) : ''}
       ${s.speakerDetection && s.speakerDiarize ? tog('set-counthint', s.speakerCountHint, t('Use the calendar guest list as the number of voices'), t('When a meeting comes from your calendar, WhisperBrain expects as many voices on the call as there are other guests. Exactly right, it is clearly more accurate; if some guests did not come or others joined, it can be worse. Off by default.')) : ''}
       ${s.speakerDetection ? tog('set-refine', s.speakerRefine, t('Also compare pitch and timbre'), t('An extra acoustic check after recording that merges a person the first pass split in two and fixes odd utterances. The audio is deleted right after.')) : ''}
+      ${s.speakerDetection ? row(t('Names from what people say'), t('After a recording your AI reads the transcript and names voices from things like "I\'m Maria" or "Thanks, George". They are guesses that say so, you can keep or turn down each one, and no voice is saved from them.'), `<select id="set-names-text"><option value="auto" ${s.speakerNamesFromTranscript === 'auto' ? 'selected' : ''}>${t('Only when the AI runs on this computer')}</option><option value="on" ${s.speakerNamesFromTranscript === 'on' ? 'selected' : ''}>${t('Always (sends the transcript to your AI server)')}</option><option value="off" ${s.speakerNamesFromTranscript === 'off' ? 'selected' : ''}>${t('Never')}</option></select>`) : ''}
       ${row(t('Floating recorder'), t('A small recording icon over other apps; click it to read the live transcript.'), `<select id="set-float"><option value="background" ${s.floatingRecorder === 'background' ? 'selected' : ''}>${t('When the app is in the background')}</option><option value="always" ${s.floatingRecorder === 'always' ? 'selected' : ''}>${t('Always while recording')}</option><option value="off" ${s.floatingRecorder === 'off' ? 'selected' : ''}>${t('Off')}</option></select>`)}
       ${s.speakerDetection && !S.state?.speakerModel ? `<div class="banner small">${t('Speaker recognition needs a small voice model.')}<span class="grow"></span><button class="btn sm primary" data-act="speaker-install">${t('Download')} (${S.state?.speakerModelMB || 26} MB)</button></div>` : ''}
       ${row(t('Microphone'), '', `<select id="set-device"><option value="">${t('System default')}</option>${mics.map((m) => `<option value="${esc(m.id)}" ${s.micDevice === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
@@ -162,6 +184,25 @@ const SECTION = {
       ${field('llm-key', t('API key'), `<input type="password" id="llm-key" value="${esc(l.apiKey)}" autocomplete="off">`)}
       ${field('llm-model', t('Model'), `<div class="row"><input id="llm-model" list="llm-models" value="${esc(l.model)}"><datalist id="llm-models"></datalist><button class="btn" data-act="llm-list">${icon('refresh', 'sm')}</button></div>`)}
       <div class="row"><button class="btn primary" data-act="llm-save">${t('Save')}</button><button class="btn" data-act="llm-test">${t('Test connection')}</button><span id="llm-result" class="small"></span></div></div></section>`;
+  },
+  // Translation (src/llm/translate.js): off until switched on. The languages chosen are the ones a meeting offers, in this order; the
+  // first is the one live translation uses. Everything goes through the AI server set up above.
+  async translation() {
+    S.languages ||= await api('GET', '/api/languages');
+    const tr = S.settings.translation, langs = S.languages, by = new Map(langs.map((l) => [l.code, l]));
+    const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
+    const option = (l, sel) => `<option value="${l.code}" ${l.code === sel ? 'selected' : ''}>${esc(l.name)}${l.native !== l.name ? ` · ${esc(l.native)}` : ''}</option>`;
+    const chosen = tr.targets.map((c, i) => `<span class="chip">${esc(by.get(c)?.name || c)}${i === 0 ? ` <span class="xsmall muted">${t('live')}</span>` : `<button class="btn xs ghost icon" data-tr-first="${esc(c)}" title="${esc(t('Use this one for live translation'))}" aria-label="${esc(t('Use this one for live translation'))}">${icon('chevleft', 'sm')}</button>`}<button class="btn xs ghost icon" data-tr-del="${esc(c)}" title="${esc(t('Remove'))}" aria-label="${esc(t('Remove'))}">${icon('x', 'sm')}</button></span>`).join('');
+    return `<section class="panel"><div class="panel-head"><h3>${t('Translation')}</h3></div>
+      <p class="hint" style="margin-top:0">${t('Translate your meetings into other languages with the AI server set up under AI. Off by default: nothing is translated until you turn it on and choose a language.')}</p>
+      ${S.settings.llm?.baseUrl && !local && tr.enabled ? `<div class="banner small">${icon('alert')}<div class="grow">${t('Your AI server is not on this computer: what you translate is sent to it.')}</div></div>` : ''}
+      ${tog('tr-enabled', tr.enabled, t('Translate meetings'), t('Adds a language menu to each meeting and to exports.'))}
+      ${tr.enabled ? `${row(t('Languages'), t('The languages a meeting offers. The first one is used for live translation.'), `<div><div class="chips">${chosen || `<span class="xsmall muted">${t('None yet')}</span>`}</div>
+        <select id="tr-add" aria-label="${esc(t('Add a language'))}" style="margin-top:6px"><option value="">${t('Add a language…')}</option>${langs.filter((l) => !tr.targets.includes(l.code)).map((l) => option(l, '')).join('')}</select></div>`)}
+        ${tog('tr-live', tr.live, t('Translate while recording'), t('Each line is translated as it is heard, under the original. It keeps the AI busy during the call; if the AI cannot keep up, the rest is translated when you stop.'))}
+        ${row(t('Show in meetings'), t('What a meeting with a translation shows first. You can change it in each meeting.'), `<select id="tr-view"><option value="original" ${tr.view === 'original' ? 'selected' : ''}>${t('The original')}</option><option value="translation" ${tr.view === 'translation' ? 'selected' : ''}>${t('The translation')}</option><option value="both" ${tr.view === 'both' ? 'selected' : ''}>${t('Both')}</option></select>`)}
+        ${row(t('Write notes in'), t('The language of the notes the AI writes after a meeting.'), `<select id="tr-notes"><option value="">${t('The language of the meeting')}</option>${langs.map((l) => option(l, tr.notesLanguage)).join('')}</select>`)}` : ''}
+    </section>`;
   },
   async templates() {
     S.templates = await api('GET', '/api/templates');
@@ -187,15 +228,24 @@ const SECTION = {
 function bind(main, sec, body) {
   const rerender = () => render(main, { parts: ['settings', sec] });
   const map = {
-    'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-capture': (v) => ({ captureCalendar: v }),
+    'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
-    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
+    'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
     'set-collapsed': (v) => ({ sidebarCollapsed: v }),
+    'tr-enabled': (v) => ({ translation: { enabled: v } }), 'tr-live': (v) => ({ translation: { live: v } }), 'tr-view': (v) => ({ translation: { view: v } }), 'tr-notes': (v) => ({ translation: { notesLanguage: v } }),
+    'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
   };
   body.addEventListener('change', async (e) => {
     const f = map[e.target.id];
     if (!f) return;
-    try { await save(f(e.target.type === 'checkbox' ? e.target.checked : e.target.value)); if (['set-lang', 'set-speakers', 'set-collapsed'].includes(e.target.id)) location.reload(); else done(t('Saved')); } catch (err) { fail(err); }
+    try {
+      const patch = f(e.target.type === 'checkbox' ? e.target.checked : e.target.value);
+      if (!patch) return;
+      await save(patch);
+      if (['set-lang', 'set-speakers', 'set-collapsed'].includes(e.target.id)) location.reload();
+      else if (e.target.id.startsWith('tr-')) rerender();   // the list of languages, and what shows when translation is on
+      else done(t('Saved'));
+    } catch (err) { fail(err); }
   });
   const text = { 'set-name': 'userName', 'set-email': 'userEmail', 'set-domains': 'myDomains' };
   let timer;
@@ -205,6 +255,8 @@ function bind(main, sec, body) {
     if (!b) return;
     try {
       if (b.dataset.themeV) { await save({ theme: b.dataset.themeV }); rerender(); }
+      else if (b.dataset.trDel) { await save({ translation: { targets: S.settings.translation.targets.filter((c) => c !== b.dataset.trDel) } }); rerender(); }
+      else if (b.dataset.trFirst) { await save({ translation: { targets: [b.dataset.trFirst, ...S.settings.translation.targets.filter((c) => c !== b.dataset.trFirst)] } }); rerender(); }
       else if (b.dataset.act === 'exp-json') await download('/api/account/export');
       else if (b.dataset.act === 'exp-md') await download('/api/account/export?format=md');
       else if (b.dataset.act === 'exp-more') openExport([]);
@@ -224,6 +276,10 @@ function bind(main, sec, body) {
       else if (b.dataset.modelRemove) { if (await confirmDialog(t('Remove this speech model? You can download it again later.'), { ok: t('Remove') })) { await api('DELETE', `/api/models/${b.dataset.modelRemove}`); rerender(); } }
       else if (b.dataset.act === 'tpl-add' || b.dataset.tplEdit) await editTemplate(S.templates.find((x) => x.id === b.dataset.tplEdit), rerender);
       else if (b.dataset.tplDel) { if (await confirmDialog(t('Delete this template?'))) { await api('DELETE', `/api/templates/${b.dataset.tplDel}`); rerender(); } }
+      else if (b.dataset.act === 'secrets-plaintext') { await save({ secretStorage: 'plaintext' }); S.state = await api('GET', '/api/state'); rerender(); }
+      else if (b.dataset.act === 'secrets-never') {
+        if (await confirmDialog(t('Remove your saved API keys and tokens from this computer? You will need to enter them again after restarting.'), { ok: t('Do not save'), danger: false })) { await save({ secretStorage: 'never' }); S.state = await api('GET', '/api/state'); rerender(); }
+      }
       else if (b.dataset.act === 'llm-save') { await save({ llm: llmForm() }); $('#llm-result').textContent = '✓'; S.state = await api('GET', '/api/state'); }
       else if (b.dataset.act === 'llm-list') { await save({ llm: llmForm() }); const r = await api('GET', '/api/llm/models'); $('#llm-models').innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join(''); $('#llm-result').textContent = t('{n} models', { n: r.models.length }); if (!$('#llm-model').value && r.models[0]) $('#llm-model').value = r.models[0]; }
       else if (b.dataset.act === 'llm-test') { await save({ llm: llmForm() }); $('#llm-result').textContent = '…'; const r = await api('POST', '/api/llm/test'); $('#llm-result').textContent = r.ok ? `✓ ${r.model}` : `✗ ${r.error}`; S.state = await api('GET', '/api/state'); }

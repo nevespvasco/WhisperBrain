@@ -1,4 +1,5 @@
 'use strict';
+const { hungarian } = require('./hungarian');
 // Speaker identification from voice embeddings (pure maths; no I/O).
 //  - SpeakerTracker: online clustering while recording: each utterance joins the closest speaker or starts a new one.
 //  - mergeClusters: after the meeting, merges speakers whose voices turned out to be the same person.
@@ -26,6 +27,10 @@ function blend(a, na, b, nb) {
   return norm(out);
 }
 
+// A line must run this long before its voice may start a new speaker. A cough or a "yeah" is too short for a voice print to
+// mean "a new person": it stays unlabelled live and the after-recording passes place it (the same rule as Cicada's).
+const NEW_SPEAKER_MIN_SEC = 2;
+
 class SpeakerTracker {
   // prefix: speaker ids look like `${prefix}1`, `${prefix}2`…
   // max: the most speakers there can be (the user said how many people are on the call); 0 = no limit. Once reached,
@@ -38,8 +43,9 @@ class SpeakerTracker {
     this.next = this.speakers.reduce((m, s) => Math.max(m, Number(String(s.id).slice(prefix.length)) || 0), 0) + 1;
   }
 
-  // -> { id, score, isNew }
-  assign(embedding) {
+  // seconds: how long the utterance was. A shorter one that matches nobody gets no speaker ({ id: null }) and changes
+  // nothing. Left out, any utterance may start a speaker (imports, the eval harness). -> { id, score, isNew }
+  assign(embedding, { seconds = Infinity } = {}) {
     const e = norm(embedding);
     let best = null, score = -1;
     for (const s of this.speakers) { const c = cosine(e, s.centroid); if (c > score) { score = c; best = s; } }
@@ -48,6 +54,7 @@ class SpeakerTracker {
       best.count++;
       return { id: best.id, score, isNew: false };
     }
+    if (seconds < NEW_SPEAKER_MIN_SEC) return { id: null, score, isNew: false };
     const s = { id: `${this.prefix}${this.next++}`, centroid: e, count: 1 };
     this.speakers.push(s);
     return { id: s.id, score, isNew: true };
@@ -180,14 +187,23 @@ function matchVoices(speakers, voices, threshold = MATCH.threshold, allowed = nu
     const gap = scored.length > 1 ? scored[0].c - scored[1].c : Infinity;
     if (gap >= margin) pairs.push({ s: s.id, v: scored[0].v, c: scored[0].c, gap });
   }
-  pairs.sort((a, b) => b.c - a.c);
+  // A voice goes to one speaker, and the speakers that want the same voice are settled by the best total (Hungarian, with an
+  // "unknown" column of its own for each speaker: a speaker whose voice another speaker took stays unlinked).
   const out = new Map();
-  const usedV = new Set();
-  for (const p of pairs) {
-    if (out.has(p.s) || usedV.has(p.v)) continue;
-    out.set(p.s, { voiceId: p.v, score: p.c, margin: p.gap });
-    usedV.add(p.v);
-  }
+  if (!pairs.length) return out;
+  const rows = [...new Set(pairs.map((p) => p.s))], cols = [...new Set(pairs.map((p) => p.v))];
+  const BIG = 1e6;
+  const cost = rows.map((sid, i) => [
+    ...cols.map((vid) => { const p = pairs.find((x) => x.s === sid && x.v === vid); return p ? -p.c : BIG; }),
+    ...rows.map((_, j) => (j === i ? 0 : BIG)),
+  ]);
+  const pick = hungarian(cost);
+  rows.forEach((sid, i) => {
+    const col = pick[i];
+    if (col < 0 || col >= cols.length) return;
+    const p = pairs.find((x) => x.s === sid && x.v === cols[col]);
+    out.set(sid, { voiceId: p.v, score: p.c, margin: p.gap });
+  });
   return out;
 }
 
@@ -218,4 +234,4 @@ function addPrint(prints, add, { max = MAX_PRINTS, mergeSim = MERGE_SIM } = {}) 
 const toBlob = (f32) => (f32 ? Buffer.from(new Float32Array(f32).buffer) : null);
 const fromBlob = (buf) => (buf ? new Float32Array(new Uint8Array(buf).slice().buffer) : null);
 
-module.exports = { SpeakerTracker, mergeClusters, matchVoices, voiceScore, addPrint, centre, populationMean, VOICE_MEAN, MATCH, MAX_REJECTS, cosine, norm, blend, toBlob, fromBlob };
+module.exports = { SpeakerTracker, NEW_SPEAKER_MIN_SEC, mergeClusters, matchVoices, voiceScore, addPrint, centre, populationMean, VOICE_MEAN, MATCH, MAX_REJECTS, cosine, norm, blend, toBlob, fromBlob };

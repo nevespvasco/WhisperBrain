@@ -19,6 +19,7 @@ const P = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/>',
+  micoff: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/><path d="M3.5 3.5l17 17"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2.5"/>',
   pause: '<path d="M9 5v14M15 5v14"/>',
   play: '<path d="m7 4.5 13 7.5-13 7.5Z"/>',

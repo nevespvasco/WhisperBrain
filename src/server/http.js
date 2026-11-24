@@ -6,11 +6,21 @@ const crypto = require('node:crypto');
 const { decodeAudio, transcribePcm, assignSpeakers } = require('../recording/import');
 const { refineNote } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
+const { nameFromTranscript } = require('../speakers/transcript-names');
+const { LANGUAGES, isLanguage } = require('../llm/languages');
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 const COOKIE = 'wb_token';
 const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
+
+const { noticeText } = require('../consent/notice');
+const { attachTranscript } = require('../meet/attach');
+const { MAX_TEXT_BYTES } = require('../importers');
+const noticeRoute = (app, query) => ({ text: noticeText({ preset: query.preset || app.settings.get('consentPreset'), lang: query.lang || app.settings.get('language') }) });
+
+// speaker ids: m1 (microphone), s1 (system audio), d<snowflake> (a person on Discord)
+const SPEAKER_ID = /^(?:[ms]\d{1,3}|d\d{1,24})$/;
 
 class HttpError extends Error {
   constructor(status, message, code) { super(message); this.status = status; this.code = code; }
@@ -100,12 +110,42 @@ function createRoutes(app) {
     if (!app.notes.remove(params.id)) throw new HttpError(404, 'note not found');
     return { ok: true };
   });
-  add('GET', '/api/notes/:id/transcript', async ({ params }) => { noteOr404(params.id); return app.notes.segments(params.id); });
+  add('GET', '/api/notes/:id/transcript', async ({ params, query }) => {
+    noteOr404(params.id);
+    const segs = app.notes.segments(params.id);
+    if (!query.lang) return segs;
+    if (!isLanguage(query.lang)) throw new HttpError(400, `Unknown language "${query.lang}".`);
+    const said = app.translator.translations(params.id, query.lang);   // each line beside its translation (null: not translated yet)
+    return segs.map((s) => ({ ...s, translation: said.get(s.id) ?? null }));
+  });
+
+  // translation (Settings → Translation): off until switched on; the work runs in the background and reports on the event stream
+  const translating = (fn) => async (ctx) => { try { return await fn(ctx); } catch (e) { throw e instanceof HttpError || !e.status ? e : new HttpError(e.status, e.message); } };
+  add('GET', '/api/languages', async () => LANGUAGES);
+  add('POST', '/api/notes/:id/translate', translating(async ({ params, body }) => {
+    noteOr404(params.id);
+    const job = app.translator.start(params.id, body.lang);
+    return job.running ? { started: false, running: true, total: job.total } : { started: job.total > 0, total: job.total };
+  }));
+  add('POST', '/api/notes/:id/translate/cancel', async ({ params, body }) => { noteOr404(params.id); app.translator.cancel(params.id, body.lang); return { ok: true }; });
+  add('GET', '/api/notes/:id/translations', async ({ params }) => { noteOr404(params.id); return { languages: app.translator.languages(params.id), running: app.translator.running(params.id) }; });
+  add('DELETE', '/api/notes/:id/translations/:lang', async ({ params }) => { noteOr404(params.id); app.translator.clear(params.id, params.lang); return { ok: true }; });
+  add('GET', '/api/notes/:id/summary-translation', async ({ params, query }) => {
+    noteOr404(params.id);
+    if (!isLanguage(query.lang)) throw new HttpError(400, `Unknown language "${query.lang}".`);
+    return { lang: query.lang, text: app.translator.summaryTranslation(params.id, query.lang)?.text ?? null };
+  });
+  add('POST', '/api/notes/:id/summary-translation', translating(async ({ params, body }) => {
+    noteOr404(params.id);
+    app.translator.check(body.lang);
+    if (!app.notes.get(params.id).summary?.trim()) throw new HttpError(409, 'There are no notes to translate yet: write them first.');
+    try { return await app.translator.translateSummary(params.id, body.lang); } catch (e) { throw new HttpError(502, `The AI server did not translate: ${e.message}`); }
+  }));
   add('DELETE', '/api/notes/:id/transcript', async ({ params }) => { noteOr404(params.id); app.notes.clearTranscript(params.id); return { ok: true }; });
   add('POST', '/api/notes/:id/summarize', async ({ params, body, req, res }) => {
     noteOr404(params.id);
     return { stream: (sse) => app.ai.summarize(params.id, {
-      templateId: body.templateId, signal: sse.signal,
+      templateId: body.templateId, language: body.language && isLanguage(body.language) ? body.language : undefined, signal: sse.signal,
       onDelta: (d) => sse.send('delta', { text: d }), onStage: (s) => sse.send('stage', s),
     }) };
   });
@@ -141,25 +181,93 @@ function createRoutes(app) {
     return { segments: saved.length, durationMs: Math.round((pcm.length / 2 / 16000) * 1000), model: model.id };
   });
 
+  // search by words and by meaning together (opt-in, see src/search/semantic.js); without the index it is the word search
+  add('GET', '/api/search/semantic', async ({ query }) => {
+    const rows = await app.semantic.hybrid(query.q || '', { limit: Number(query.limit) || 20 });
+    return { available: app.semantic.available, reason: app.semantic.reason, results: rows.map((r) => ({ ...r.note, snippet: r.snippet, via: r.via })) };
+  });
+
   // advanced search
   add('GET', '/api/search', async ({ query }) => app.notes.advancedSearch({
     q: query.q || '', scope: query.scope || 'all', folderId: query.space || undefined, from: query.from, to: query.to,
     speaker: query.speaker || undefined, attendee: query.attendee || undefined, has: query.has || undefined, limit: Number(query.limit) || 50,
   }).map((r) => ({ ...r.note, snippet: r.snippet, quotes: r.quotes })));
 
+  // a platform's own transcript (Teams / Zoom / Meet export): its speaker names become evidence for the voices
+  add('POST', '/api/notes/:id/attach-transcript', async ({ params, req, query }) => {
+    noteOr404(params.id);
+    if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
+    const buf = await readBody(req, MAX_TEXT_BYTES);
+    if (!buf.length) throw new HttpError(400, 'empty file');
+    try { return attachTranscript(app, params.id, buf, query.filename); } catch (e) { throw e.status ? new HttpError(e.status, e.message) : e; }
+  });
+
+  // the meeting platforms' own transcripts (Teams, Meet, Zoom): sign in once, then fetch a note's transcript. Experimental, see src/transcripts.
+  const transcriptError = (e) => {
+    if (e.status) return new HttpError(e.status, e.message);
+    const status = { unknown: 400, 'not-connected': 409, auth: 409 }[e.code] ?? (e.code ? 422 : 0);
+    return status ? new HttpError(status, e.message, e.code) : e;
+  };
+  add('GET', '/api/transcript-sources', async () => app.transcripts.status());
+  add('POST', '/api/transcript-sources/:id/connect', async ({ params }) => {
+    try { const { authUrl, done } = await app.transcripts.connect(params.id, { openExternal: app.openExternal }); done.then(() => app.bus.publish('transcript-source.connected', { id: params.id }), (e) => app.bus.publish('transcript-source.error', { id: params.id, message: e.message })); return { authUrl }; }
+    catch (e) { throw new HttpError(e.code === 'unknown' ? 404 : 400, e.message); }
+  });
+  add('DELETE', '/api/transcript-sources/:id', async ({ params }) => { try { await app.transcripts.disconnect(params.id); return { ok: true }; } catch (e) { throw transcriptError(e); } });
+  add('POST', '/api/notes/:id/fetch-transcript', async ({ params, body }) => {
+    noteOr404(params.id);
+    if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
+    try { return await app.transcripts.fetchForNote(params.id, String(body.provider || '')); } catch (e) { throw transcriptError(e); }
+  });
+
+  // the "this call is recorded" notice, to paste into the meeting chat
+  add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));
+
   // speakers (who is talking) and saved voices
-  add('GET', '/api/notes/:id/speakers', async ({ params }) => { noteOr404(params.id); return app.speakers.publicForNote(params.id, app.settings.get('userName')); });
+  add('GET', '/api/notes/:id/speakers', async ({ params }) => {
+    noteOr404(params.id);
+    // a name that came from the conversation says which line it was read from (evidenceQuote, evidenceMs)
+    const said = new Map(app.evidence.forNote(params.id, { kind: 'mention' }).map((r) => [r.meta?.speakerId, r]));
+    return app.speakers.publicForNote(params.id, app.settings.get('userName')).map((s) => {
+      const e = /^transcript/.test(s.nameSource || '') ? said.get(s.speakerId) : null;
+      return e ? { ...s, evidenceQuote: e.meta.quote, evidenceMs: e.t0 } : s;
+    });
+  });
+  // ask the AI who the unnamed voices are, from what people say; a name stands only with the line that shows it
+  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params }) => {
+    noteOr404(params.id);
+    if (!app.ai.configured()) throw new HttpError(409, 'No AI server is set up. Add one in Settings → AI.');
+    const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.llm, userName: app.settings.get('userName') }, params.id);
+    if (r.error) throw new HttpError(502, `The AI server did not answer: ${r.error}`);
+    if (r.named.length) app.notes.reindex(params.id);
+    return { named: r.named.map(({ speakerId, name, line, quote }) => ({ speakerId, name, line, quote })), refused: r.refuted.length };
+  });
+  // turn down a guessed name: the voice goes back to unnamed and the name is not offered for it again
+  add('POST', '/api/notes/:id/speakers/:sid/reject-name', async ({ params }) => {
+    noteOr404(params.id);
+    if (!app.speakers.rejectName(params.id, params.sid, { evidence: app.evidence })) throw new HttpError(409, 'This name was not guessed from the conversation.');
+    app.notes.reindex(params.id);
+    return { ok: true };
+  });
   add('PATCH', '/api/notes/:id/speakers/:sid', async ({ params, body }) => {
     noteOr404(params.id);
-    const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember });
+    const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember, consentSource: body.remember ? 'user' : null });
     if (!r) throw new HttpError(404, 'speaker not found');
     app.notes.reindex(params.id);
     return r;
   });
   add('POST', '/api/notes/:id/segments/:segId/speaker', async ({ params, body }) => {
     noteOr404(params.id);
-    if (!/^[ms]\d{1,3}$/.test(body.speakerId || '')) throw new HttpError(400, 'invalid speakerId');
+    if (!SPEAKER_ID.test(body.speakerId || '')) throw new HttpError(400, 'invalid speakerId');
     if (!app.speakers.reassignSegment(params.id, Number(params.segId), body.speakerId)) throw new HttpError(404, 'segment not found');
+    return { ok: true };
+  });
+  // fold one speaker of the note into another (the same person heard twice); refused when the voices clearly differ
+  add('POST', '/api/notes/:id/speakers/:sid/merge', async ({ params, body }) => {
+    noteOr404(params.id);
+    if (!SPEAKER_ID.test(params.sid) || !SPEAKER_ID.test(body.into || '') || params.sid === body.into) throw new HttpError(400, 'invalid speaker');
+    if (!app.speakers.mergeSpeakers(params.id, params.sid, body.into)) throw new HttpError(409, 'These speakers cannot be merged: they are on different channels, sound too different, or already have different names.');
+    app.notes.reindex(params.id);
     return { ok: true };
   });
   add('GET', '/api/voices', async () => app.speakers.publicVoices());
@@ -218,12 +326,20 @@ function createRoutes(app) {
     let noteId = body.noteId;
     if (!noteId) noteId = app.notes.create({ title: body.title || '', eventUid: body.eventUid, eventStart: body.eventStart, attendees: body.attendees, templateId: body.templateId, folderId: body.folderId, platform: body.platform }).id;
     else if (app.notes.get(noteId)?.source === 'manual') app.notes.update(noteId, { source: 'recorded' });
-    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system }); } catch (e) {
+    // calls: the live calls the person chose to record (ids such as 'zoom', 'discord'), turned into the applications behind them
+    const apps = Array.isArray(body.calls) && body.calls.length ? app.detector.appsFor?.(body.calls.map(String)) : undefined;
+    const wholeOutput = Array.isArray(body.calls) && !body.calls.length; // [] = the person chose everything the computer plays
+    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system, apps: apps?.length ? apps : undefined, wholeOutput }); } catch (e) {
       throw new HttpError({ 'no-model': 412, busy: 409, 'not-found': 404 }[e.code] || 500, e.message, e.code);
     }
   });
   add('POST', '/api/recording/pause', async () => app.recording.pause());
   add('POST', '/api/recording/resume', async () => app.recording.resume());
+  // mute / unmute the user's own microphone in the middle of a meeting; without `muted` it toggles
+  add('POST', '/api/recording/mic-mute', async ({ body }) => {
+    if (body.muted !== undefined && typeof body.muted !== 'boolean') throw new HttpError(400, 'muted must be true or false');
+    try { return app.recording.setMicMuted(body.muted ?? !app.recording.status().micMuted); } catch (e) { throw new HttpError(409, e.message, e.code); }
+  });
   add('POST', '/api/recording/stop', async () => { try { return await app.recording.stop(); } catch (e) { throw new HttpError(409, e.message, e.code); } });
   add('POST', '/api/recording/pcm', async ({ req, query }) => {
     const buf = await readBody(req, 4 * 1024 * 1024);

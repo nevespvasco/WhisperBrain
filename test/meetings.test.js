@@ -95,12 +95,12 @@ test('detector: announces a calendar meeting about to start exactly once', async
 function detRig({ apps = [], windows = [], supported = true, cands = [], current = null, over = {}, notes = true } = {}) {
   const e = env();
   const settings = { get: (k) => (k in over ? over[k] : e.settings.get(k)) };
-  const state = { apps, windows, supported, recordingNote: null, started: [], stopped: 0, created: [] };
+  const state = { apps, windows, supported, recordingNote: null, started: [], startOpts: [], stopped: 0, created: [] };
   const platform = { micActivity: async () => ({ supported: state.supported, active: state.apps.length > 0, apps: state.apps }), meetingWindows: async () => state.windows };
   const calendar = { sources: () => [], events: async () => ({ events: [] }), candidates: async () => cands, current: async () => current };
   const recording = {
     status: () => (state.recordingNote ? { active: true, noteId: state.recordingNote } : { active: false }),
-    start: async (id) => { state.started.push(id); state.recordingNote = id; },
+    start: async (id, opts) => { state.started.push(id); state.startOpts.push(opts); state.recordingNote = id; },
     stop: async () => { state.stopped++; state.recordingNote = null; },
   };
   const notesApi = notes && { create: (input) => { const n = { id: `n${state.created.length + 1}`, ...input }; state.created.push(n); return n; } };
@@ -127,12 +127,111 @@ test('detector: a weak browser mic user counts only with a meeting window title'
   assert.equal(d.title, 'Meet - abc-defg-hij - Google Chrome');
   assert.equal(d.event, null);
   assert.equal(typeof d.at, 'number');
-  assert.deepEqual(a.det.status(), { active: true, apps: ['Google Chrome'], platform: 'meet', title: d.title, since: d.at, autoNoteId: null });
+  assert.deepEqual(a.det.status(), { active: true, apps: ['Google Chrome'], platform: 'meet', platforms: ['meet'], title: d.title, since: d.at, autoNoteId: null });
   // no mic data at all: a meeting window alone is never enough
   const b = detRig({ supported: false, windows: [{ title: 'Zoom Meeting', app: 'zoom' }] });
   await b.ticks(5);
   assert.equal(b.of('meeting.detected').length, 0);
   assert.equal(b.det.status().active, false);
+});
+
+const zoomApp = () => ({ name: 'Zoom', appId: 'zoom', weak: false, pid: 1, binary: 'zoom' });
+const discordMic = () => ({ name: 'Discord', appId: 'discord', weak: false, pid: 2, binary: 'discord' });
+const discordPlay = () => ({ name: 'Discord', appId: 'discord', weak: true, via: 'playback', pid: 2, binary: 'discord' });
+
+test('detector: two calls at once (Zoom and Discord) are both reported, also when the second joins later or leaves first', async () => {
+  const a = detRig({ apps: [zoomApp(), discordMic()] });
+  await a.ticks(2);
+  const [d] = a.of('meeting.detected');
+  assert.deepEqual(d.apps, ['Zoom', 'Discord']);
+  assert.deepEqual(d.platforms, ['zoom', 'discord']);
+  assert.equal(d.platform, 'zoom');
+  // Discord leaves the call: the meeting carries on with Zoom, and it is said
+  a.state.apps = [zoomApp()];
+  await a.ticks(1);
+  assert.deepEqual(a.of('meeting.apps-changed').at(-1), { apps: ['Zoom'], platform: 'zoom', platforms: ['zoom'], at: a.of('meeting.apps-changed').at(-1).at });
+  assert.deepEqual(a.det.status().platforms, ['zoom']);
+  // Discord comes back later: same meeting, no second 'detected', the new call is added
+  a.state.apps = [zoomApp(), discordMic()];
+  await a.ticks(1);
+  assert.deepEqual(a.det.status().platforms, ['zoom', 'discord']);
+  assert.equal(a.of('meeting.detected').length, 1);
+  assert.equal(a.of('meeting.apps-changed').length, 2);
+  // Zoom ends first: the main platform moves to what is left and the meeting does not end
+  a.state.apps = [discordMic()];
+  await a.ticks(1);
+  assert.equal(a.det.status().platform, 'discord');
+  assert.equal(a.of('meeting.ended').length, 0);
+  await a.ticks(4);
+  assert.equal(a.of('meeting.ended').length, 0, 'Discord is still live');
+  a.state.apps = [];
+  await a.ticks(3);
+  assert.equal(a.of('meeting.ended').length, 1, 'ends when the last call does');
+});
+
+test('detector: a Discord call heard only in bursts (playback, no microphone) counts beside a confirmed call, never alone', async () => {
+  const alone = detRig({ apps: [discordPlay()] });
+  await alone.ticks(30);
+  assert.equal(alone.of('meeting.detected').length, 0, 'sound from a chat app is not a call');
+  const a = detRig({ apps: [zoomApp()] });
+  await a.ticks(2);
+  assert.deepEqual(a.det.status().platforms, ['zoom']);
+  // Discord's voice stream is there a tick or two at a time, with silences between (what it really does)
+  const heard = async (on) => { a.state.apps = on ? [zoomApp(), discordPlay()] : [zoomApp()]; await a.ticks(1); };
+  await heard(true); await heard(false); await heard(false); await heard(true);
+  assert.deepEqual(a.det.status().platforms, ['zoom'], 'two blips are a notification, not a call');
+  await heard(false); await heard(false); await heard(true);
+  assert.deepEqual(a.det.status().platforms, ['zoom', 'discord'], 'heard three times within the window');
+  assert.deepEqual(a.of('meeting.apps-changed').at(-1).platforms, ['zoom', 'discord']);
+  // it stays through a silence ...
+  await heard(false);
+  await a.ticks(29);   // 2 minutes
+  assert.deepEqual(a.det.status().platforms, ['zoom', 'discord'], 'silence in the call does not end it');
+  // ... until it has not been heard for the hold
+  await a.ticks(20);
+  assert.deepEqual(a.det.status().platforms, ['zoom'], 'gone once not heard for three minutes');
+  // sightings spread over more than the window never add up
+  const b = detRig({ apps: [zoomApp()] });
+  await b.ticks(2);
+  for (let i = 0; i < 4; i++) { b.state.apps = [zoomApp(), discordPlay()]; await b.ticks(1); b.state.apps = [zoomApp()]; await b.ticks(24); } // one blip every ~100 s
+  assert.deepEqual(b.det.status().platforms, ['zoom'], 'occasional pings are not a call');
+});
+
+test('detector: a second call widens a recording that follows one application, once, also for a recording the person started', async () => {
+  const a = detRig({ apps: [zoomApp()], over: { autoRecord: 'always' } });
+  const widened = [];
+  a.det.recording.widenSystemCapture = (why) => { widened.push(why); return widened.length === 1; };
+  await a.ticks(2);
+  assert.deepEqual(a.state.startOpts[0].app.appId, 'zoom', 'one confident app: its audio is followed');
+  assert.equal(widened.length, 0);
+  a.state.apps = [zoomApp(), discordMic()];
+  await a.ticks(1);
+  assert.equal(widened.length, 1);
+  assert.match(widened[0], /Zoom and Discord are both live/);
+  // a recording the person started themselves, while no meeting was announced
+  const b = detRig({ apps: [zoomApp()] });
+  const w2 = [];
+  b.det.recording.widenSystemCapture = (why) => { w2.push(why); return true; };
+  b.state.recordingNote = 'n9';
+  await b.ticks(3);
+  assert.equal(w2.length, 0);
+  b.state.apps = [zoomApp(), discordMic()];
+  await b.ticks(1);
+  assert.equal(w2.length, 1);
+  assert.equal(b.of('meeting.detected').length, 0, 'a recording of the person own is no new meeting');
+});
+
+test('detector: appsFor gives the applications behind the calls the person chose, from what is live now', async () => {
+  const a = detRig({ apps: [zoomApp(), discordMic(), chrome(false)], windows: [{ title: 'Meet - abc-defg-hij - Google Chrome', app: 'Google-chrome' }] });
+  await a.ticks(2);
+  assert.deepEqual(a.det.status().platforms.sort(), ['discord', 'meet', 'zoom']);
+  assert.deepEqual(a.det.appsFor(['zoom']).map((x) => x.name), ['Zoom']);
+  assert.deepEqual(a.det.appsFor(['zoom', 'discord']).map((x) => x.name).sort(), ['Discord', 'Zoom']);
+  assert.deepEqual(a.det.appsFor(['meet']).map((x) => x.name), ['Google Chrome'], 'a call in the browser is the browser that is live');
+  assert.deepEqual(a.det.appsFor(['teams']), [], 'a call that is not live gives nothing');
+  a.state.apps = [];
+  await a.ticks(1);
+  assert.deepEqual(a.det.appsFor(['zoom']), [], 'nothing once nothing is live');
 });
 
 test('detector: the calendar event on the detected platform wins over the closest one', async () => {
@@ -175,6 +274,7 @@ test('detector: autoRecord always starts a note+recording and autoStop stops onl
   assert.equal(a.state.created.length, 1);
   assert.deepEqual(a.state.created[0], { id: 'n1', title: 'Weekly sync', eventUid: 'e9', eventStart: ev.start, attendees: ev.attendees, source: 'recorded', platform: 'teams' });
   assert.deepEqual(a.state.started, ['n1']);
+  assert.deepEqual(a.state.startOpts, [{ app: { name: 'Microsoft Teams', appId: 'teams', weak: false } }], 'the recording is told which application the call is');
   assert.deepEqual(a.of('meeting.autostarted'), [{ noteId: 'n1', platform: 'teams' }]);
   assert.equal(a.of('meeting.detected').length, 1);
   assert.equal(a.det.status().autoNoteId, 'n1');

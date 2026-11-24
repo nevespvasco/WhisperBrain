@@ -16,7 +16,8 @@ function dirSize(dir) {
 }
 
 class Account {
-  constructor({ db, notes, settings, speakers, models, dataDir, bus, knowledge }) { Object.assign(this, { db, notes, settings, speakers, models, dataDir, bus, knowledge }); }
+  // semantic: the search-by-meaning index, which keeps a copy of the transcripts' text and vectors made from it
+  constructor({ db, notes, settings, speakers, models, dataDir, bus, knowledge, semantic = null }) { Object.assign(this, { db, notes, settings, speakers, models, dataDir, bus, knowledge, semantic }); }
 
   summary() {
     const c = (sql) => this.db.prepare(sql).get().c;
@@ -44,7 +45,7 @@ class Account {
     }));
     const settings = this.settings.publicView();
     delete settings.llm.apiKey;
-    for (const k of ['google', 'notion', 'linear']) delete settings[k];
+    for (const k of ['google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear']) delete settings[k];
     settings.webhooks = settings.webhooks.map(({ secret, ...w }) => w);
     const glossary = this.knowledge ? this.knowledge.glossary().map(({ id, noteId, noteTitle, ...g }) => g) : [];
     return { app: 'whisperbrain', format: 2, exportedAt: new Date().toISOString(), spaces: this.notes.folders(), notes, glossary, templates: this.db.prepare('SELECT id, name, prompt FROM templates').all(), voices: this.speakers.publicVoices(), settings };
@@ -59,12 +60,26 @@ class Account {
   }
 
   // ---- danger zone ----
+  // Delete the meetings older than `days` (0 = keep everything). A meeting still being recorded is never touched. -> how many
+  applyRetention({ days, now = Date.now() } = {}) {
+    if (!(days > 0)) return 0;
+    const cutoff = now - days * 86400000;
+    const old = this.db.prepare("SELECT id FROM notes WHERE status != 'recording' AND COALESCE(ended_at, created_at) < ?").all(cutoff);
+    for (const { id } of old) this.notes.remove(id);
+    if (old.length) this.semantic?.prune();
+    if (old.length) this.bus?.publish('account.changed', { what: 'retention', deleted: old.length });
+    return old.length;
+  }
+
   deleteTranscripts() {
     const n = tx(this.db, () => {
       const count = this.db.prepare('DELETE FROM segments').run().changes;
       this.db.prepare('DELETE FROM note_speakers').run();
+      this.db.prepare('DELETE FROM evidence').run();
+      this.db.prepare('DELETE FROM semantic_chunks').run();   // the text copy kept for search by meaning
       return count;
     });
+    this.semantic?.prune();     // and the vectors made from it (when the extension is loaded; otherwise at the next start)
     for (const { id } of this.db.prepare('SELECT id FROM notes').all()) this.notes.reindex(id);
     this.bus?.publish('account.changed', { what: 'transcripts' });
     return n;
@@ -76,10 +91,11 @@ class Account {
   deleteEverything({ removeModels = false } = {}) {
     tx(this.db, () => {
       for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segments', 'note_speakers', 'search', 'notes', 'folders',
-        'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
+        'evidence', 'semantic_chunks', 'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
-    this.settings.cache = null;
+    this.settings.reset();
+    this.semantic?.prune();
     this.db.exec('VACUUM');
     if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
     this.bus?.publish('account.changed', { what: 'all' });

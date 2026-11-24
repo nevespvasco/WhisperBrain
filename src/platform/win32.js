@@ -6,6 +6,7 @@
 const { execFile } = require('node:child_process');
 const path = require('node:path');
 const { classify, classifyWindowTitle } = require('./apps');
+const { systemSource } = require('./native-capture');
 
 const run = (cmd, args, { timeout = 5000 } = {}) => new Promise((resolve) => {
   execFile(cmd, args, { timeout, encoding: 'utf8', windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => resolve(err ? null : stdout));
@@ -44,7 +45,7 @@ function micUsers(entries) {
   for (const { exe } of entries) {
     const cls = classify({ name: exe.replace(/\.exe$/i, ''), binary: exe });
     if (!cls) continue;
-    out.push({ name: cls.name === 'Unknown app' ? exe : cls.id === 'other' ? exe.replace(/\.exe$/i, '') : cls.name, appId: cls.id, weak: !!cls.weak, pid: null });
+    out.push({ name: cls.name === 'Unknown app' ? exe : cls.id === 'other' ? exe.replace(/\.exe$/i, '') : cls.name, appId: cls.id, weak: !!cls.weak, pid: null, exe });
   }
   return out;
 }
@@ -75,17 +76,21 @@ function meetingWindowsFrom(list) {
   return list.map((w) => ({ ...w, cls: classifyWindowTitle(w.title) })).filter((w) => w.cls).map((w) => ({ title: w.title, app: w.app, platform: w.cls.id }));
 }
 
-function create({ clipboard } = {}) {
+// captureHelper: { command, prefixArgs } from src/platform/native-capture.js: system audio from the helper (WASAPI process
+// loopback, else the whole output) instead of the renderer. The microphone stays with the renderer.
+function create({ clipboard, captureHelper = null } = {}) {
   return {
     id: 'win32',
     session: 'desktop',
-    capture: { mic: 'renderer', system: 'renderer' },
+    capture: { mic: 'renderer', system: captureHelper ? 'native' : 'renderer' },
+    renderer: { system: true },   // the window can capture it too, if the helper stops (an error)
     async capabilities() {
       return { platform: 'win32', session: 'desktop', mic: true, systemAudio: true, micActivity: true, paste: true, notes: [] };
     },
     async listMics() { return []; }, // enumerated in the renderer
     createMicSource() { return null; },
-    async createSystemSource() { return null; },
+    // Native only (see captureHelper); null = the renderer captures it.
+    async createSystemSource({ app } = {}) { return captureHelper ? systemSource(captureHelper, app) : null; },
     async micActivity() {
       const out = await run('reg', ['query', CONSENT, '/s']);
       if (out === null) return { supported: false, active: false, apps: [] };

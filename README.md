@@ -111,7 +111,7 @@ npm run dist:mac     # .dmg + .zip       (on macOS)
 npm run dist:win     # NSIS + portable   (on Windows)
 ```
 
-Each OS must build its own installer, because npm only installs the sherpa-onnx native package for the current platform. [`.github/workflows/build.yml`](.github/workflows/build.yml) builds all three in CI. Builds are unsigned until signing secrets are added.
+Each OS must build its own installer, because npm only installs the sherpa-onnx native package for the current platform. [`.github/workflows/build.yml`](.github/workflows/build.yml) builds all three in CI. Builds are unsigned until signing secrets are added; see [docs/packaging.md](docs/packaging.md).
 
 </details>
 
@@ -212,6 +212,8 @@ Only three things differ per OS; everything else is shared code.
 | [Live draft captions](docs/live-draft-captions.md) | Streaming drafts, their cost, and how to measure it |
 | [Names from the meeting window](docs/meeting-names.md) | How speaker names are read from Meet, and what is verified |
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
+| [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
+| [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |
 | [Testing](docs/testing.md) | What the 400+ tests cover |
 
 ## Development

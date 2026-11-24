@@ -1,7 +1,9 @@
-import { S, $, $$, api, t, esc, icon, toast, fail, go, avatar, debounce, menu, menuIsOpen, promptDialog, confirmDialog, PLATFORMS } from './lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, go, avatar, debounce, menu, menuIsOpen, promptDialog, confirmDialog, PLATFORMS, callLabel } from './lib.js';
 import { setLang } from './i18n.js';
 import { events, ApiError } from './api.js';
-import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recEvents } from './recording.js';
+import { translateChip, translateMenu } from './translate-chip.js';
+import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recordDetected, recEvents, setRecConsent } from './recording.js';
+import { copyNotice, setConsent } from './consent.js';
 import { openPalette } from './palette.js';
 import { openImport, openExport } from './views/transfer.js';
 import * as home from './views/home.js';
@@ -55,7 +57,7 @@ async function route() {
   S.view = { name: name || 'home', parts, params };
   setDrawer(false);
   renderSidebar();
-  main.scrollTop = 0;
+  main.scrollTop = 0; main.classList.remove('fit');
   const slow = setTimeout(() => { appEl.classList.add('loading'); main.setAttribute('aria-busy', 'true'); }, 220);
   try { await view.render(main, { parts, params, name }); } catch (e) {
     if (e instanceof ApiError && e.status === 404) { toast(t('That item no longer exists.'), { error: true }); go('#/'); return; }
@@ -154,8 +156,9 @@ export function renderTopbar() {
     <button class="btn ghost icon menu-btn" data-top="drawer" aria-label="${t('Menu')}" aria-controls="sidebar" aria-expanded="${appEl.classList.contains('drawer')}">${icon('menu')}</button>
     <button class="searchpill" data-top="search">${icon('search')}<span>${t('Search meetings, topics, people, quotes…')}</span><kbd>${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'} K</kbd></button>
     <span class="spacer"></span>
-    ${rec ? `<button class="live-ind" data-top="live"><span class="dot-rec"></span><span class="t">${t('Recording')}</span></button>` : det ? `<button class="live-ind detected" data-top="detected" aria-label="${esc(`${PLATFORMS[S.detector.platform] || S.detector.apps?.[0] || t('Meeting')} · ${t('live')} — ${t('Take notes')}`)}">${icon('video', 'sm')}<span class="t">${esc(PLATFORMS[S.detector.platform] || S.detector.apps?.[0] || t('Meeting'))} · ${t('live')}</span></button>` : ''}
+    ${rec ? `<button class="live-ind" data-top="live"><span class="dot-rec"></span><span class="t">${t('Recording')}</span></button>` : det ? `<button class="live-ind detected" data-top="detected" aria-label="${esc(`${callLabel(S.detector) || t('Meeting')} · ${t('live')} — ${t('Take notes')}`)}">${icon('video', 'sm')}<span class="t">${esc(callLabel(S.detector) || t('Meeting'))} · ${t('live')}</span></button>` : ''}
     <button class="btn" data-top="import" title="${t('Import')}" aria-label="${t('Import')}">${icon('upload')}<span class="lbl-sm">${t('Import')}</span></button>
+    ${rec ? '' : translateChip('data-top="translate"')}
     ${rec ? '' : `<button class="btn primary" data-top="record">${icon('mic')}<span class="lbl-sm">${t('Record')}</span></button>`}`;
 }
 topbar.addEventListener('click', async (e) => {
@@ -164,9 +167,10 @@ topbar.addEventListener('click', async (e) => {
   if (a === 'drawer') setDrawer(!appEl.classList.contains('drawer'));
   else if (a === 'search') openPalette();
   else if (a === 'import') openImport();
+  else if (a === 'translate') translateMenu(e.target.closest('[data-top]'));
   else if (a === 'record') startRecording(null);
   else if (a === 'live') go(`#/note/${S.rec.noteId}`);
-  else if (a === 'detected') takeNotesFor(S.detector.event ? { title: S.detector.event.summary, uid: S.detector.event.uid, start: S.detector.event.start, attendees: S.detector.event.attendees, platform: S.detector.platform } : { platform: S.detector.platform, title: S.detector.title || '' }, { record: true });
+  else if (a === 'detected') recordDetected(S.detector);
 });
 $('.scrim').addEventListener('click', () => setDrawer(false));
 
@@ -221,17 +225,35 @@ function connectEvents() {
     'note.summarize-failed': (d) => fail(d.message),
     'note.insights-failed': (d) => toast(t('Could not extract topics: {m}', { m: d.message }), { error: true }),
     'meeting.detected': (d) => {
-      S.detector = { active: true, apps: d.apps, platform: d.platform, title: d.title, event: d.event }; renderTopbar();
+      S.detector = { active: true, apps: d.apps, platform: d.platform, platforms: d.platforms, title: d.title, event: d.event }; renderTopbar();
+      S.detectToast?.remove(); S.detectToast = null;
       if (S.rec.active) return;
       const title = d.event?.summary || d.title;
-      toast(`${t('Meeting detected in {apps}', { apps: d.apps.join(', ') })}${title ? ` — ${title}` : ''}`, { iconName: 'video', timeout: 0, actions: [
-        { label: t('Take notes'), primary: true, run: () => takeNotesFor(d.event ? { title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, platform: d.platform, url: d.event.url } : { platform: d.platform, title: '' }, { record: true }) },
+      S.detectToast = toast(`${t('Meeting detected in {apps}', { apps: d.apps.join(', ') })}${title ? ` — ${title}` : ''}`, { iconName: 'video', timeout: 0, actions: [
+        { label: t('Take notes'), primary: true, run: () => recordDetected(d) },
         { label: t('Not now'), run: () => {} }] });
     },
-    'meeting.ended': () => { S.detector = { active: false }; renderTopbar(); if (S.rec.active) toast(t('The call ended. Stop recording?'), { timeout: 20000, actions: [{ label: t('Stop'), primary: true, run: () => stopRecording().catch(fail) }, { label: t('Keep recording'), run: () => {} }] }); },
-    'meeting.autostarted': (d) => { toast(t('Recording started automatically'), { ok: true }); bump(); if (d.noteId) go(`#/note/${d.noteId}`); },
+    // a second call joined or one left while the meeting goes on (Zoom and Discord at once)
+    'meeting.apps-changed': (d) => {
+      const joined = (d.platforms || []).filter((p) => !(S.detector?.platforms || []).includes(p));
+      S.detector = { ...S.detector, active: true, apps: d.apps, platform: d.platform, platforms: d.platforms }; renderTopbar();
+      if (S.rec.active && joined.length) toast(t('{call} is live too: capturing everything the call apps play.', { call: joined.map((p) => PLATFORMS[p] || p).join(' + ') }), { iconName: 'video' });
+    },
+    'meeting.ended': () => { S.detector = { active: false }; S.detectToast?.remove(); S.detectToast = null; renderTopbar(); if (S.rec.active) toast(t('The call ended. Stop recording?'), { timeout: 20000, actions: [{ label: t('Stop'), primary: true, run: () => stopRecording().catch(fail) }, { label: t('Keep recording'), run: () => {} }] }); },
+    // A recording that started by itself stays announced until the person has dealt with the others: told them, or
+    // stopped it. The toast has no close button on purpose, and it belongs to its recording: it goes when that one stops.
+    'meeting.autostarted': (d) => {
+      S.autoToast?.remove();
+      const mine = () => S.rec.active && S.rec.noteId === d.noteId;
+      S.autoToast = toast(t('Recording started automatically. Do the others on the call know?'), { ok: true, sticky: true, actions: [
+        { label: t('Copy notice for the chat'), primary: true, keep: true, run: async () => { await copyNotice(); toast(t('Notice copied: paste it into the meeting chat, then choose “I told them”.'), { ok: true }); } },
+        { label: t('I told them'), run: async () => { await setConsent(d.noteId, 'announced'); if (mine()) setRecConsent('announced', d.noteId); } },
+        { label: t('Stop recording'), run: async () => { if (mine()) await stopRecording(); } },
+      ] });
+      bump(); if (d.noteId) go(`#/note/${d.noteId}`);
+    },
     'meeting.autostart-failed': (d) => fail(d.message),
-    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Dismiss'), run: () => {} }] }); },
+    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') S.startingToast = toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Dismiss'), run: () => {} }] }); },
     'model.installed': async () => { S.state = await api('GET', '/api/state'); S.models = await api('GET', '/api/models'); },
     'model.error': (d) => fail(d.message),
     'import.done': (d) => { bump(); toast(t('Imported and transcribed ({n} lines)', { n: d.segments }), { ok: true, actions: [{ label: t('Open'), run: () => go(`#/note/${d.noteId}`) }] }); },
@@ -242,7 +264,7 @@ function connectEvents() {
     'google.error': (d) => fail(d.message),
     'dictation.error': (d) => fail(d.message),
     'dictation.result': (d) => { if (d.text) toast(`🎙 ${d.text}`, { timeout: 4000 }); },
-    settings: async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); renderSidebar(); },
+    settings: async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); renderSidebar(); renderTopbar(); renderRecbar(); },
   });
 }
 

@@ -119,12 +119,11 @@ test('meeting names: nothing shown after Stop, or while paused, counts', async (
   assert.equal(r.hub.listenerCount('signal'), 0, 'no listener left behind');
 });
 
-test('head count: the people on the call set the number of voices to expect, the user left out', async (t) => {
+test('head count: the people on the call are an upper bound on the voices, the user left out: nothing is forced on the clustering', async (t) => {
   const r = rig(t, { diarize: true });
   await r.call({ roster: [{ name: 'Vasco', self: true }, { name: 'Ana Silva' }, { name: 'Bruno Costa' }, { name: 'Carla Dias' }] });
-  const sys = r.calls.filter((c) => c.numSpeakers);
-  assert.equal(sys.length, 1, 'only the system audio is forced');
-  assert.equal(sys[0].numSpeakers, 3);
+  assert.ok(r.calls.length >= 1, 'the system audio was clustered');
+  assert.ok(r.calls.every((c) => !c.numSpeakers), 'people on the call do not always speak: the clustering is free to find fewer');
 });
 
 test('head count: what the user said wins over the call\'s own list', async (t) => {

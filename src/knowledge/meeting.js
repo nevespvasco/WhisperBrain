@@ -3,19 +3,24 @@
 // plus file renderers: Markdown, plain text, HTML (also the source for PDF), JSON, SRT and WebVTT subtitles.
 const { fmtClock } = require('../core/notes');
 
-function toMeeting({ notes, knowledge, speakers, settings }, id, { transcript = true } = {}) {
+// lang + mode: with the translation of the meeting into `lang`, 'translation' puts it in place of the words and 'both' under them
+// (a line with no translation keeps its words). Left out: the meeting as it was said.
+function toMeeting({ notes, knowledge, speakers, settings, translator }, id, { transcript = true, lang, mode } = {}) {
   const n = notes.get(id);
   if (!n) return null;
   const segs = transcript ? notes.segments(id) : [];
+  const said = lang && ['translation', 'both'].includes(mode) && translator ? translator.translations(id, lang) : null;
+  const words = (s) => { const t = said?.get(s.id); return !t ? s.text : mode === 'both' ? `${s.text}\n${t}` : t; };
   const label = (s) => knowledge.label(s);
   const people = [...new Set(notes.segments(id).map(label))];
   return {
     id: n.id, title: n.title || 'Untitled meeting', createdAt: n.createdAt, startedAt: n.startedAt, endedAt: n.endedAt,
     durationMs: n.endedAt && n.startedAt ? n.endedAt - n.startedAt : (segs.length ? segs[segs.length - 1].endMs : 0),
     attendees: n.attendees || [], tags: knowledge.noteTags(id).map((t) => t.name), topics: knowledge.noteTopics(id).map((t) => t.name), people,
-    source: n.source, platform: n.platform, summary: n.summary || '', body: n.body || '', insights: n.insights || null,
+    source: n.source, platform: n.platform, summary: (said && mode === 'translation' && translator.summaryTranslation(id, lang)?.text) || n.summary || '', body: n.body || '', insights: n.insights || null,
     actionItems: knowledge.actionItems({ noteId: id }).map((a) => ({ text: a.text, owner: a.owner, due: a.due, done: a.done })),
-    transcript: segs.map((s) => ({ label: label(s), startMs: s.startMs, endMs: s.endMs, text: s.text })),
+    transcript: segs.map((s) => ({ label: label(s), startMs: s.startMs, endMs: s.endMs, text: words(s), translation: said?.get(s.id) || '' })),
+    translation: said ? { lang, mode } : null,
     glossary: knowledge.termsInNote(id).map((g) => ({ term: g.term, definition: g.definition })),
     links: knowledge.links(id).map((l) => ({ kind: l.kind, url: l.url, title: l.title })),
     speakers: speakers ? knowledge.analytics(id).speakers : [],
@@ -75,7 +80,7 @@ function toHtml(m, { transcript = true } = {}) {
   body{font:14px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1c1b22;max-width:780px;margin:32px auto;padding:0 24px}
   h1{font-size:24px;margin:0 0 4px}h2{font-size:15px;text-transform:uppercase;letter-spacing:.05em;color:#6d5dd3;margin:26px 0 8px;border-bottom:1px solid #ecebf5;padding-bottom:4px}
   h3,h4,h5{font-size:14px;margin:14px 0 4px}.meta{color:#6b6880;font-size:13px}.chip{display:inline-block;background:#f1efff;color:#5b4bc4;border-radius:99px;padding:1px 9px;margin:2px 4px 2px 0;font-size:12px}
-  .seg{margin:6px 0}.who{font-weight:600}.ts{color:#8b88a0;font-size:12px;margin-left:6px}ul.tasks{list-style:none;padding-left:4px}code{background:#f4f3f8;padding:1px 4px;border-radius:4px}
+  .seg{margin:6px 0}.seg div{white-space:pre-wrap}.who{font-weight:600}.ts{color:#8b88a0;font-size:12px;margin-left:6px}ul.tasks{list-style:none;padding-left:4px}code{background:#f4f3f8;padding:1px 4px;border-radius:4px}
   table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid #ecebf5;padding:5px 6px;text-align:left}
   @media print{body{margin:0;max-width:none}a{color:inherit}}</style></head><body>
   <h1>${esc(m.title)}</h1><div class="meta">${esc(date)}${m.durationMs ? ` · ${Math.round(m.durationMs / 60000)} min` : ''}${m.attendees.length ? ` · ${esc(m.attendees.map((a) => a.name || a.email).join(', '))}` : ''}</div>

@@ -7,10 +7,13 @@ const { SpeakerTracker } = require('../speakers/cluster');
 const { refineNote, describeUtterance } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
+const { describe } = require('../speakers/display');
 const { MeetingCollector } = require('../meet/collector');
+const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
-const { speechOf } = require('../meet/names');
+const { speechOf, invitedNames } = require('../meet/names');
 const { Spool } = require('./spool');
+const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
 const CARRY_MS = 3000;        // a short utterance without a usable embedding inherits the previous speaker within this gap
@@ -36,8 +39,8 @@ class RecordingManager {
   // discord: the Discord voice bot (src/discord/bot.js) or a stand-in with join()/leave()/on('audio'): when it joins the call,
   // every person arrives on a channel of their own ('dc:<user id>') and replaces the mixed system audio.
   // meet: the SignalHub (src/meet/hub.js) the meeting window's readers report to: who is speaking and who is on the call.
-  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null }) {
-    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet });
+  constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null, evidence = null }) {
+    Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet, evidence });
     if (spoolDir) Spool.sweep(spoolDir);
     this.active = null;
     this.engine.on('segment', (s) => this.onSegment(s));
@@ -56,6 +59,7 @@ class RecordingManager {
     if (!a) return { active: false };
     return {
       active: true, noteId: a.noteId, paused: a.paused, finalizing: a.finalizing, stage: a.stage || null,
+      micMuted: a.micMuted, micAvailable: !!a.channels.mic,
       elapsedMs: this.elapsed(a), channels: Object.keys(a.channels), needsRenderer: a.rendererChannels,
       echo: { cancellation: a.aec ? { ...a.aec } : null, dropped: { ...a.echoDropped } },
       draft: a.draft ? { on: a.draft.on, reason: a.draft.reason || null } : { on: false, reason: null },
@@ -81,7 +85,11 @@ class RecordingManager {
     return model;
   }
 
-  async start(noteId, { mic, system } = {}) {
+  // app: the meeting application ({ name, appId, pid, binary }) when the caller knows it; the system channel then follows it
+  // alone where the platform can (Linux), see resolveSystemApp. apps: the applications the person chose to record (several calls at
+  // once): only their audio, and it stays so (widenSystemCapture leaves it alone). wholeOutput: the person chose everything the
+  // computer plays, so no application is followed and nothing needs saying about it.
+  async start(noteId, { mic, system, app, apps, wholeOutput } = {}) {
     if (this.active) throw new RecordingError('busy', 'A recording is already in progress.');
     const note = this.notes.get(noteId);
     if (!note) throw new RecordingError('not-found', 'Note not found.');
@@ -92,7 +100,7 @@ class RecordingManager {
     const prior = this.notes.segments(noteId).reduce((m, x) => Math.max(m, x.endMs), 0);
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
-      noteId, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
+      noteId, chosenApps: apps?.length ? apps : null, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
       fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
@@ -105,6 +113,7 @@ class RecordingManager {
       discord: null,                       // { info, onAudio } while the bot is in the call
       meet: null,                          // what the meeting window shows while recording: highlights, roster, captions (src/meet/collector.js)
     };
+    this.bus.live?.set(noteId, []); // while it runs, who spoke is shown cautiously, and numbers do not move (speakers/display.js)
     if (this.meet && s.meet.enabled) a.meet = new MeetingCollector({ hub: this.meet, elapsed: () => this.elapsed(a), paused: () => a.paused, originMs: a.accMs, useCaptions: s.meet.captions, selfNames: () => [this.settings.get('userName')] });
     try {
       await this.ensureEngine();
@@ -118,7 +127,7 @@ class RecordingManager {
         try {
           let src;
           if (cap[ch] === 'native') {
-            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource();
+            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource(a.chosenApps ? { apps: a.chosenApps } : wholeOutput ? { wholeOutput: true } : { app: await this.resolveSystemApp(s, app) });
           } else {
             src = new PushSource();
             a.rendererChannels.push(ch);
@@ -136,12 +145,13 @@ class RecordingManager {
       if (!Object.keys(a.channels).length && !a.discord) throw new RecordingError('no-source', 'No audio source could be started.');
       this.notes.update(noteId, { status: 'recording', startedAt: note.startedAt || Date.now() });
       for (const src of Object.values(a.channels)) src.start();
-      this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec });
+      this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec, systemCapture: a.channels.system?.capture || null });
       if (a.rendererChannels.length) this.bus.publish('capture.request', { noteId, channels: a.rendererChannels });
       return this.status();
     } catch (e) {
       this.teardown(a);
       this.active = null;
+      this.bus.live?.delete(noteId);
       throw e;
     }
   }
@@ -188,7 +198,8 @@ class RecordingManager {
     }
     const tr = a.trackers[ch];
     if (ch === 'system') tr.max = this.notes.get(a.noteId)?.speakerCount || 0; // the user may set it while recording
-    const r = tr.assign(embedding);
+    const r = tr.assign(embedding, { seconds: (seg.endMs - seg.startMs) / 1000 });
+    if (!r.id) return null; // too short to say it is somebody new, and nobody it sounds like: unlabelled until the passes after Stop
     const sp = tr.speakers.find((x) => x.id === r.id);
     this.speakers.save(a.noteId, { speakerId: r.id, channel: ch, centroid: sp.centroid, count: sp.count });
     // recognise saved voices as soon as a speaker appears, and again once we have heard them a bit more
@@ -197,16 +208,56 @@ class RecordingManager {
     return r.id;
   }
 
+  // The people invited to the meeting, kept as evidence (a prior for the names; see names.js canonicalizer). Replaced, not added to.
+  recordInvitation(a) {
+    try {
+      const rows = (this.notes.get(a.noteId)?.attendees || []).map((p) => ({ ...p, name: p.name || invitedNames([p])[0] || '' })).filter((p) => p.name)
+        .map((p) => ({ kind: 'calendar', source: 'calendar', key: nameKey(p.name), name: p.name, weight: 1, meta: { email: p.email || '' } }));
+      this.evidence?.replace(a.noteId, ['calendar'], rows);
+    } catch { /* a record, never a reason to fail the stop */ }
+  }
+
+  // The application the system channel should follow: the one named, else the single confident meeting app using the
+  // microphone right now; none (the whole output) when per-app capture is off or nothing is certain.
+  async resolveSystemApp(s, hint) {
+    if (!s.perAppCapture) return undefined;
+    if (hint) return hint;
+    try { return pickTargetApp((await this.platform.micActivity?.())?.apps) || undefined; } catch { return undefined; }
+  }
+
+  // The system channel follows one application's stream; when a second call turns up (Zoom and Discord at once) that would
+  // lose the other call, so it moves to the whole output. Idempotent; false when nothing needed (or could be) changed, and always
+  // false when the person chose which applications to record.
+  widenSystemCapture(reason) {
+    const a = this.active;
+    return !!(a && !a.finalizing && !a.chosenApps && a.channels.system?.widen?.(reason));
+  }
+
   attach(a, ch, src) {
     a.channels[ch] = src;
+    // a source that can change what it captures (the application's stream went away) says so; the person is told
+    src.on('capture', (c) => {
+      this.bus.publish('recording.system-capture', { noteId: a.noteId, ...c });
+      if (c.reason) { a.warnings.push(`${ch}: ${c.reason}`); this.bus.publish('recording.warning', { message: `${ch}: ${c.reason}` }); }
+    });
     src.on('pcm', (buf) => this.onPcm(a, ch, buf));
     src.on('error', (e) => {
       this.bus.publish('recording.warning', { message: `${ch}: ${e.message}` });
     });
     src.on('end', () => {
-      if (this.active === a && !a.finalizing && !(src instanceof PushSource)) {
-        this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
+      if (this.active !== a || a.finalizing || a.channels[ch] !== src || src instanceof PushSource) return;
+      // Where the platform can also capture in the renderer (macOS, Windows), the channel moves there rather than go silent
+      if (this.platform.renderer?.[ch]) {
+        const push = new PushSource();
+        a.channels[ch] = push;
+        this.attach(a, ch, push);
+        push.start();
+        if (!a.rendererChannels.includes(ch)) a.rendererChannels.push(ch);
+        this.bus.publish('recording.warning', { message: `${ch}: the native capture stopped, so the audio is now captured by the window instead` });
+        this.bus.publish('capture.request', { noteId: a.noteId, channels: [ch] });
+        return;
       }
+      this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
     });
   }
 
@@ -233,6 +284,7 @@ class RecordingManager {
 
   onPcm(a, ch, buf) {
     if (this.active !== a || a.paused || a.finalizing) return;
+    if (ch === 'mic' && a.micMuted) buf = Buffer.alloc(buf.length);   // muted: what the microphone hears goes no further; the timeline carries on in silence
     const spool = this.spoolFor(a, ch);
     if (a.fed[ch] === 0) {
       a.epoch[ch] = Math.max(0, this.elapsed(a) - Math.round((buf.length / 2 / 16000) * 1000));
@@ -281,16 +333,26 @@ class RecordingManager {
     }
     seg.speakerId = remote ? remote.speakerId : this.identify(a, ch, seg, embedding);
     if (seg.speakerId && !remote) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
-    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, embedding, words, logProbMean, logProbMin }]);
+    else if (embedding && !remote) a.last[ch] = null; // a voice nobody matched: the next line without a print must not be handed to the speaker before it
+    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, channel: ch, embedding, words, logProbMean, logProbMin }]);
     const spool = a.spool[ch];
     if (spool && !spool.broken) {
       const ref = { segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) };
       a.refs.push(ref);
       if (this.settings.get('speakerRefine')) this.describeSoon(a, ref);
     }
-    const label = seg.speakerId ? this.speakers.label(a.noteId, seg.speakerId, speaker) : (speaker === 'me' ? 'Me' : 'Them');
+    const d = this.lineLabel(a, seg.speakerId, speaker);
     if (kind === 'system') a.recentSystem = [...a.recentSystem.filter((x) => x.endMs > seg.endMs - 15000), { startMs: seg.startMs, endMs: seg.endMs, text }].slice(-8);
-    this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label, startMs: seg.startMs, endMs: seg.endMs, text } });
+    this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label: d.label, labelKind: d.kind, displayNo: d.n, speakerName: d.kind === 'name' ? d.label : '', startMs: seg.startMs, endMs: seg.endMs, text } });
+  }
+
+  // What a line is called on screen right now (speakers/display.js). When that brings a voice on show, the lines already drawn
+  // are told to rename themselves. Without a speaker store a line is just Me or Them.
+  lineLabel(a, speakerId, speaker) {
+    if (!this.speakers) return describe(new Map(), { speaker });
+    const shown = this.speakers.display(a.noteId, this.settings.get('userName'));
+    if (shown.shown !== a.shown) { a.shown = shown.shown; this.bus.publish('speakers.updated', { noteId: a.noteId }); }
+    return shown.of(speakerId, speaker);
   }
 
   // Describe an utterance's voice (pitch, timbre: about 25 ms of work) in the gaps while recording, one at a time with
@@ -366,6 +428,19 @@ class RecordingManager {
     }));
   }
 
+  // Stop recording what the user says, and start again, without stopping the meeting: the microphone's audio is replaced by silence
+  // before the recognizer, the speaker pass or the audio kept for it ever see it. The other side goes on as ever. A new recording
+  // starts unmuted. Asking for the state it already has changes nothing and says nothing. -> the status
+  setMicMuted(muted) {
+    const a = this.active;
+    if (!a) throw new RecordingError('idle', 'No recording in progress.');
+    if (!a.channels.mic) throw new RecordingError('no-mic', 'The microphone is not part of this recording.');
+    if (a.finalizing || a.micMuted === !!muted) return this.status();
+    a.micMuted = !!muted;
+    this.bus.publish('recording.mic-muted', { noteId: a.noteId, muted: a.micMuted });
+    return this.status();
+  }
+
   async pause() {
     const a = this.active;
     if (!a || a.paused || a.finalizing) return this.status();
@@ -410,11 +485,12 @@ class RecordingManager {
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
-      try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      try { const open = ['mic', 'system'].filter((ch) => !diarized.includes(ch)); this.speakers.consolidate(a.noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(a.noteId, threshold, { channels: open }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
       if (a.meet) this.nameFromMeeting(a, s); // last: it must not overrule a saved voice the speaker was just matched to
     }
     this.closeSpools(a);
     this.active = null;
+    this.bus.live?.delete(a.noteId); // the voices are final now: all of them are shown
     Promise.resolve(this.engine.releaseHotwords?.()).catch(() => {}); // the next recording brings its own words
     Promise.resolve(this.engine.setDraft?.(null)).catch(() => {}); // and its own drafts: nothing streams between recordings
     const note = this.notes.update(a.noteId, { status: 'done', endedAt: Date.now() });
@@ -468,18 +544,28 @@ class RecordingManager {
   nameFromMeeting(a, s) {
     try {
       const m = s.meet;
-      const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs });
+      const startedAt = Date.now();
+      const invited = invitedNames(this.notes.get(a.noteId)?.attendees);
+      const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs, candidates: invited });
       let res = run();
       const fixed = m.refine ? this.fixVoicesFromMeeting(a, res) : { merged: 0, moved: 0 };
       if (fixed.merged || fixed.moved) res = run();
       const named = [], conflicts = [];
       for (const n of res.named) {
-        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name);
+        const source = n.via === 'sole' ? 'meeting:roster' : n.from === 'caption' ? 'meeting:caption' : 'meeting:highlight';
+        const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.score ?? n.share });
         if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
       }
       let learned = 0;
-      if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId)) learned++;
-      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, ...fixed };
+      if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
+      try {
+        // this recording's highlights and captions are new; the roster is the latest one, and replaces the earlier
+        const rows = a.meet.toEvidence({ endMs: a.accMs });
+        this.evidence?.add(a.noteId, rows.filter((r) => r.kind === 'highlight' || r.kind === 'caption'));
+        this.evidence?.replace(a.noteId, ['roster'], rows.filter((r) => r.kind === 'roster'));
+      } catch { /* a record, never a reason to fail the stop */ }
+      this.recordInvitation(a);
+      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, tookMs: Date.now() - startedAt, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
   }
@@ -543,6 +629,10 @@ class RecordingManager {
       a.spool[ch] = null; // no raw audio is kept for these: each person is already known, so there is nothing for the after-recording speaker pass to do
       a.fed[ch] = 0; a.epoch[ch] = 0; a.base[ch] = 0; a.stretches[ch] = []; a.env[ch] = new EnergyEnvelope();
       try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system'); } catch { /* the label falls back to the id */ }
+      try {
+        const key = nameKey(name);
+        if (!this.evidence?.forNote(a.noteId, { kind: 'stream' }).some((e) => e.key === key && e.meta?.userId === String(userId))) this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'discord', key, name, t0: this.elapsed(a), weight: 1, meta: { userId: String(userId), speakerId: r.speakerId } }]);
+      } catch { /* evidence is a record, never a reason to lose audio */ }
     }
     r.chain = r.chain.then(() => this.feedDiscord(a, ch, r, pcm, ts)).catch((e) => this.bus.publish('recording.warning', { message: `Discord audio: ${e.message}` }));
   }

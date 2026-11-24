@@ -84,4 +84,13 @@ function platformFromUrl(url) {
   return null;
 }
 
-module.exports = { MEETING_APPS, BROWSERS, classify, classifyWindowTitle, platformFromUrl, appName: (id) => NAMES[id] || null };
+// Which application is the meeting, out of the ones using the microphone ({ name, appId, weak, pid, binary })? Only a single
+// confident one counts: a weak guess (an unknown app, a browser tab not titled as a call) or two meeting apps at once could
+// be the wrong one, and following the wrong one would lose the call's audio. -> app | null
+function pickTargetApp(apps) {
+  const strong = (apps || []).filter((a) => a && !a.weak && a.appId !== 'other');
+  const ids = new Set(strong.map((a) => a.appId));
+  return ids.size === 1 ? strong[0] : null;
+}
+
+module.exports = { MEETING_APPS, pickTargetApp, BROWSERS, classify, classifyWindowTitle, platformFromUrl, appName: (id) => NAMES[id] || null };

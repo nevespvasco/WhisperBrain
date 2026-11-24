@@ -226,11 +226,89 @@ const MIGRATIONS = [
   `
   ALTER TABLE notes ADD COLUMN speaker_count INTEGER;
   `,
+  // v8: voice prints are opt-in, so a saved voice records when, and on whose say-so, it was enrolled (consent_source =
+  // 'user' | 'meeting' | 'import'; enrolled_from = "<note>:<speaker>"). Profiles from before this keep NULL: no consent is
+  // invented for them. And every utterance names its channel: 'mic' | 'system' | 'dc:<discord user id>', so a person on
+  // Discord stays distinguishable from the mixed system audio (speaker still reads 'them' for them).
+  `
+  ALTER TABLE voices ADD COLUMN consent_at INTEGER;
+  ALTER TABLE voices ADD COLUMN consent_source TEXT;
+  ALTER TABLE voices ADD COLUMN enrolled_from TEXT;
+  ALTER TABLE segments ADD COLUMN channel TEXT;
+  UPDATE segments SET channel = CASE
+    WHEN speaker = 'me' THEN 'mic'
+    WHEN speaker_id GLOB 'd[0-9]*' THEN 'dc:' || substr(speaker_id, 2)
+    ELSE 'system' END;
+  `,
+  // v9: whether the other people on the call were told it is being recorded: 'unknown' (nothing said yet) | 'announced' |
+  // 'declined' (somebody objected). Kept on the meeting so it can be seen again, and exported with it.
+  `
+  ALTER TABLE notes ADD COLUMN consent TEXT NOT NULL DEFAULT 'unknown';
+  `,
+  // v10: what names are based on, kept instead of dropped when a recording stops. kind: 'highlight' (who the meeting window
+  // lit up, raw: the source's lag is in meta), 'roster' (who is on the call), 'caption' (a name and the words they said),
+  // 'stream' (a Discord bot heard this person), 'transcript' (a platform's own transcript), 'calendar' (an invited attendee).
+  // participant_key = the name folded for comparison; t0/t1 = timeline ms of the recording (t1 NULL for a point).
+  // And each speaker records which kind of evidence named it ('user', 'voice', 'stream', 'meeting:highlight'...) and how
+  // sure that was (0..1); '' = of unknown origin, as every name from before this is.
+  `
+  CREATE TABLE evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT '',
+    participant_key TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    t0 INTEGER,
+    t1 INTEGER,
+    weight REAL NOT NULL DEFAULT 1,
+    meta TEXT
+  );
+  CREATE INDEX evidence_note ON evidence(note_id, kind);
+  ALTER TABLE note_speakers ADD COLUMN name_source TEXT NOT NULL DEFAULT '';
+  ALTER TABLE note_speakers ADD COLUMN name_confidence REAL;
+  `,
+  // v11: search by meaning (src/search/semantic.js): a meeting's transcript cut into chunks, kept with where they are. The vectors
+  // live in a sqlite-vec table (semantic_vec) made by the program when the extension is there, since a virtual table needs it.
+  `
+  CREATE TABLE semantic_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    text TEXT NOT NULL
+  );
+  CREATE INDEX semantic_chunks_note ON semantic_chunks(note_id);
+  `,
+  // v11: translations. A line translated into a language (segment_translations) and a note's summary (note_translations; `field` leaves room for more).
+  // src_hash is a hash of the text that was translated: a translation whose source has changed since (the speaker pass cuts a line,
+  // the summary is written again) is stale and is not shown. Lines and notes take their translations with them.
+  `
+  CREATE TABLE segment_translations (
+    segment_id INTEGER NOT NULL REFERENCES segments(id) ON DELETE CASCADE,
+    lang TEXT NOT NULL,
+    text TEXT NOT NULL,
+    src_hash TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (segment_id, lang)
+  );
+  CREATE TABLE note_translations (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    lang TEXT NOT NULL,
+    field TEXT NOT NULL,
+    text TEXT NOT NULL,
+    src_hash TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (note_id, lang, field)
+  );
+  `,
 ];
 
-function open(file) {
+// allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
+function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
-  const db = new DatabaseSync(file);
+  const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : {});
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   migrate(db);
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }

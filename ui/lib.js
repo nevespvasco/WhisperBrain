@@ -48,6 +48,21 @@ export const safeSnippet = (html) => String(html || '').replace(/#{1,6}\s+|\*\*/
 // ---------- colours ----------
 const PALETTE = ['#7c5cff', '#ef6f6c', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#14b8a6', '#8b5cf6', '#f97316', '#0ea5e9', '#84cc16', '#e11d48'];
 export function hashColor(s) { let h = 0; for (const c of String(s || '?')) h = (h * 31 + c.charCodeAt(0)) >>> 0; return PALETTE[h % PALETTE.length]; }
+// What a speaker or a line is called on screen. The server decides who is shown and numbered (src/speakers/display.js) and
+// says how to write it ('name' | 'me' | 'speaker' | 'room' | 'room-hidden' | 'them', plus the number); the words come from t().
+export function speakerText({ name = '', kind = 'them', n = null } = {}) {
+  if (name) return name;
+  switch (kind) {
+    case 'me': return S.settings?.userName || t('Me');
+    case 'speaker': return t('Speaker {n}', { n });
+    case 'room': return t('Room speaker {n}', { n });
+    case 'room-hidden': return t('Someone in the room');
+    default: return t('Them');
+  }
+}
+// ...of a line (a transcript segment, or the transcript.segment event) and of an entry of a note's speaker list
+export const lineText = (s) => speakerText({ name: s.speakerName || (s.labelKind === 'name' ? s.label : ''), kind: s.labelKind || (s.speaker === 'me' ? 'me' : 'them'), n: s.displayNo });
+export const speakerEntryText = (x) => speakerText({ name: x.name || x.voiceName, kind: x.labelKind || (x.channel === 'mic' ? 'me' : 'them'), n: x.displayNo });
 export function speakerColor(id, label) { if (!id || !/^[ms]\d+$/.test(id)) return hashColor(label || id); const n = id[0] === 'm' ? Number(id.slice(1)) - 1 : 2 + Number(id.slice(1)); return PALETTE[((n % PALETTE.length) + PALETTE.length) % PALETTE.length]; }
 export function initials(name) { const w = String(name || '?').trim().split(/\s+/).filter(Boolean); return ((w[0]?.[0] || '?') + (w.length > 1 ? w[w.length - 1][0] : w[0]?.[1] || '')).toUpperCase(); }
 const lum = (hex) => { const c = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
@@ -66,24 +81,39 @@ export const SOURCES = {
   linear: { icon: 'checksq', label: 'Linear' }, calendar: { icon: 'calendar', label: 'Calendar' },
 };
 export const PLATFORMS = { zoom: 'Zoom', meet: 'Google Meet', teams: 'Microsoft Teams', slack: 'Slack', discord: 'Discord', webex: 'Webex', whereby: 'Whereby', jitsi: 'Jitsi', facetime: 'FaceTime', browser: 'Browser' };
+// "Zoom + Discord": every call that is live, not only the first (a detector status/event: { platforms, platform, apps })
+export const callLabel = (d) => {
+  const names = (d?.platforms?.length ? d.platforms : [d?.platform]).filter(Boolean).map((p) => PLATFORMS[p] || null);
+  const known = names.filter(Boolean);
+  return (known.length ? known : (d?.apps || []).slice(0, 2)).join(' + ');
+};
 export const srcIcon = (src) => `<span class="srcicon" title="${esc(t(SOURCES[src]?.label || src))}">${icon(SOURCES[src]?.icon || 'file')}</span>`;
 
 // ---------- toasts ----------
-export function toast(message, { error = false, ok = false, actions = [], timeout = 6000, iconName } = {}) {
+// sticky: no close button and no timeout; it goes away only when one of its actions is used
+export function toast(message, { error = false, ok = false, actions = [], timeout = 6000, iconName, sticky = false } = {}) {
   const el = document.createElement('div');
-  el.className = `toast${error ? ' error' : ''}${ok ? ' ok' : ''}`;
+  el.className = `toast${error ? ' error' : ''}${ok ? ' ok' : ''}${sticky ? ' sticky' : ''}`;
   el.setAttribute('role', error ? 'alert' : 'status');
-  el.innerHTML = `<div class="msg"><span class="ti">${icon(iconName || (error ? 'alert' : ok ? 'ok' : 'info'))}</span><div class="grow">${esc(message)}</div><button class="btn ghost icon xs" aria-label="${t('Dismiss')}">${icon('x', 'sm')}</button></div>`;
-  el.querySelector('.msg button').onclick = () => el.remove();
+  el.innerHTML = `<div class="msg"><span class="ti">${icon(iconName || (error ? 'alert' : ok ? 'ok' : 'info'))}</span><div class="grow">${esc(message)}</div>${sticky ? '' : `<button class="btn ghost icon xs" aria-label="${t('Dismiss')}">${icon('x', 'sm')}</button>`}</div>`;
+  if (!sticky) el.querySelector('.msg button').onclick = () => el.remove();
   if (actions.length) {
     const row = document.createElement('div'); row.className = 'row';
-    for (const a of actions) { const b = document.createElement('button'); b.className = `btn sm${a.primary ? ' primary' : ''}`; b.textContent = a.label; b.onclick = () => { el.remove(); a.run(); }; row.append(b); }
+    for (const a of actions) { const b = document.createElement('button'); b.className = `btn sm${a.primary ? ' primary' : ''}`; b.textContent = a.label; b.onclick = sticky ? () => stickyAction(el, a) : () => { el.remove(); a.run(); }; row.append(b); }
     el.append(row);
   }
   $('#toasts').append(el);
-  while ($('#toasts').children.length > 4) $('#toasts').firstElementChild.remove();
-  if (timeout) setTimeout(() => el.remove(), timeout);
+  // Too many on screen: the oldest ordinary one goes. A sticky toast is never evicted (it is there to be answered).
+  while ($('#toasts').children.length > 4) { const old = $('#toasts').querySelector('.toast:not(.sticky)'); if (!old) break; old.remove(); }
+  if (timeout && !sticky) setTimeout(() => el.remove(), timeout);
   return el;
+}
+// A sticky toast stays until its action has worked: if it fails the toast is still there to try again. An action with
+// keep: true (e.g. copying text) leaves it in place after it worked.
+async function stickyAction(el, a) {
+  const buttons = el.querySelectorAll('.row button');
+  buttons.forEach((b) => { b.disabled = true; });
+  try { await a.run(); if (a.keep) buttons.forEach((b) => { b.disabled = false; }); else el.remove(); } catch (e) { buttons.forEach((b) => { b.disabled = false; }); fail(e); }
 }
 export const fail = (e) => { console.error(e); return toast(e instanceof Error ? e.message : String(e), { error: true, timeout: 9000 }); };
 export const done = (msg = t('Done')) => toast(msg, { ok: true, timeout: 3000 });

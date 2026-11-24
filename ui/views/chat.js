@@ -1,5 +1,5 @@
 // Chat with one meeting, or across all of them (answers link back to their source meetings).
-import { S, $, $$, api, t, esc, icon, fail } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, fail, toast } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 
@@ -15,7 +15,9 @@ export function renderChat(root, history, { noteId, suggestions, placeholder }) 
   const grow = () => { ta.style.height = 'auto'; ta.style.height = Math.min(200, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', grow);
   const send = async (q) => {
-    if (!q.trim() || S.streaming) return;
+    if (!q.trim()) return;
+    // one AI request at a time: say why instead of silently dropping the question
+    if (S.streaming) { toast(S.streaming.noteId ? t('Wait for the AI to finish writing the meeting notes, then ask again.') : t('Wait for the current answer to finish.')); return; }
     const log = $('#chatlog', root);
     $('#chat-sugg', root)?.remove();
     log.insertAdjacentHTML('beforeend', bubble({ role: 'user', content: q }));

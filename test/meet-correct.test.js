@@ -11,6 +11,7 @@ const { Bus } = require('../src/core/events');
 const { Notes } = require('../src/core/notes');
 const { Settings } = require('../src/core/settings');
 const { Speakers } = require('../src/speakers/store');
+const { Evidence } = require('../src/meet/evidence');
 const { RecordingManager } = require('../src/recording/manager');
 const { SignalHub } = require('../src/meet/hub');
 const { nameSpeakers, activeIntervals, speechOf } = require('../src/meet/names');
@@ -65,22 +66,25 @@ test('correct: an utterance only half highlighted as the other name stays', () =
 });
 
 // ---- through a recording ----
-function rig(t, { db = open(':memory:'), timers = true, settings: extra = {} } = {}) {
+// learn: the user opted in to remembering the voices the call named (off by default)
+function rig(t, { db = open(':memory:'), timers = true, settings: extra = {}, learn = false } = {}) {
   if (timers) t.mock.timers.enable({ apis: ['Date'], now: 1_000_000 });
   class FakeEngine extends EventEmitter { async start() {} feed() {} async flush() {} reset() {} }
   const bus = new Bus();
   const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
   settings.update({ speakerRefine: false, echoDedupe: false, speakerDiarize: false, ...extra });
+  if (learn) settings.update({ meet: { ...settings.get('meet'), learnVoices: true } });
   const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-fix-'));
   const engine = new FakeEngine();
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk', segmentationInstalled: () => true, segmentationPath: () => '/seg' };
   const hub = new SignalHub();
-  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, meet: hub });
+  const evidence = new Evidence(db);
+  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, meet: hub, evidence });
   const n = notes.create({});
   const events = [];
   bus.subscribe((e) => events.push(e));
   // turns: [name, embedding, startMs, endMs]; the highlight follows `name` unless `shown` says otherwise
-  async function call(turns, { lag = 400, shown = null } = {}) {
+  async function call(turns, { lag = 400, shown = null, claimedLag = lag } = {}) {
     await mgr.start(n.id, { mic: true, system: true });
     mgr.pushPcm(n.id, 'system', Buffer.alloc(64000));
     turns.forEach(([, emb, a, b], i) => engine.emit('segment', { ch: 'system', startMs: a, endMs: b, text: `turn ${i}`, words: speak(b - a), embedding: emb }));
@@ -88,8 +92,8 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {} } =
       let now = 0;
       const at = (ms) => { t.mock.timers.tick(ms - now); now = ms; };
       turns.forEach(([name, , a, b], i) => {
-        at(a + lag); hub.ingest({ type: 'speaker', name: shown ? shown(i, name) : name }, { source: 'x', kind: 'extension', lagMs: lag });
-        at(b + lag); hub.ingest({ type: 'speaker', name: null }, { source: 'x', kind: 'extension', lagMs: lag });
+        at(a + lag); hub.ingest({ type: 'speaker', name: shown ? shown(i, name) : name }, { source: 'x', kind: 'extension', lagMs: claimedLag });
+        at(b + lag); hub.ingest({ type: 'speaker', name: null }, { source: 'x', kind: 'extension', lagMs: claimedLag });
       });
     } else t.mock.timers.tick(turns.at(-1)[3] + 500);
     await mgr.stop();
@@ -97,7 +101,7 @@ function rig(t, { db = open(':memory:'), timers = true, settings: extra = {} } =
   }
   const labels = () => notes.segments(n.id).filter((s) => s.speaker === 'them').map((s) => s.label);
   const voices = () => speakers.forNote(n.id).filter((s) => s.channel === 'system' && s.segments > 0);
-  return { db, mgr, notes, speakers, n, call, labels, voices, events, hub, settings, newNote: () => notes.create({}) };
+  return { db, mgr, notes, speakers, n, call, labels, voices, events, hub, settings, evidence, newNote: () => notes.create({}) };
 }
 const T = (name, emb, i) => [name, emb, i * 7000, i * 7000 + 6000];
 
@@ -134,7 +138,7 @@ test('recording: corrections can be switched off and the names still apply', asy
 });
 
 test('voices: a voice the call named beyond doubt is remembered, and the next meeting knows it with no help', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
   assert.deepEqual(first.speakers.voices().map((v) => v.name).sort(), ['Ana', 'Bruno']);
   assert.equal(first.events.find((e) => e.type === 'recording.meet-names').data.learned, 2);
@@ -143,8 +147,49 @@ test('voices: a voice the call named beyond doubt is remembered, and the next me
   assert.deepEqual([...new Set(second.labels())].sort(), ['Ana', 'Bruno'], 'named by their voices alone');
 });
 
-test('voices: a name that is only briefly highlighted teaches nothing', async (t) => {
+test('voices: with the default settings nothing is remembered, however clearly the call named people', async (t) => {
   const r = rig(t);
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  assert.deepEqual(r.labels().includes('Ana'), true, 'named for this meeting');
+  assert.equal(r.speakers.voices().length, 0, 'but no voice print saved');
+  assert.equal(r.events.find((e) => e.type === 'recording.meet-names').data.learned, 0);
+});
+
+test('recording: a source slower than it says it is (1.6 s late, claims 0.5 s) still names everybody, short turns and all', async (t) => {
+  const r = rig(t);
+  const turn = (name, emb, i) => [name, emb, i * 3000, i * 3000 + 2500];
+  await r.call([turn('Ana', E.ana, 0), turn('Bruno', E.bruno, 1), turn('Carla', E.carla, 2), turn('Ana', E.ana, 3), turn('Bruno', E.bruno, 4), turn('Carla', E.carla, 5), turn('Ana', E.ana, 6), turn('Bruno', E.bruno, 7), turn('Carla', E.carla, 8)], { lag: 1600, claimedLag: 500 });
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana', 'Bruno', 'Carla']);
+  assert.ok(Math.abs(r.events.find((e) => e.type === 'recording.meet-names').data.lagMs.x - 1600) <= 100, 'and the delay it really has is reported');
+});
+
+test('evidence: what the meeting window showed is kept after the recording, and each name says what it came from', async (t) => {
+  const r = rig(t);
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  const rows = r.evidence.forNote(r.n.id, { kind: 'highlight' });
+  assert.deepEqual([...new Set(rows.map((x) => x.name))].sort(), ['Ana', 'Bruno']);
+  assert.equal(rows.length, 4, 'one row per highlight');
+  assert.ok(rows.every((x) => x.source === 'x' && x.meta.lagMs === 400 && x.t1 > x.t0));
+  const named = r.voices().filter((v) => v.name);
+  assert.equal(named.length, 2);
+  for (const v of named) {
+    assert.equal(v.nameSource, 'meeting:highlight');
+    assert.ok(v.nameConfidence > 0.6 && v.nameConfidence <= 1, `confidence ${v.nameConfidence}`);
+  }
+});
+
+test('evidence: a name the person typed stays theirs, with the evidence still on record', async (t) => {
+  const r = rig(t);
+  r.speakers.ensureNamed(r.n.id, 's1', 'Typed', 'system');
+  r.speakers.rename(r.n.id, 's1', 'Typed');
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  const typed = r.speakers.forNote(r.n.id).find((s) => s.speakerId === 's1');
+  assert.deepEqual([typed.name, typed.nameSource], ['Typed', 'user']);
+  assert.ok(r.evidence.forNote(r.n.id).length > 0);
+});
+
+test('voices: a name that is only briefly highlighted teaches nothing', async (t) => {
+  const r = rig(t, { learn: true });
   // each person speaks one 6 s turn: the call named them, but under the 10 s a saved voice needs
   await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1)]);
   assert.deepEqual(r.labels().sort(), ['Ana', 'Bruno']);
@@ -152,7 +197,7 @@ test('voices: a name that is only briefly highlighted teaches nothing', async (t
 });
 
 test('voices: the call cannot overrule a saved voice the speaker matched', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Zed', E.zed, 0), T('Ana', E.ana, 1), T('Zed', E.zed, 2), T('Ana', E.ana, 3)]);
   assert.deepEqual(first.speakers.voices().map((v) => v.name).sort(), ['Ana', 'Zed']);
   // next meeting: Zed's voice is shown as "Mallory" by the call
@@ -164,7 +209,7 @@ test('voices: the call cannot overrule a saved voice the speaker matched', async
 });
 
 test('voices: a name shared by two different-sounding people is not mixed into one saved voice', async (t) => {
-  const first = rig(t);
+  const first = rig(t, { learn: true });
   await first.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
   const second = rig(t, { db: first.db, timers: false });
   // a different "Ana" (another voice) on another call
@@ -172,4 +217,29 @@ test('voices: a name shared by two different-sounding people is not mixed into o
   const ana = second.speakers.voices().filter((v) => v.name === 'Ana');
   assert.equal(ana.length, 1);
   assert.ok(ana[0].samples <= 4, 'the saved Ana was not taught the other voice');
+});
+
+test('calendar: a short name in the window becomes the invited person\'s full name, and the invitation is kept as evidence', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'ana@x.org' }, { name: 'Bruno Costa', email: 'b@x.org' }, { name: 'Carla Dias', email: '' }, { name: '', email: 'nobody@x.org' }] });
+  await r.call([T('Ana', E.ana, 0), T('Bruno', E.bruno, 1), T('Ana', E.ana, 2), T('Bruno', E.bruno, 3)]);
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana Silva', 'Bruno Costa']);
+  assert.deepEqual(r.evidence.forNote(r.n.id, { kind: 'calendar' }).map((e) => [e.name, e.key, e.meta.email]), [['Ana Silva', 'ana silva', 'ana@x.org'], ['Bruno Costa', 'bruno costa', 'b@x.org'], ['Carla Dias', 'carla dias', '']]);
+});
+
+test('calendar: a guest who was not invited keeps the name the window showed', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'a@x.org' }] });
+  await r.call([T('Ana', E.ana, 0), T('Gina Guest', E.bruno, 1), T('Ana', E.ana, 2), T('Gina Guest', E.bruno, 3)]);
+  assert.deepEqual([...new Set(r.labels())].sort(), ['Ana Silva', 'Gina Guest']);
+});
+
+test('evidence: recording a meeting again (continuing the note) does not duplicate the invitation or the roster', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'a@x.org' }] });
+  const roster = () => r.hub.ingest({ type: 'roster', participants: [{ name: 'Ana' }, { name: 'Bruno' }, { name: 'Me', self: true }] }, { source: 'x', kind: 'extension', lagMs: 400 });
+  await r.mgr.start(r.n.id, { mic: true, system: true }); roster(); await r.mgr.stop();
+  await r.mgr.start(r.n.id, { mic: true, system: true }); roster(); await r.mgr.stop();
+  assert.equal(r.evidence.forNote(r.n.id, { kind: 'calendar' }).length, 1);
+  assert.equal(r.evidence.forNote(r.n.id, { kind: 'roster' }).length, 2, 'the latest roster, once (the placeholder "Me" is not a name)');
 });

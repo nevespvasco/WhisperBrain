@@ -25,7 +25,10 @@
     "build:atspi": "bash scripts/build-atspi.sh",
     "a11y:dump": "node scripts/a11y-dump.js",
     "build:ax": "bash scripts/build-ax.sh",
-    "predist:mac": "npm run build:ax"
+    "build:tap": "bash scripts/build-tap.sh",
+    "build:loopback": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-loopback.ps1",
+    "predist:mac": "npm run build:ax && npm run build:tap",
+    "predist:win": "npm run build:loopback"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
@@ -38,5 +41,8 @@
     "electron-builder": "26.18.0"
   },
   "homepage": "https://github.com/nevespvasco/WhisperBrain",
-  "desktopName": "whisperbrain.desktop"
+  "desktopName": "whisperbrain.desktop",
+  "optionalDependencies": {
+    "sqlite-vec": "^0.1.9"
+  }
 }

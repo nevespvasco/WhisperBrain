@@ -344,3 +344,16 @@ test('HTTP: Google sign-in starts a loopback PKCE flow and needs a client ID', a
   await new Promise((res) => setTimeout(res, 30));
   assert.equal(errs.length, 1);
 });
+
+test('quotes and analytics call a voice what the transcript calls it (display.js), not by its id number', (t) => {
+  const app = boot(t);
+  const n = app.notes.create({ title: 'Ids with a gap' });
+  for (const id of ['s4', 's9']) app.speakers.save(n.id, { speakerId: id, channel: 'system', centroid: new Float32Array(4).fill(1), count: 2 });
+  app.notes.addSegments(n.id, [
+    { speaker: 'them', speakerId: 's4', startMs: 0, endMs: 2000, text: 'budget numbers look fine this quarter', channel: 'system' },
+    { speaker: 'them', speakerId: 's9', startMs: 3000, endMs: 5000, text: 'the budget needs one more review', channel: 'system' },
+  ]);
+  assert.deepEqual(app.notes.segments(n.id).map((s) => s.label), ['Speaker 1', 'Speaker 2'], 'ids 4 and 9 are numbered 1 and 2');
+  assert.deepEqual(app.knowledge.quotes('budget').map((q) => q.label).sort(), ['Speaker 1', 'Speaker 2']);
+  assert.deepEqual(app.knowledge.analytics(n.id).speakers.map((x) => x.label).sort(), ['Speaker 1', 'Speaker 2']);
+});

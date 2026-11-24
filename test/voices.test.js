@@ -107,18 +107,18 @@ test('a profile keeps a print per channel: a person saved on the mic and on a ca
 test('rename(remember) adds prints weighted by speech time; confirming the same speaker twice does not count it twice', () => {
   const { speakers, meeting } = rig();
   const n1 = meeting([{ id: 's1', centroid: ANA, secs: 40, count: 12 }]);
-  speakers.rename(n1, 's1', 'Ana', { remember: true });
+  speakers.rename(n1, 's1', 'Ana', { remember: true, consentSource: 'user' });
   let [v] = speakers.voices();
   assert.equal(v.exemplars.length, 1);
   assert.equal(v.exemplars[0].weight, 30, 'weight is the seconds of speech, capped at the 30 s a print covers');
   assert.equal(v.exemplars[0].channel, 'system');
   assert.equal(v.samples, 12);
   const n2 = meeting([{ id: 's1', centroid: call(ANA), channel: 'mic', secs: 6, count: 2 }]);
-  speakers.rename(n2, 's1', 'Ana', { remember: true });
+  speakers.rename(n2, 's1', 'Ana', { remember: true, consentSource: 'user' });
   [v] = speakers.voices();
   assert.deepEqual(v.exemplars.map((x) => [x.channel, x.weight]).sort(), [['mic', 6], ['system', 30]], 'a print per channel');
   assert.equal(v.samples, 14);
-  speakers.rename(n2, 's1', 'Ana', { remember: true });
+  speakers.rename(n2, 's1', 'Ana', { remember: true, consentSource: 'user' });
   assert.equal(speakers.voices()[0].exemplars.length, 2, 'the same speaker confirmed again replaces its print');
   assert.equal(speakers.publicVoices()[0].prints, 2);
   function call(x) { return x.map((y, i) => (i % 3 === 0 ? y + 0.4 : y)); }
@@ -127,8 +127,8 @@ test('rename(remember) adds prints weighted by speech time; confirming the same 
 test('autoMatch judges again: a live guess is corrected by a better print, speakers the user named are left alone', () => {
   const { speakers, meeting, linked } = rig();
   const n0 = meeting([{ id: 's1', centroid: ANA }, { id: 's2', centroid: BRUNO }]);
-  speakers.rename(n0, 's1', 'Ana', { remember: true });
-  speakers.rename(n0, 's2', 'Bruno', { remember: true });
+  speakers.rename(n0, 's1', 'Ana', { remember: true, consentSource: 'user' });
+  speakers.rename(n0, 's2', 'Bruno', { remember: true, consentSource: 'user' });
   const n = meeting([{ id: 's1', centroid: utter(ANA, 0.05, 2) }, { id: 's2', centroid: voice(3) }]);
   assert.equal(speakers.autoMatch(n), 1);
   assert.deepEqual(linked(n), { s1: 'Ana', s2: null });
@@ -148,14 +148,14 @@ test('autoMatch judges again: a live guess is corrected by a better print, speak
 test('a correction pushes the wrong profile away: the same wrong match is not made again, and the profile is not renamed', () => {
   const { speakers, meeting, linked } = rig();
   const n0 = meeting([{ id: 's1', centroid: ANA }]);
-  speakers.rename(n0, 's1', 'Ana', { remember: true });
+  speakers.rename(n0, 's1', 'Ana', { remember: true, consentSource: 'user' });
   // Ana's lookalike on a later call is linked to Ana automatically ...
   const n1 = meeting([{ id: 's1', centroid: TWIN }]);
   assert.deepEqual(linked(n1), { s1: null });
   speakers.autoMatch(n1, 0.7, { margin: 0 });
   assert.deepEqual(linked(n1), { s1: 'Ana' }, 'the setup: a wrong automatic link');
   // ... the user says it is Twin, and remembers the voice
-  speakers.rename(n1, 's1', 'Twin', { remember: true });
+  speakers.rename(n1, 's1', 'Twin', { remember: true, consentSource: 'user' });
   assert.deepEqual(speakers.voices().map((v) => v.name), ['Ana', 'Twin'], 'Ana stays Ana: a second profile is born');
   const ana = speakers.voices().find((v) => v.name === 'Ana');
   assert.equal(ana.exemplars.filter((x) => x.negative).length, 1, 'Ana remembers that this was not her');
@@ -178,8 +178,8 @@ test('a correction pushes the wrong profile away: the same wrong match is not ma
 test('renaming a speaker the user had confirmed under a name nobody else has renames the profile (as before)', () => {
   const { speakers, meeting } = rig();
   const n = meeting([{ id: 's1', centroid: ANA }]);
-  speakers.rename(n, 's1', 'Anna', { remember: true });
-  speakers.rename(n, 's1', 'Ana', { remember: true });
+  speakers.rename(n, 's1', 'Anna', { remember: true, consentSource: 'user' });
+  speakers.rename(n, 's1', 'Ana', { remember: true, consentSource: 'user' });
   const vs = speakers.voices();
   assert.deepEqual(vs.map((v) => v.name), ['Ana']);
   assert.equal(vs[0].exemplars.filter((x) => x.negative).length, 0);
@@ -217,7 +217,7 @@ test('migration: a profile from before the print table keeps matching and become
   speakers.save(m.id, { speakerId: 's1', channel: 'system', centroid: utter(BRUNO, 0.05, 3), count: 4 });
   assert.equal(speakers.autoMatch(m.id), 1);
   // reinforcing it brings its mean in as the first print
-  speakers.rename(m.id, 's1', 'Bruno', { remember: true });
+  speakers.rename(m.id, 's1', 'Bruno', { remember: true, consentSource: 'user' });
   assert.equal(speakers.voices().find((v) => v.name === 'Bruno').exemplars.length, 1, 'the mean and the new print were close enough to fold together');
   // forgetting a voice takes its prints along
   speakers.removeVoice('v1');
@@ -251,4 +251,17 @@ test('Speakers.channelMeans: each channel is centred on the voices heard on it',
   speakers.adapt = false;
   assert.equal(speakers.channelMeans()('system'), VOICE_MEAN, 'adaptation off: the shipped mean for every channel');
   assert.ok(unit(callColour).length === dim);
+});
+
+test('matchVoices: speakers that want the same saved voice are settled by the best total, whatever order they come in', () => {
+  const voices = [{ id: 'ana', embedding: ANA }, { id: 'bruno', embedding: BRUNO }];
+  const strong = utter(ANA, 0.05, 3), weaker = utter(ANA, 0.45, 9), bruno = utter(BRUNO, 0.05, 4);
+  const T = 0.5;
+  const run = (speakers) => Object.fromEntries([...matchVoices(speakers, voices, T, null, { margin: 0 })].map(([s, m]) => [s, m.voiceId]));
+  const a = { id: 'strong', centroid: strong }, b = { id: 'weaker', centroid: weaker }, c = { id: 'bruno', centroid: bruno };
+  const r1 = run([a, b, c]), r2 = run([c, b, a]);
+  assert.deepEqual(r1, r2, 'the order of the speakers changes nothing');
+  assert.equal(r1.strong, 'ana');
+  assert.equal(r1.bruno, 'bruno');
+  assert.equal(r1.weaker, undefined, 'the voice went to the speaker who sounds most like it; the other stays unlinked');
 });

@@ -1,6 +1,8 @@
 'use strict';
 // Minimal OpenAI-compatible chat client. Works with Ollama (/v1), llama.cpp, LM Studio, vLLM, OpenRouter, OpenAI...
 
+const DEFAULT_MAX_TOKENS = 4096; // ~3000 words: longer than any summary or answer the app asks for
+
 class LlmError extends Error {
   constructor(message, { status, code } = {}) { super(message); this.status = status; this.code = code; }
 }
@@ -80,11 +82,13 @@ class LlmClient {
   }
 
   // Async generator of text deltas.
-  async *stream(messages, { signal, temperature, maxTokens } = {}) {
+  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty } = {}) {
     const cfg = this.getConfig();
     const model = await this.resolveModel(cfg);
-    const body = { model, messages, stream: true, temperature: temperature ?? cfg.temperature };
-    if (maxTokens) body.max_tokens = maxTokens;
+    // Always cap the reply: a small local model can fall into a repeat loop, and without a cap Ollama keeps
+    // generating forever (it shifts the context), holding its single slot so every later request waits.
+    const body = { model, messages, stream: true, temperature: temperature ?? cfg.temperature, max_tokens: maxTokens || DEFAULT_MAX_TOKENS };
+    if (frequencyPenalty) body.frequency_penalty = frequencyPenalty;
     const res = await this.request(`${normalizeBase(cfg.baseUrl)}/chat/completions`, { method: 'POST', headers: this.headers(cfg), body: JSON.stringify(body), signal });
     const filter = new ThinkFilter();
     const decoder = new TextDecoder();

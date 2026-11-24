@@ -147,3 +147,77 @@ Diarize each finished 4 minute piece while recording, merge the pieces' voice pr
 Embed every speaker turn of sherpa's output and regroup the prints: average-link, spectral clustering with an eigengap, and a variational Bayes mixture with pruning in the style of VBx, without the trained PLDA (scales estimated from an over-clustering of the same meeting). Starting from the default grouping all of them were worse than sherpa's own clustering (WDER 33 to 51 against 26.3 and 25.0); starting from an over-split at 0.4 they were 34 to 56. Feeding sherpa's own labels through the same code reproduces its score, so the harness is not the cause. Real VBx would need window-level prints cut with the segmentation model's masks (sherpa does not expose them, it would take onnxruntime in the app) and a PLDA trained for this voice model.
 
 `eval/offline.js` caches the recognized words and the diarization output under `.eval/cache`, so a new grouping idea is scored in seconds instead of a 5 minute run.
+
+
+## Naming accuracy (`naming.js`)
+
+Whether the *names* the meeting window gives to the voices are right, apart from whether the voices are right. No audio and no
+models: the voices are the reference's own speakers (perfect diarization), and the window is simulated from the reference
+turns, every event a little early or late (about +-150 ms, random). `node eval/naming.js [--only ami-IS1009a] [--seeds 20] [--json]`.
+
+- **Accuracy**: the share of speech time whose final name is the right person's (unnamed speech counts as not right).
+- **Precision**: of the speech that was named at all, the share named rightly. A wrong name is worse than none.
+
+| Scenario | What the window does |
+|---|---|
+| `lagged350/940/1630` | the highlight follows the speaker, late by 0.35 / 0.94 / 1.63 s (0.5 s is assumed) |
+| `noisy` | one highlight in five names somebody else; people light up now and then with nobody speaking |
+| `dominant` | only the loudest voice is shown: interjections (< 1.2 s) and the quieter side of an overlap never are |
+| `hard` | all of it together, 0.94 s late |
+
+Mean over 20 seeds (2026-11-24), the aligner before and after the change in 3.2 (the delay of each source found from the data,
+sqrt(precision x recall) scores, one name to one voice by the Hungarian method with an "unknown" column):
+
+| Recording | Scenario | Accuracy before | Accuracy after | Precision before -> after |
+|---|---|---|---|---|
+| ami-IS1009a | lagged350 | 100.0 | 100.0 | 100 -> 100 |
+| ami-IS1009a | lagged940 | 98.5 | **100.0** | 100 -> 100 |
+| ami-IS1009a | lagged1630 | 89.8 | **100.0** | 100 -> 100 |
+| ami-IS1009a | noisy | 63.8 | **95.4** | 95.0 -> **100** |
+| ami-IS1009a | dominant | 97.5 | **100.0** | 100 -> 100 |
+| ami-IS1009a | hard | 88.4 | **94.5** | 100 -> 100 |
+| libri-call | noisy | 97.8 | **100.0** | 100 -> 100 |
+| libri-call | the other five | 100.0 | 100.0 | 100 -> 100 |
+| **mean** | | **94.6** | **99.2** | **99.6 -> 100** |
+
+These are simulations of how a meeting window behaves, with perfect voices and one source: they show that the aligner copes with late,
+jittery, noisy and partial highlights, not what a given platform does. Captions, a roster, the calendar and several sources
+at once are not simulated here. Measuring the real delays and gaps per platform is the latency harness (4.2).
+
+
+## Latency per platform (`latency.js`)
+
+How late does each source show who is speaking? WhisperBrain keeps the evidence about every recorded meeting (highlights, captions,
+roster), so the delays can be measured on real calls after the fact:
+
+```bash
+node eval/latency.js --db ~/.config/WhisperBrain/whisperbrain.sqlite
+```
+
+Per platform and source it reports the delay the aligner estimates (`est.lag`), how long after a person started speaking their name
+lit up (`onset`, p50/p90 over every turn that has one) and how long after that their caption showed the words (`caption`). The time
+naming takes when a recording stops is `tookMs` in the `recording.meet-names` event.
+
+The harness is tested on a made-up database with known delays (`test/eval-latency.test.js`). The real numbers need real calls and
+have not been measured yet; fill this table from a few recordings per platform:
+
+| Platform | Source | Meetings | est. lag (ms) | onset p50 / p90 (ms) | caption p50 / p90 (ms) |
+|---|---|---|---|---|---|
+| Google Meet | extension | | | | |
+| Google Meet | accessibility reader | | | | |
+| Zoom | accessibility reader | | | | |
+| Teams | accessibility reader | | | | |
+
+## The live view and names from the conversation (2026-11-24, from the Cicada comparison; see `docs/plans.md`)
+
+`node eval/run.js --configs online,diarize+refine` after the changes below, same two recordings. Nothing moved:
+
+| Recording | Config | WDER | cpWER | tcpWER | Speakers found / true |
+|---|---|---|---|---|---|
+| ami-IS1009a | online | 34.1 | 74.6 | 77.3 | 1 / 4 |
+| ami-IS1009a | diarize+refine | 18.1 | 47.6 | 54.4 | 4 / 4 |
+| libri-call | online | 48.2 | 92.9 | 95.8 | 2 / 4 |
+| libri-call | diarize+refine | 24.9 | 57.1 | 61.3 | 3 / 4 |
+
+- **Only a line of 2 s or more can start a speaker while recording** (`NEW_SPEAKER_MIN_SEC`, `SpeakerTracker.assign`). A shorter line that matches nobody stays unlabelled, keeps its voice print, and is placed after Stop (`Speakers.placeUnlabelled`, or the diarization/refine passes). These recordings are cut into long utterances, so the harness cannot show the effect: it exists to keep a cough or a "yeah" from making a "Speaker 5" in the live view. The scores above only say it did no harm.
+- **Not measured:** the live view itself (how often a speaker is shown that is later folded away), the display rule (`src/speakers/display.js`: five substantive lines, two voices), and names from the conversation (`src/speakers/transcript-names.js`). Both AMI and libri-call have almost nobody saying names, so naming needs a small set of written dialogues (introductions, "Thanks, George", a name in an advert, a name of somebody absent) scored for precision first: a wrong name costs more than none. That set, as a `transcript` source in `eval/naming.js`, is still to do.
