@@ -44,7 +44,7 @@ class Account {
     }));
     const settings = this.settings.publicView();
     delete settings.llm.apiKey;
-    for (const k of ['google', 'notion', 'linear']) delete settings[k];
+    for (const k of ['google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear']) delete settings[k];
     settings.webhooks = settings.webhooks.map(({ secret, ...w }) => w);
     const glossary = this.knowledge ? this.knowledge.glossary().map(({ id, noteId, noteTitle, ...g }) => g) : [];
     return { app: 'whisperbrain', format: 2, exportedAt: new Date().toISOString(), spaces: this.notes.folders(), notes, glossary, templates: this.db.prepare('SELECT id, name, prompt FROM templates').all(), voices: this.speakers.publicVoices(), settings };

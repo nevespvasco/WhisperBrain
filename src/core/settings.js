@@ -64,6 +64,10 @@ const DEFAULTS = {
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
   secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
   google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] },
+  // The platforms' own transcripts (src/transcripts): the app each person registered with the platform, and the tokens it gave
+  microsoft: { clientId: '', tenant: 'organizations', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
+  googleMeet: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
+  zoom: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
   notion: { token: '', parentId: '', parentKind: 'page', parentTitle: '', autoExport: false },
   linear: { apiKey: '', teamId: '', teamName: '' },
   obsidian: { vaultPath: '', folder: 'Meetings', transcript: true, autoExport: false },
@@ -83,9 +87,9 @@ const DEFAULTS = {
   discord: { enabled: false, token: '', userId: '', guildId: '', channelId: '' }, // bot that joins your voice call and hears each person separately; userId = your own Discord user ID (found from your voice channel, and left out because the microphone already has you)
 };
 
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'notion', 'linear', 'obsidian', 'meet', 'discord']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
 
 // Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.

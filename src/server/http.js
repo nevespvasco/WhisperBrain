@@ -170,6 +170,24 @@ function createRoutes(app) {
     try { return attachTranscript(app, params.id, buf, query.filename); } catch (e) { throw e.status ? new HttpError(e.status, e.message) : e; }
   });
 
+  // the meeting platforms' own transcripts (Teams, Meet, Zoom): sign in once, then fetch a note's transcript. Experimental, see src/transcripts.
+  const transcriptError = (e) => {
+    if (e.status) return new HttpError(e.status, e.message);
+    const status = { unknown: 400, 'not-connected': 409, auth: 409 }[e.code] ?? (e.code ? 422 : 0);
+    return status ? new HttpError(status, e.message, e.code) : e;
+  };
+  add('GET', '/api/transcript-sources', async () => app.transcripts.status());
+  add('POST', '/api/transcript-sources/:id/connect', async ({ params }) => {
+    try { const { authUrl, done } = await app.transcripts.connect(params.id, { openExternal: app.openExternal }); done.then(() => app.bus.publish('transcript-source.connected', { id: params.id }), (e) => app.bus.publish('transcript-source.error', { id: params.id, message: e.message })); return { authUrl }; }
+    catch (e) { throw new HttpError(e.code === 'unknown' ? 404 : 400, e.message); }
+  });
+  add('DELETE', '/api/transcript-sources/:id', async ({ params }) => { try { await app.transcripts.disconnect(params.id); return { ok: true }; } catch (e) { throw transcriptError(e); } });
+  add('POST', '/api/notes/:id/fetch-transcript', async ({ params, body }) => {
+    noteOr404(params.id);
+    if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
+    try { return await app.transcripts.fetchForNote(params.id, String(body.provider || '')); } catch (e) { throw transcriptError(e); }
+  });
+
   // the "this call is recorded" notice, to paste into the meeting chat
   add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));
 

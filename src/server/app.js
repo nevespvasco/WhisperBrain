@@ -29,6 +29,7 @@ const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { loadPolicy } = require('../core/policy');
+const { TranscriptService } = require('../transcripts/service');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 
 function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy() } = {}) {
@@ -128,7 +129,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
-  return Object.assign(self, {
+  const app = Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, ai, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
@@ -164,6 +165,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
       self.settled = settings.box ? settings.flush().then(closeDb) : (closeDb(), Promise.resolve());   // a sealed write may still be queued
     },
   });
+  app.transcripts = new TranscriptService({ app });   // the platforms' own transcripts (src/transcripts)
+  return app;
 }
 
 module.exports = { createApp };
