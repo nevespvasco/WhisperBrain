@@ -101,3 +101,19 @@ test('reinforcing a voice that predates consent records the consent given now', 
   speakers.rename(n, 's1', 'Ana', { remember: true, consentSource: 'user' });
   assert.equal(db.prepare("SELECT consent_source s FROM voices WHERE id = 'old'").get().s, 'user');
 });
+
+// ---- explicit channel on every segment ----
+test('segments without a channel (imports, uploads) get one from who spoke; a cut utterance keeps its channel', () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, null);
+  const n = notes.create({});
+  notes.addSegments(n.id, [
+    { speaker: 'me', startMs: 0, endMs: 1000, text: 'a' },
+    { speaker: 'them', speakerId: 's1', startMs: 1000, endMs: 2000, text: 'b' },
+    { speaker: 'them', speakerId: 'd7', startMs: 2000, endMs: 5000, text: 'c', channel: 'dc:7' },
+  ]);
+  assert.deepEqual(notes.segments(n.id).map((s) => s.channel), ['mic', 'system', 'dc:7']);
+  const [first, second] = notes.replaceSegment(n.id, notes.segments(n.id)[2].id, [{ startMs: 2000, endMs: 3000, text: 'c1', speakerId: 'd7' }, { startMs: 3000, endMs: 5000, text: 'c2', speakerId: 'd7' }]);
+  assert.deepEqual(notes.segments(n.id).filter((s) => [first, second].includes(s.id)).map((s) => s.channel), ['dc:7', 'dc:7']);
+  assert.equal(notes.segmentWords(n.id)[0].channel, 'mic');
+});

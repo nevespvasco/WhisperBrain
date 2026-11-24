@@ -113,6 +113,20 @@ test('words of each person are saved as "them", labelled with their Discord name
   assert.equal(speakers.forNote(n.id).length, 2, 'no voice guessing: the after-recording passes leave them alone');
 });
 
+test('each Discord person keeps their own channel on the saved line, instead of collapsing into "system"', async () => {
+  const { mgr, notes, engine } = setup();
+  const n = notes.create({});
+  await mgr.start(n.id);
+  const t = Date.now();
+  say(mgr, '7', 'Ana', 200, t);
+  say(mgr, '8', 'Rui', 200, t);
+  await settleAll(mgr);
+  engine.emit('segment', { ch: 'dc:7', startMs: 0, endMs: 1500, text: 'I think we should ship it' });
+  engine.emit('segment', { ch: 'dc:8', startMs: 500, endMs: 1800, text: 'no wait, the tests fail' });
+  await mgr.stop();
+  assert.deepEqual(notes.segments(n.id).map((s) => [s.speaker, s.channel]), [['them', 'dc:7'], ['them', 'dc:8']]);
+});
+
 test('a person who renamed a speaker keeps the new name', async () => {
   const { mgr, notes, speakers } = setup();
   const n = notes.create({});

@@ -177,12 +177,13 @@ class Notes {
   // ---- transcript ----
   addSegments(noteId, segments) {
     if (!segments.length) return [];
-    const stmt = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, embedding, words, logprob_mean, logprob_min) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
+    const stmt = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, embedding, words, logprob_mean, logprob_min, channel) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
     // words: [[word, startMs, endMs], ...] relative to the segment start; logProbMean/Min: recognizer confidence (0 = certain). Stored only.
     const out = tx(this.db, () => segments.map((s) => {
       const { embedding, ...rest } = s;
       const words = Array.isArray(s.words) && s.words.length ? JSON.stringify(s.words) : null;
-      return { id: stmt.get(noteId, s.speaker, s.startMs, s.endMs, s.text, s.speakerId || null, embedding ? toBlob(embedding) : null, words, s.logProbMean ?? null, s.logProbMin ?? null).id, ...rest, noteId };
+      const channel = s.channel || channelOf(s.speaker, s.speakerId);
+      return { id: stmt.get(noteId, s.speaker, s.startMs, s.endMs, s.text, s.speakerId || null, embedding ? toBlob(embedding) : null, words, s.logProbMean ?? null, s.logProbMin ?? null, channel).id, ...rest, channel, noteId };
     }));
     return out;
   }
@@ -190,7 +191,7 @@ class Notes {
   // Each segment carries its channel speaker ('me' | 'them'), the identified voice (speakerId, e.g. "s2") and a
   // display label: the name the user gave, else a saved voice profile's name, else "Speaker 2" / "Me".
   segments(noteId) {
-    return this.db.prepare(`SELECT s.id, s.speaker, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
+    return this.db.prepare(`SELECT s.id, s.speaker, s.channel, s.speaker_id AS speakerId, s.start_ms AS startMs, s.end_ms AS endMs, s.text,
         COALESCE(NULLIF(ns.name, ''), v.name, '') AS speakerName
       FROM segments s LEFT JOIN note_speakers ns ON ns.note_id = s.note_id AND ns.speaker_id = s.speaker_id LEFT JOIN voices v ON v.id = ns.voice_id
       WHERE s.note_id = ? ORDER BY s.start_ms, s.id`).all(noteId)
@@ -200,7 +201,7 @@ class Notes {
   // Utterances with their word timings ([[word, startMs, endMs], ...] relative to the utterance start), for the
   // after-recording speaker pass.
   segmentWords(noteId) {
-    return this.db.prepare('SELECT id, speaker, speaker_id AS speakerId, start_ms AS startMs, end_ms AS endMs, text, words FROM segments WHERE note_id = ? ORDER BY start_ms, id').all(noteId)
+    return this.db.prepare('SELECT id, speaker, channel, speaker_id AS speakerId, start_ms AS startMs, end_ms AS endMs, text, words FROM segments WHERE note_id = ? ORDER BY start_ms, id').all(noteId)
       .map((r) => ({ ...r, words: r.words ? JSON.parse(r.words) : null }));
   }
 
@@ -208,14 +209,14 @@ class Notes {
   // speaker pass cuts an utterance where the speaker changes). The first part keeps the row and its id; a cut utterance
   // loses its voice embedding, which described the whole of it. -> the parts' ids
   replaceSegment(noteId, id, parts) {
-    const row = this.db.prepare('SELECT speaker, logprob_mean AS mean, logprob_min AS min FROM segments WHERE id = ? AND note_id = ?').get(id, noteId);
+    const row = this.db.prepare('SELECT speaker, channel, logprob_mean AS mean, logprob_min AS min FROM segments WHERE id = ? AND note_id = ?').get(id, noteId);
     if (!row || !parts.length) return [];
     const json = (w) => (Array.isArray(w) && w.length ? JSON.stringify(w) : null);
     const update = this.db.prepare('UPDATE segments SET start_ms = ?, end_ms = ?, text = ?, speaker_id = ?, words = ?, embedding = CASE WHEN ? THEN embedding END WHERE id = ?');
-    const insert = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, words, logprob_mean, logprob_min) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
+    const insert = this.db.prepare('INSERT INTO segments(note_id, speaker, start_ms, end_ms, text, speaker_id, words, logprob_mean, logprob_min, channel) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id');
     return tx(this.db, () => parts.map((p, k) => {
       if (k === 0) { update.run(p.startMs, p.endMs, p.text, p.speakerId || null, json(p.words), parts.length === 1 ? 1 : 0, id); return id; }
-      return insert.get(noteId, row.speaker, p.startMs, p.endMs, p.text, p.speakerId || null, json(p.words), row.mean, row.min).id;
+      return insert.get(noteId, row.speaker, p.startMs, p.endMs, p.text, p.speakerId || null, json(p.words), row.mean, row.min, row.channel).id;
     }));
   }
 
@@ -289,6 +290,12 @@ class Notes {
 }
 
 function likeEscape(s) { return String(s).replace(/[\\%_]/g, (c) => '\\' + c); }
+// Which capture channel a line came from: 'mic' | 'system' | 'dc:<discord user id>'. The recorder says so itself; this is
+// for lines that arrive without it (imports, uploads) and mirrors the v8 backfill.
+function channelOf(speaker, speakerId) {
+  if (speaker === 'me') return 'mic';
+  return /^d\d/.test(speakerId || '') ? `dc:${speakerId.slice(1)}` : 'system';
+}
 function speakerLabel(s) { return s === 'me' ? 'Me' : s === 'them' ? 'Them' : s; }
 function fmtClock(ms) {
   const t = Math.floor(ms / 1000);

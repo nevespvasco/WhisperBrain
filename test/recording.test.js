@@ -70,6 +70,7 @@ test('segments are stored with speaker labels and offset by the channel start', 
   engine.emit('segment', { ch: 'mic', startMs: 0, endMs: 900, text: 'hello there' });
   const [seg] = notes.segments(n.id);
   assert.equal(seg.speaker, 'me');
+  assert.equal(seg.channel, 'mic');
   assert.equal(seg.text, 'hello there');
   assert.ok(seg.startMs >= 0 && seg.endMs - seg.startMs === 900);
   const done = await mgr.stop();

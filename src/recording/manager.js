@@ -281,7 +281,7 @@ class RecordingManager {
     }
     seg.speakerId = remote ? remote.speakerId : this.identify(a, ch, seg, embedding);
     if (seg.speakerId && !remote) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
-    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, embedding, words, logProbMean, logProbMin }]);
+    const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, channel: ch, embedding, words, logProbMean, logProbMin }]);
     const spool = a.spool[ch];
     if (spool && !spool.broken) {
       const ref = { segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) };
