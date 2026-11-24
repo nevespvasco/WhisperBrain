@@ -183,3 +183,27 @@ sqrt(precision x recall) scores, one name to one voice by the Hungarian method w
 These are simulations of how a meeting window behaves, with perfect voices and one source: they show that the aligner copes with late,
 jittery, noisy and partial highlights, not what a given platform does. Captions, a roster, the calendar and several sources
 at once are not simulated here. Measuring the real delays and gaps per platform is the latency harness (4.2).
+
+
+## Latency per platform (`latency.js`)
+
+How late does each source show who is speaking? WhisperBrain keeps the evidence about every recorded meeting (highlights, captions,
+roster), so the delays can be measured on real calls after the fact:
+
+```bash
+node eval/latency.js --db ~/.config/WhisperBrain/whisperbrain.sqlite
+```
+
+Per platform and source it reports the delay the aligner estimates (`est.lag`), how long after a person started speaking their name
+lit up (`onset`, p50/p90 over every turn that has one) and how long after that their caption showed the words (`caption`). The time
+naming takes when a recording stops is `tookMs` in the `recording.meet-names` event.
+
+The harness is tested on a made-up database with known delays (`test/eval-latency.test.js`). The real numbers need real calls and
+have not been measured yet; fill this table from a few recordings per platform:
+
+| Platform | Source | Meetings | est. lag (ms) | onset p50 / p90 (ms) | caption p50 / p90 (ms) |
+|---|---|---|---|---|---|
+| Google Meet | extension | | | | |
+| Google Meet | accessibility reader | | | | |
+| Zoom | accessibility reader | | | | |
+| Teams | accessibility reader | | | | |

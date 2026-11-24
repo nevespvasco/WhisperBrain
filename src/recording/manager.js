@@ -504,6 +504,7 @@ class RecordingManager {
   nameFromMeeting(a, s) {
     try {
       const m = s.meet;
+      const startedAt = Date.now();
       const invited = invitedNames(this.notes.get(a.noteId)?.attendees);
       const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs, candidates: invited });
       let res = run();
@@ -524,7 +525,7 @@ class RecordingManager {
         this.evidence?.replace(a.noteId, ['roster'], rows.filter((r) => r.kind === 'roster'));
       } catch { /* a record, never a reason to fail the stop */ }
       this.recordInvitation(a);
-      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, ...fixed };
+      a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, tookMs: Date.now() - startedAt, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
   }
