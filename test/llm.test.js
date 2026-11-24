@@ -7,7 +7,7 @@ const { Notes } = require('../src/core/notes');
 const { Settings } = require('../src/core/settings');
 const { Templates } = require('../src/core/templates');
 const { LlmClient, ThinkFilter } = require('../src/llm/client');
-const { AiService } = require('../src/llm/service');
+const { AiService, dropRepeatedLines } = require('../src/llm/service');
 const prompts = require('../src/llm/prompts');
 const retrieve = require('../src/llm/retrieve');
 const { startFakeLlm } = require('./fake-llm');
@@ -84,6 +84,28 @@ test('summarize: a transcript over the budget is reduced chunk by chunk first', 
   const final = srv.requests.at(-1).messages[1].content;
   assert.match(final, /--- Part 1 ---\n- partial fact/);
   assert.ok(final.length < 6000, 'final prompt stays small');
+});
+
+test('summarize: each call is capped so a looping model cannot run forever, and repeated lines are dropped', async (t) => {
+  const loop = Array.from({ length: 5 }, () => '- The team discussed the roadmap for next quarter').join('\n');
+  const srv = await startFakeLlm((messages) => (/^Part \d+ of/.test(messages[1].content) ? `${loop}\n- None\n- None` : '## Summary\nfinal'));
+  t.after(srv.close);
+  const { ai, notes, settings } = setup({ baseUrl: srv.url, model: 'm' });
+  settings.update({ llm: { contextChars: 100 } }); // budget() floors at 2000
+  const n = notes.create({ title: 'Long', body: '' });
+  notes.addSegments(n.id, Array.from({ length: 120 }, (_, i) => ({ speaker: 'them', startMs: i * 1000, endMs: i * 1000 + 900, text: `statement number ${i} about the roadmap and other topics` })));
+  await ai.summarize(n.id);
+  const parts = srv.requests.filter((r) => /^Part \d+ of/.test(r.messages[1].content));
+  assert.ok(parts.length >= 2);
+  for (const r of parts) { assert.equal(r.max_tokens, 1024); assert.ok(r.frequency_penalty > 0); }
+  const final = srv.requests.at(-1);
+  assert.equal(final.max_tokens, 4096);
+  const part1 = final.messages[1].content.split('--- Part 1 ---\n')[1].split('\n\n')[0];
+  assert.equal(part1, '- The team discussed the roadmap for next quarter\n- None\n- None');
+});
+
+test('dropRepeatedLines keeps the first copy of long lines and leaves short or blank ones', () => {
+  assert.equal(dropRepeatedLines('## A\n- talked about pricing\n- None\n\n\n\n## B\n- Talked about pricing \n- None'), '## A\n- talked about pricing\n- None\n\n## B\n- None');
 });
 
 test('summarize refuses when there is nothing to summarize', async () => {

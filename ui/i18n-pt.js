@@ -73,6 +73,8 @@ export const PT = {
   'Change colour': 'Mudar a cor',
   'Change who said this': 'Mudar quem disse isto',
   'Chat': 'Chat',
+  'Wait for the AI to finish writing the meeting notes, then ask again.': 'Espere que a IA acabe de escrever as notas da reunião e pergunte de novo.',
+  'Wait for the current answer to finish.': 'Espere que a resposta atual termine.',
   'Chat needs an AI model (Ollama or any OpenAI-compatible server).': 'O chat precisa de um modelo de IA (Ollama ou qualquer servidor compatível com a OpenAI).',
   'Choose a model': 'Escolher um modelo',
   'Choose a speech model': 'Escolher um modelo de voz',

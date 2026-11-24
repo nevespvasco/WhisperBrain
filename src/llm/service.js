@@ -6,6 +6,22 @@ const { fmtClock } = require('../core/notes');
 const { isLanguage } = require('./languages');
 
 const HISTORY_TURNS = 10;
+// Output caps for the enhanced notes: the condensed notes of one part, and the final notes
+const PARTIAL_MAX_TOKENS = 1024;
+const SUMMARY_MAX_TOKENS = 4096;
+
+// Keeps the first copy of each longer line: what is left of a model's repetition loop after the token cap
+// (short lines such as '- None' may rightly repeat under different headings)
+function dropRepeatedLines(text) {
+  const seen = new Set();
+  return text.split('\n').filter((l) => {
+    const k = l.trim().toLowerCase();
+    if (k.length < 12 || !/[\p{L}\p{N}]/u.test(k)) return true;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
 
 class AiService {
   constructor({ notes, templates, settings, llm, bus, knowledge }) { Object.assign(this, { notes, templates, settings, llm, bus, knowledge }); }
@@ -86,7 +102,9 @@ class AiService {
       const partials = [];
       for (let i = 0; i < chunks.length; i++) {
         onStage?.({ stage: 'reduce', index: i + 1, total: chunks.length });
-        partials.push(await this.llm.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1 }));
+        // Capped: a small local model can fall into a repetition loop and, with context shifting on, never stop by itself
+        const part = await this.llm.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1, maxTokens: PARTIAL_MAX_TOKENS, frequencyPenalty: 0.3 });
+        partials.push(dropRepeatedLines(part));
       }
       transcript = `(The transcript was long; these are condensed notes of each part, in order.)\n\n${partials.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n')}`;
     }
@@ -95,7 +113,7 @@ class AiService {
     const wanted = language ?? (tr.enabled ? tr.notesLanguage : '');
     const messages = prompts.summaryMessages({ note, transcript, template, userName: this.settings.get('userName'), language: isLanguage(wanted) ? wanted : '' });
     let summary = '';
-    for await (const d of this.llm.stream(messages, { signal })) { summary += d; onDelta?.(d); }
+    for await (const d of this.llm.stream(messages, { signal, maxTokens: SUMMARY_MAX_TOKENS })) { summary += d; onDelta?.(d); }
     summary = summary.trim();
     if (!summary) throw new Error('The model returned an empty summary.');
     this.notes.update(noteId, { summary, templateId: template.id });
@@ -175,4 +193,4 @@ class AiService {
   }
 }
 
-module.exports = { AiService };
+module.exports = { AiService, dropRepeatedLines };
