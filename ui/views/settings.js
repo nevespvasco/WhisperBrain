@@ -5,6 +5,7 @@ import { listMicrophones } from '../capture.js';
 import { openExport } from './transfer.js';
 
 const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
+let modelListener = null; // the Audio section's download listener (see bind)
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); document.documentElement.dataset.theme = S.settings.theme; return S.settings; };
 const row = (title, sub, control) => `<div class="set-row"><div class="l"><b>${esc(title)}</b>${sub ? `<span>${sub}</span>` : ''}</div>${control}</div>`;
 const tog = (id, on, title, sub) => row(title, sub, switchEl(id, on, title));
@@ -48,12 +49,19 @@ const whenLine = (id) => { const w = WHEN[S.state?.modelAdvice?.models[id]?.when
 
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
-  main.innerHTML = `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
+  const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
     <div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
-    <div id="secbody" class="set-section"><div class="panel"><div class="skel" style="width:40%"></div></div></div></div></div>`;
-  const body = $('#secbody', main);
-  body.innerHTML = await SECTION[sec]();
-  bind(main, sec, body);
+    <div id="secbody" class="set-section" data-sec="${sec}">${inner}</div></div></div>`;
+  // Re-rendering the section already on screen (removing a model, a download finishing…) must not jump the page:
+  // build the new content first, swap it in one go, and put the scroll position back.
+  const again = main.querySelector('#secbody')?.dataset.sec === sec;
+  const y = main.scrollTop;
+  if (!again) main.innerHTML = shell('<div class="panel"><div class="skel" style="width:40%"></div></div>');
+  const html = await SECTION[sec]();
+  if (again) main.innerHTML = shell(html);
+  else $('#secbody', main).innerHTML = html;
+  if (again) main.scrollTop = y;
+  bind(main, sec, $('#secbody', main));
 }
 
 const enhanceSelect = (id, v) => `<select id="${id}">${[['auto', t('Automatic')], ['on', t('On')], ['off', t('Off')]].map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
@@ -221,12 +229,23 @@ function bind(main, sec, body) {
     } catch (err) { fail(err); const el = $('#llm-result'); if (el && b.dataset.act?.startsWith('llm')) el.textContent = `✗ ${err.message}`; }
   });
   $('#llm-provider', body)?.addEventListener('change', (e) => { const url = $('#llm-url'); if (e.target.value === 'ollama' && !url.value) url.value = 'http://127.0.0.1:11434/v1'; });
+  // One listener at a time: every render calls bind() again, and stacked listeners each re-rendering on every
+  // download event snowballed until the page ran out of memory. Re-renders are coalesced for the same reason.
+  if (modelListener) window.removeEventListener('wb:event', modelListener);
+  modelListener = null;
+  if (sec !== 'audio') return;
+  let pending = 0;
+  const later = (refreshState) => {
+    clearTimeout(pending);
+    pending = setTimeout(async () => { if (refreshState) S.state = await api('GET', '/api/state').catch(() => S.state); rerender(); }, 400);
+  };
   const onEv = (ev) => {
     const { type, data } = ev.detail;
-    if (sec !== 'audio' || S.view.name !== 'settings') return window.removeEventListener('wb:event', onEv);
-    if (type === 'model.progress') { const bar = $(`[data-model-progress="${data.id}"]`); if (bar) bar.style.width = `${Math.round(data.progress * 100)}%`; else rerender(); }
-    if (['model.installed', 'model.removed', 'model.error'].includes(type)) { api('GET', '/api/state').then((st) => { S.state = st; rerender(); }); }
+    if (S.view.name !== 'settings') { window.removeEventListener('wb:event', onEv); if (modelListener === onEv) modelListener = null; return; }
+    if (type === 'model.progress') { const bar = $(`[data-model-progress="${data.id}"]`); if (bar) bar.style.width = `${Math.round(data.progress * 100)}%`; else later(false); }
+    if (['model.installed', 'model.removed', 'model.error'].includes(type)) later(true);
   };
+  modelListener = onEv;
   window.addEventListener('wb:event', onEv);
 }
 const llmForm = () => ({ provider: $('#llm-provider').value, baseUrl: $('#llm-url').value.trim(), apiKey: $('#llm-key').value, model: $('#llm-model').value.trim() });
