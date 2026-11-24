@@ -6,7 +6,7 @@ const path = require('node:path');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
-const { Models, recognizerConfig, resolveFiles, CATALOG } = require('../src/asr/models');
+const { Models, recognizerConfig, resolveFiles, recommend, CATALOG } = require('../src/asr/models');
 const { Bus } = require('../src/core/events');
 const { tmpDir } = require('./helpers');
 
@@ -112,4 +112,27 @@ test('recognizer configs per model kind, and file resolution requires every file
 test('catalog: every entry has what the installer needs; the multilingual default is pinned', () => {
   for (const m of CATALOG) { assert.match(m.url, /^https:\/\/github\.com\/k2-fsa\/sherpa-onnx\/releases\//); assert.ok(['transducer', 'whisper', 'streaming-transducer'].includes(m.kind)); assert.equal(m.kind === 'streaming-transducer', m.role === 'draft', 'streaming models are draft-only'); }
   assert.match(CATALOG.find((m) => m.id === 'parakeet-tdt-0.6b-v3').sha256, /^[0-9a-f]{64}$/);
+});
+
+test('recommend: advice follows the computer and gives every catalog entry a verdict', () => {
+  const big = recommend({ totalMemMB: 32 * 1024, cpus: 32, language: 'pt' });
+  assert.equal(big.machine.tier, 'large');
+  assert.equal(big.main, 'parakeet-tdt-0.6b-v3');
+  assert.equal(big.draft, true);
+  assert.equal(big.models['parakeet-tdt-110m-en'].fit, 'skip', 'the 0.6B model covers English on a big machine');
+  assert.equal(big.models['whisper-base'].fit, 'skip', 'whisper small is the better fallback here');
+  for (const m of CATALOG) assert.ok(big.models[m.id], `verdict for ${m.id}`);
+
+  const laptop = recommend({ totalMemMB: 8 * 1024, cpus: 8 });
+  assert.equal(laptop.main, 'parakeet-tdt-0.6b-v3');
+  assert.equal(laptop.draft, true);
+  assert.equal(laptop.models['parakeet-tdt-110m-en'].fit, 'optional');
+
+  const small = recommend({ totalMemMB: 4 * 1024, cpus: 4 });
+  assert.equal(small.machine.tier, 'small');
+  assert.equal(small.draft, false, 'no live drafts under 4 physical cores');
+  assert.equal(small.models['whisper-small'].fit, 'skip');
+
+  assert.equal(recommend({ totalMemMB: 3 * 1024, cpus: 2, language: 'en' }).main, 'parakeet-tdt-110m-en');
+  assert.equal(recommend({ totalMemMB: 3 * 1024, cpus: 2, language: 'pt' }).main, 'whisper-base');
 });

@@ -123,9 +123,10 @@ function createRoutes(app) {
     const labelled = assignSpeakers(params.id, segs, app.speakers, { threshold: app.settings.get('speakerThreshold') });
     const saved = app.notes.addSegments(params.id, labelled);
     const prefs = app.settings.all();
+    let diarized = false;
     if (prefs.speakerDetection && prefs.speakerDiarize && saved.length && app.models.segmentationInstalled() && app.models.speakerInstalled()) { // who spoke when, word by word
       try {
-        await diarizeChannel({ notes: app.notes, speakers: app.speakers, noteId: params.id, channel: 'system', source: { pcm }, stretches: [{ at: 0, ms: 0 }], segIds: saved.map((x) => x.id),
+        diarized = !!await diarizeChannel({ notes: app.notes, speakers: app.speakers, noteId: params.id, channel: 'system', source: { pcm }, stretches: [{ at: 0, ms: 0 }], segIds: saved.map((x) => x.id),
           segmentation: app.models.segmentationPath(), embedding: app.models.speakerPath(), threads: prefs.asrThreads });
       } catch (e) { console.warn('speaker diarization failed:', e.message); }
     }
@@ -133,7 +134,7 @@ function createRoutes(app) {
       const refs = saved.map((x) => ({ segId: x.id, ch: 'system', from: Math.round(x.startMs * 16), to: Math.round(x.endMs * 16) }));
       try { await refineNote({ speakers: app.speakers, noteId: params.id, refs, read: (_ch, from, to) => pcm.subarray(from * 2, to * 2), threshold: prefs.speakerThreshold }); } catch (e) { console.warn('speaker analysis failed:', e.message); }
     }
-    app.speakers.consolidate(params.id, app.settings.get('speakerThreshold'));
+    app.speakers.consolidate(params.id, app.settings.get('speakerThreshold'), { channels: diarized ? ['mic'] : ['mic', 'system'] });
     app.speakers.autoMatch(params.id);
     app.notes.update(params.id, { status: 'done', endedAt: Date.now() });
     app.notes.reindex(params.id);

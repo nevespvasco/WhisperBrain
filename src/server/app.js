@@ -8,7 +8,7 @@ const { Bus } = require('../core/events');
 const { Notes } = require('../core/notes');
 const { Settings } = require('../core/settings');
 const { Templates } = require('../core/templates');
-const { Models } = require('../asr/models');
+const { Models, recommend } = require('../asr/models');
 const { AsrEngine } = require('../asr/engine');
 const { termsForNote } = require('../asr/vocabulary');
 const { RecordingManager } = require('../recording/manager');
@@ -105,7 +105,9 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
       return {
         version, platform: plat.id, capture: plat.capture, capabilities: caps,
         recording: recording.status(), dictation: dictation.status(),
-        model: model ? { id: model.id } : null, vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
+        model: model ? { id: model.id } : null,
+        modelAdvice: recommend({ language: settings.get('asrLanguage') === 'auto' ? settings.get('language') : settings.get('asrLanguage') }),
+        vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
         speakerModelMB: (models.speakerInstalled() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
         llmConfigured: !!settings.get('llm').baseUrl,
         stats: { ...notes.stats(), ...knowledge.stats() },

@@ -4,6 +4,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { spawn } = require('node:child_process');
@@ -73,6 +74,31 @@ const SEGMENTATION = {
 // models are never a candidate: they cannot produce final text.
 const AUTO_ORDER = ['parakeet-tdt-0.6b-v3', 'parakeet-tdt-110m-en', 'whisper-small', 'whisper-base'];
 
+// Which speech models suit this computer, and when each one is the right choice. `language` is the meeting language
+// ('auto' = unknown; English matters because the 110M model is English-only). -> { machine, main, draft, models } where
+// models[id] = { fit: 'best'|'good'|'optional'|'skip', when } and `when` is a code the UI turns into a sentence.
+// Physical cores are estimated as half the logical CPUs, like the worker pools; live drafts need 4 (DRAFT_MIN_CORES).
+function recommend({ totalMemMB = os.totalmem() / 1048576, cpus = os.availableParallelism(), language = 'auto' } = {}) {
+  const memGB = Math.round(totalMemMB / 1024);
+  const cores = Math.max(1, Math.round(cpus / 2));
+  const tier = memGB < 6 || cores < 3 ? 'small' : memGB >= 12 && cores >= 6 ? 'large' : 'medium';
+  const english = language === 'en';
+  const tiny = memGB < 4; // Parakeet 0.6B wants ~1.5 GB on top of the OS and the app
+  const main = !tiny ? 'parakeet-tdt-0.6b-v3' : english ? 'parakeet-tdt-110m-en' : 'whisper-base';
+  const draft = cores >= 4 && memGB >= 8; // ~1 GB more while recording; smaller machines get captions when a phrase ends
+  const models = {
+    'parakeet-tdt-0.6b-v3': main === 'parakeet-tdt-0.6b-v3' ? { fit: 'best', when: 'main' } : { fit: 'skip', when: 'low-memory' },
+    'parakeet-tdt-110m-en': main === 'parakeet-tdt-110m-en' ? { fit: 'best', when: 'main-english' }
+      : tier === 'large' ? { fit: 'skip', when: 'english-not-needed' } : { fit: 'optional', when: 'english-light' },
+    'nemotron-3.5-streaming-320ms': draft ? { fit: tier === 'large' ? 'good' : 'optional', when: 'draft' } : { fit: 'skip', when: 'draft-small' },
+    // Whisper only for languages Parakeet lacks: small where the computer can carry it, base on small computers
+    'whisper-small': tier === 'small' ? { fit: 'skip', when: 'other-languages-slow' } : { fit: 'optional', when: 'other-languages' },
+    'whisper-base': main === 'whisper-base' ? { fit: 'best', when: 'main-tiny' }
+      : tier === 'small' ? { fit: 'optional', when: 'other-languages-light' } : { fit: 'skip', when: 'whisper-small-better' },
+  };
+  return { machine: { memGB, cores, cpus, tier }, main, draft, models };
+}
+
 class Models {
   constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, segmentation = SEGMENTATION, bus } = {}) {
     this.dir = dir;
@@ -82,6 +108,7 @@ class Models {
     this.segmentation = segmentation;
     this.bus = bus;
     this.downloads = new Map(); // id -> { progress, abort }
+    this.depsPending = null;    // installDeps() in progress
     fs.mkdirSync(dir, { recursive: true });
   }
 
@@ -142,9 +169,7 @@ class Models {
     try {
       fs.rmSync(tmp, { recursive: true, force: true });
       fs.mkdirSync(tmp, { recursive: true });
-      if (!this.vadInstalled()) await this.installVad();
-      if (!this.speakerInstalled()) await this.installSpeaker().catch((e) => this.bus?.publish('model.error', { id: this.speaker.id, message: `speaker recognition: ${e.message}` }));
-      if (!this.segmentationInstalled()) await this.installSegmentation().catch((e) => this.bus?.publish('model.error', { id: this.segmentation.id, message: `speaker segmentation: ${e.message}` }));
+      await this.installDeps();
       const archive = path.join(tmp, 'model.tar.bz2');
       const sha = await download(m.url, archive, { signal: ctl.abort.signal, onProgress: report });
       if (m.sha256 && sha !== m.sha256) throw new Error(`checksum mismatch for ${id}: got ${sha}`);
@@ -163,6 +188,17 @@ class Models {
       this.downloads.delete(id);
       fs.rmSync(tmp, { recursive: true, force: true });
     }
+  }
+
+  // The VAD and speaker models every transcription model needs. Shared by installs that run at the same time, so two
+  // downloads never write the same file.
+  installDeps() {
+    this.depsPending ??= (async () => {
+      if (!this.vadInstalled()) await this.installVad();
+      if (!this.speakerInstalled()) await this.installSpeaker().catch((e) => this.bus?.publish('model.error', { id: this.speaker.id, message: `speaker recognition: ${e.message}` }));
+      if (!this.segmentationInstalled()) await this.installSegmentation().catch((e) => this.bus?.publish('model.error', { id: this.segmentation.id, message: `speaker segmentation: ${e.message}` }));
+    })().finally(() => { this.depsPending = null; });
+    return this.depsPending;
   }
 
   async installVad() {
@@ -304,4 +340,4 @@ function untar(archive, cwd) {
   });
 }
 
-module.exports = { Models, CATALOG, VAD, SPEAKER, SEGMENTATION, AUTO_ORDER, resolveFiles, recognizerConfig, onlineRecognizerConfig, download };
+module.exports = { Models, CATALOG, VAD, SPEAKER, SEGMENTATION, AUTO_ORDER, recommend, resolveFiles, recognizerConfig, onlineRecognizerConfig, download };

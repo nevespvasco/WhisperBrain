@@ -76,11 +76,13 @@ class Speakers {
     return ok;
   }
 
-  // Fold speakers that turned out to be the same voice (run when a recording stops).
-  consolidate(noteId, threshold = 0.6) {
+  // Fold speakers that turned out to be the same voice (run when a recording stops). A channel that was diarized is
+  // left out: its clustering already saw the whole meeting, and greedy centroid merging undoes it (on a far-field mix
+  // every pooled voice print is within 0.6 of the others).
+  consolidate(noteId, threshold = 0.6, { channels = ['mic', 'system'] } = {}) {
     const all = this.forNote(noteId).filter((s) => s.centroid);
     const changes = new Map();
-    for (const channel of ['mic', 'system']) {
+    for (const channel of channels) {
       const list = all.filter((s) => s.channel === channel).map((s) => ({ id: s.speakerId, centroid: s.centroid, count: s.count, name: s.name, voiceId: s.voiceId, pitch: s.pitch }));
       // never merge two speakers the user (or a voice profile) has told apart, nor two with clearly different pitch
       const named = (x) => x.name || x.voiceId;

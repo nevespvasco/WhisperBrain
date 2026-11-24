@@ -352,16 +352,17 @@ class RecordingManager {
     if (this.speakers) {
       const s = this.settings.all();
       const threshold = s.speakerThreshold;
+      let diarized = [];
       // The capture is over, so the heavy listening happens now: who spoke when over the whole meeting, word by word.
       if (a.refs.length) {
         a.stage = 'speakers';
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
-        if (s.speakerDiarize) await this.diarize(a, s);
+        if (s.speakerDiarize) diarized = await this.diarize(a, s);
         if (s.speakerRefine) { // optional acoustic second look (pitch, timbre); off by default, see eval/README.md
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
-      try { this.speakers.consolidate(a.noteId, threshold); this.speakers.autoMatch(a.noteId, VOICE_MATCH); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      try { this.speakers.consolidate(a.noteId, threshold, { channels: ['mic', 'system'].filter((ch) => !diarized.includes(ch)) }); this.speakers.autoMatch(a.noteId, VOICE_MATCH); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
     }
     this.closeSpools(a);
     this.active = null;
@@ -375,9 +376,11 @@ class RecordingManager {
 
   // Diarize each channel's spool on its own (mic and system audio are never clustered together) and relabel this
   // recording's words. Needs the segmentation and voice models; without them the live labels stand.
+  // -> the channels that were diarized
   async diarize(a, s) {
     const m = this.models;
-    if (!m.segmentationInstalled?.() || !m.speakerInstalled?.()) return;
+    const done = [];
+    if (!m.segmentationInstalled?.() || !m.speakerInstalled?.()) return done;
     for (const ch of Object.keys(a.spool)) {
       const spool = a.spool[ch];
       if (!spool || spool.broken || !spool.samples) continue;
@@ -395,8 +398,10 @@ class RecordingManager {
           if (!ref) continue;
           a.refs = a.refs.filter((r) => r !== ref).concat(parts.map((p) => ({ segId: p.id, ch, from: ref.from + Math.round((p.startMs - origin) * 16), to: ref.from + Math.round((p.endMs - origin) * 16) })));
         }
+        if (out) done.push(ch);
       } catch (e) { this.bus.publish('recording.warning', { message: `speaker diarization (${ch}): ${e.message}` }); }
     }
+    return done;
   }
 
   closeSpools(a) { for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } } }

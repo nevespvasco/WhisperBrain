@@ -15,6 +15,37 @@ const draftHint = () => {
   return m && !m.installed ? `${base} ${t('Needs the “{name}” download below ({mb} MB).', { name: m.name, mb: m.sizeMB })}` : `${base} ${t('Uses about 1 GB of memory and some CPU during a recording; turned off automatically on small computers.')}`;
 };
 
+// Which speech models suit this computer (from /api/state modelAdvice) and when each one is worth having.
+const FIT = { best: ['ok', 'Best for this computer'], good: ['accent', 'Recommended'], optional: ['', 'Only if needed'], skip: ['', 'Not needed here'] };
+const WHEN = {
+  main: 'Use it for every meeting: the most accurate, and it covers Portuguese, English and 23 other European languages.',
+  'main-english': 'The best fit for the memory this computer has, if your meetings are in English.',
+  'main-tiny': 'This computer has little memory, so this light model is the safest choice. Expect more mistakes.',
+  'low-memory': 'Needs about 1.5 GB of free memory, which this computer is short of.',
+  'english-not-needed': 'Parakeet 0.6B already handles English more accurately, and this computer runs it easily.',
+  'english-light': 'For English-only meetings when you want to save CPU and battery, e.g. on a laptop that is unplugged.',
+  draft: 'Get it if you like to follow the words live during a call. It never changes the saved transcript.',
+  'draft-small': 'Needs at least 4 cores and 8 GB of memory. Without it, each line appears when the phrase ends.',
+  'other-languages': 'Only for meetings in a language Parakeet does not cover (e.g. Japanese, Chinese, Arabic, Hindi). Slower, and it can invent text during long silences.',
+  'other-languages-slow': 'Too slow on this computer; for languages Parakeet does not cover, use Whisper base.',
+  'other-languages-light': 'For languages Parakeet does not cover, on a slower computer. Less accurate than Whisper small.',
+  'whisper-small-better': 'For languages Parakeet does not cover, Whisper small is more accurate and runs fine here.',
+};
+// The models the advice says to have (main + live drafts when the computer can carry them) that are not installed yet.
+const missingPicks = (adv) => (S.models || []).filter((m) => !m.installed && m.downloading == null && (m.id === adv.main || (adv.draft && m.role === 'draft')));
+const adviceCard = (adv) => {
+  if (!adv) return '';
+  const names = (S.models || []).filter((m) => m.id === adv.main || (adv.draft && m.role === 'draft')).map((m) => esc(m.name));
+  const missing = missingPicks(adv);
+  const mb = missing.reduce((n, m) => n + m.sizeMB, 0);
+  return `<div class="banner small mt-s"><div class="grow"><b>${t('For this computer')}</b> · ${t('{cores} cores, {mem} GB memory', { cores: adv.machine.cores, mem: adv.machine.memGB })}<br>
+    ${t('Recommended')}: ${names.join(' + ')}. ${t('Leave “Use” on Automatic and WhisperBrain picks the best installed model for each recording.')}</div>
+    ${missing.length ? `<button class="btn sm primary" data-act="model-setup">${icon('download', 'sm')} ${t('Set up for me')} (${mb} MB)</button>` : `<span class="badge ok">${t('All set')}</span>`}</div>`;
+};
+
+const fitBadge = (id) => { const f = FIT[S.state?.modelAdvice?.models[id]?.fit]; return f ? `<span class="badge ${f[0]}">${t(f[1])}</span>` : ''; };
+const whenLine = (id) => { const w = WHEN[S.state?.modelAdvice?.models[id]?.when]; return w ? `<div class="small mt-s"><b>${t('When to use')}:</b> ${t(w)}</div>` : ''; };
+
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
   main.innerHTML = `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
@@ -106,8 +137,9 @@ const SECTION = {
       <section class="panel"><div class="panel-head"><h3>${t('Speech model')}</h3></div>
       ${tog('set-hotwords', s.asrHotwords, t('Recognise names and terms from the meeting'), t('Attendees, glossary terms and saved speakers are given to the speech model as hints, so rare names are spelled right. Uses a little more CPU.'))}
       ${tog('set-livedraft', s.liveDraft, t('Show draft words while people speak'), draftHint())}
-      ${row(t('Use'), '', `<select id="set-asr"><option value="auto">${t('Best installed')}</option>${S.models.filter((m) => m.installed && m.role !== 'draft').map((m) => `<option value="${m.id}" ${s.asrModel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
-      <div class="stack mt-s">${S.models.map((m) => `<div class="card row"><div class="grow"><div class="row wrap" style="gap:6px"><b>${esc(m.name)}</b><span class="badge">${m.sizeMB} MB</span>${m.installed ? `<span class="badge ok">${t('installed')}</span>` : ''}</div><div class="small muted">${esc(m.note)}</div>
+      ${adviceCard(S.state?.modelAdvice)}
+      ${row(t('Use'), '', `<select id="set-asr"><option value="auto">${t('Automatic (best installed)')}</option>${S.models.filter((m) => m.installed && m.role !== 'draft').map((m) => `<option value="${m.id}" ${s.asrModel === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`)}
+      <div class="stack mt-s">${S.models.map((m) => `<div class="card row"><div class="grow"><div class="row wrap" style="gap:6px"><b>${esc(m.name)}</b><span class="badge">${m.sizeMB} MB</span>${m.installed ? `<span class="badge ok">${t('installed')}</span>` : ''}${fitBadge(m.id)}</div><div class="small muted">${esc(m.note)}</div>${whenLine(m.id)}
         ${m.downloading != null ? `<div class="progress mt-s"><i data-model-progress="${m.id}" style="width:${Math.round(m.downloading * 100)}%"></i></div>` : ''}</div>
         ${m.installed ? `<button class="btn sm" data-model-remove="${m.id}">${t('Remove')}</button>` : m.downloading != null ? `<button class="btn sm" data-model-cancel="${m.id}">${t('Cancel')}</button>` : `<button class="btn sm primary" data-model-install="${m.id}">${icon('download', 'sm')} ${t('Download')}</button>`}</div>`).join('')}</div></section>`;
   },
@@ -169,6 +201,13 @@ function bind(main, sec, body) {
       else if (b.dataset.voiceRename) { const n = await promptDialog(t('Rename'), b.dataset.name); if (n) { await api('PATCH', `/api/voices/${b.dataset.voiceRename}`, { name: n }); rerender(); } }
       else if (b.dataset.voiceDel) { if (await confirmDialog(t('Forget this voice? Past transcripts keep the name you gave.'), { ok: t('Forget') })) { await api('DELETE', `/api/voices/${b.dataset.voiceDel}`); rerender(); } }
       else if (b.dataset.dz) await danger(b.dataset.dz, rerender);
+      else if (b.dataset.act === 'model-setup') { // install what the advice recommends and let "auto" pick it
+        const adv = S.state.modelAdvice;
+        b.disabled = true;
+        await save({ asrModel: 'auto', ...(adv.draft ? { liveDraft: true } : {}) });
+        for (const m of missingPicks(adv)) await api('POST', `/api/models/${m.id}/install`);
+        done(t('Downloading…')); rerender();
+      }
       else if (b.dataset.modelInstall) { await api('POST', `/api/models/${b.dataset.modelInstall}/install`); rerender(); }
       else if (b.dataset.modelCancel) { await api('POST', `/api/models/${b.dataset.modelCancel}/cancel`); rerender(); }
       else if (b.dataset.modelRemove) { if (await confirmDialog(t('Remove this speech model? You can download it again later.'), { ok: t('Remove') })) { await api('DELETE', `/api/models/${b.dataset.modelRemove}`); rerender(); } }
