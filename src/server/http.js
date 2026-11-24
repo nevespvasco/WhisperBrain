@@ -158,6 +158,7 @@ function createRoutes(app) {
   // a platform's own transcript (Teams / Zoom / Meet export): its speaker names become evidence for the voices
   add('POST', '/api/notes/:id/attach-transcript', async ({ params, req, query }) => {
     noteOr404(params.id);
+    if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
     const buf = await readBody(req, MAX_TEXT_BYTES);
     if (!buf.length) throw new HttpError(400, 'empty file');
     try { return attachTranscript(app, params.id, buf, query.filename); } catch (e) { throw e.status ? new HttpError(e.status, e.message) : e; }

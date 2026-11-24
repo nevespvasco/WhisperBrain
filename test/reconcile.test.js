@@ -63,3 +63,16 @@ test('lines from the platform that match nothing are left out; a few stray lines
   assert.equal(r.matches.length, 7);
   assert.ok(Math.abs(r.offsetMs - -30000) <= 1000);
 });
+
+test('a long meeting is matched in reasonable time (3000 lines against 3000 utterances)', () => {
+  const words = Array.from({ length: 400 }, (_, i) => `w${i}x`);
+  let seed = 7; const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const sentence = () => Array.from({ length: 12 }, () => words[Math.floor(rnd() * words.length)]).join(' ');
+  const said = Array.from({ length: 3000 }, (_, i) => ({ id: i, speakerId: `s${i % 4}`, startMs: i * 5000, endMs: i * 5000 + 4000, text: sentence() }));
+  const plat = said.map((u) => ({ label: `P${u.speakerId}`, startMs: u.startMs + 12000, endMs: u.endMs + 12000, text: u.text }));
+  const t0 = Date.now();
+  const r = reconcileTranscript({ platform: plat, utterances: said });
+  assert.equal(r.ok, true);
+  assert.ok(Math.abs(r.offsetMs - -12000) <= 1000);
+  assert.ok(Date.now() - t0 < 3000, `took ${Date.now() - t0} ms`);
+});

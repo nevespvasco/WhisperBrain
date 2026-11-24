@@ -65,18 +65,24 @@ class Speakers {
     const all = this.forNote(noteId);
     const sp = all.find((x) => x.speakerId === speakerId);
     if (!sp || !clean) return null;
-    if (sp.name && !(replaceInferred && /^(meeting|transcript)/.test(sp.nameSource || ''))) return 'kept';
+    const replacing = !!sp.name && replaceInferred && /^(meeting|transcript)/.test(sp.nameSource || '');
+    if (sp.name && !replacing) return 'kept';
     const same = (a, b) => String(a).toLowerCase() === String(b).toLowerCase();
-    if (sp.voiceId && sp.voiceName && !same(sp.voiceName, clean)) return 'conflict';
+    // a saved voice linked because of the name being replaced goes with it: it said "this is Bob", the new evidence says Alice
+    let voiceId = sp.voiceId, voiceName = sp.voiceName;
+    if (replacing && voiceId && !same(voiceName, clean)) { voiceId = null; voiceName = null; this.db.prepare('UPDATE note_speakers SET voice_id = NULL WHERE note_id = ? AND speaker_id = ?').run(noteId, speakerId); }
+    if (voiceId && voiceName && !same(voiceName, clean)) return 'conflict';
     const voice = this.voiceByName(clean);
     let link = null;
     if (voice && !all.some((x) => x.voiceId === voice.id && x.speakerId !== speakerId)) {
-      const fits = sp.voiceId === voice.id || (sp.centroid && matchVoices([{ id: sp.speakerId, centroid: sp.centroid, channel: sp.channel }], [voice], MATCH.threshold - 0.2, null, { mu: this.channelMeans() }).has(sp.speakerId));
+      const fits = voiceId === voice.id || (sp.centroid && matchVoices([{ id: sp.speakerId, centroid: sp.centroid, channel: sp.channel }], [voice], MATCH.threshold - 0.2, null, { mu: this.channelMeans() }).has(sp.speakerId));
       if (fits || !sp.centroid) link = voice.id;
     }
-    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id), name_source = ?, name_confidence = ? WHERE note_id = ? AND speaker_id = ?').run(clean, link, source, confidence, noteId, speakerId);
+    const agrees = !!voiceId && !!voiceName && same(voiceName, clean);
+    // a name that only agrees with the saved voice stays attributed to the voice (it was recognised by sound)
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = COALESCE(?, voice_id), name_source = CASE WHEN ? THEN name_source ELSE ? END, name_confidence = CASE WHEN ? THEN name_confidence ELSE ? END WHERE note_id = ? AND speaker_id = ?').run(clean, link, agrees ? 1 : 0, source, agrees ? 1 : 0, confidence, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
-    return sp.voiceId && sp.voiceName && same(sp.voiceName, clean) ? 'agrees' : 'named';
+    return agrees ? 'agrees' : 'named';
   }
 
   // Remember a voice the meeting window named, for the next meetings: the speaker's print becomes (one more print of) a
@@ -89,7 +95,7 @@ class Speakers {
     if (!sp?.name || !sp.centroid || sp.talkMs < 8000) return false; // a voice print needs some seconds of speech to mean anything
     const existing = this.voiceByName(sp.name);
     if (existing && sp.voiceId !== existing.id) return false;
-    this.rename(noteId, speakerId, sp.name, { remember: true, consentSource: 'meeting' });
+    this.rename(noteId, speakerId, sp.name, { remember: true, consentSource: 'meeting', keepSource: true });
     return true;
   }
 
@@ -106,8 +112,8 @@ class Speakers {
     tx(this.db, () => {
       this.db.prepare('UPDATE segments SET speaker_id = ? WHERE note_id = ? AND speaker_id = ?').run(into, noteId, from);
       const centroid = a.centroid && b.centroid ? blend(norm(a.centroid), a.count || 1, norm(b.centroid), b.count || 1) : (a.centroid || b.centroid);
-      this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, name = CASE WHEN name = \'\' THEN ? ELSE name END, voice_id = COALESCE(voice_id, ?), pitch = COALESCE(pitch, ?) WHERE note_id = ? AND speaker_id = ?')
-        .run(toBlob(centroid), a.count + b.count, b.name, b.voiceId, b.pitch, noteId, into);
+      this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, name = CASE WHEN name = \'\' THEN ? ELSE name END, name_source = CASE WHEN name = \'\' THEN ? ELSE name_source END, name_confidence = CASE WHEN name = \'\' THEN ? ELSE name_confidence END, voice_id = COALESCE(voice_id, ?), pitch = COALESCE(pitch, ?) WHERE note_id = ? AND speaker_id = ?')
+        .run(toBlob(centroid), a.count + b.count, b.name, b.nameSource || '', b.nameConfidence ?? null, b.voiceId, b.pitch, noteId, into);
       this.db.prepare('DELETE FROM note_speakers WHERE note_id = ? AND speaker_id = ?').run(noteId, from);
     });
     this.bus?.publish('speakers.updated', { noteId });
@@ -131,7 +137,8 @@ class Speakers {
   // renaming the profile itself.
   // remember saves a voice only together with consentSource ('user' | 'meeting' | 'import'); without it the speaker is
   // named and nothing biometric is stored. The profile keeps when and from which speaker consent was given.
-  rename(noteId, speakerId, name, { remember = false, consentSource = null } = {}) {
+  // keepSource: the name was inferred, not typed (learnFromMeeting), so its provenance stays what it was
+  rename(noteId, speakerId, name, { remember = false, consentSource = null, keepSource = false } = {}) {
     const sp = this.forNote(noteId).find((s) => s.speakerId === speakerId);
     if (!sp) return null;
     const clean = String(name || '').trim().slice(0, 80);
@@ -162,7 +169,7 @@ class Speakers {
         });
       }
     }
-    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ?, name_source = ?, name_confidence = ? WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, clean ? 'user' : '', clean ? 1 : null, noteId, speakerId);
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ?, name_source = CASE WHEN ? THEN name_source ELSE ? END, name_confidence = CASE WHEN ? THEN name_confidence ELSE ? END WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, keepSource ? 1 : 0, clean ? 'user' : '', keepSource ? 1 : 0, clean ? 1 : null, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
     return this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
   }
@@ -201,8 +208,8 @@ class Speakers {
       for (const [from, { into, keep }] of changes) {
         const src = all.find((s) => s.speakerId === from);
         this.db.prepare('UPDATE segments SET speaker_id = ? WHERE note_id = ? AND speaker_id = ?').run(into, noteId, from);
-        this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, name = CASE WHEN name = \'\' THEN ? ELSE name END, voice_id = COALESCE(voice_id, ?) WHERE note_id = ? AND speaker_id = ?')
-          .run(toBlob(keep.centroid), keep.count, src.name, src.voiceId, noteId, into);
+        this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, name = CASE WHEN name = \'\' THEN ? ELSE name END, name_source = CASE WHEN name = \'\' THEN ? ELSE name_source END, name_confidence = CASE WHEN name = \'\' THEN ? ELSE name_confidence END, voice_id = COALESCE(voice_id, ?) WHERE note_id = ? AND speaker_id = ?')
+          .run(toBlob(keep.centroid), keep.count, src.name, src.nameSource || '', src.nameConfidence ?? null, src.voiceId, noteId, into);
         this.db.prepare('DELETE FROM note_speakers WHERE note_id = ? AND speaker_id = ?').run(noteId, from);
       }
     });
@@ -228,7 +235,7 @@ class Speakers {
       for (const [segId, speakerId] of assignments) move.run(speakerId, segId, noteId);
       for (const [from, into] of removed) {
         const src = this.db.prepare('SELECT name, voice_id AS voiceId FROM note_speakers WHERE note_id = ? AND speaker_id = ?').get(noteId, from);
-        if (into && src) this.db.prepare('UPDATE note_speakers SET name = CASE WHEN name = \'\' THEN ? ELSE name END, voice_id = COALESCE(voice_id, ?) WHERE note_id = ? AND speaker_id = ?').run(src.name, src.voiceId, noteId, into);
+        if (into && src) this.db.prepare('UPDATE note_speakers SET name = CASE WHEN name = \'\' THEN ? ELSE name END, name_source = CASE WHEN name = \'\' THEN ? ELSE name_source END, name_confidence = CASE WHEN name = \'\' THEN ? ELSE name_confidence END, voice_id = COALESCE(voice_id, ?) WHERE note_id = ? AND speaker_id = ?').run(src.name, src.nameSource || '', src.nameConfidence ?? null, src.voiceId, noteId, into);
         this.db.prepare('DELETE FROM note_speakers WHERE note_id = ? AND speaker_id = ?').run(noteId, from);
       }
     });

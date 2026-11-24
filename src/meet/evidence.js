@@ -1,17 +1,21 @@
 'use strict';
 // The evidence a meeting's names are based on (table `evidence`, see migration v10). Rows are plain objects:
 //   { kind, source, key, name, t0, t1, weight, meta }   key = the name folded for comparison; meta = anything JSON
-const KINDS = ['highlight', 'roster', 'caption', 'stream', 'transcript', 'calendar'];
+const KINDS = ['highlight', 'roster', 'caption', 'stream', 'transcript', 'calendar', 'mention'];
 
 class Evidence {
   constructor(db) { this.db = db; }
 
-  add(noteId, rows) {
+  add(noteId, rows) { return this.replace(noteId, [], rows); }
+
+  // Swap the rows of some kinds for new ones in one step (a failure leaves what was there); [] = just add.
+  replace(noteId, kinds, rows) {
     for (const r of rows) if (!KINDS.includes(r.kind)) throw new Error(`evidence kind must be one of ${KINDS.join(', ')}`);
-    if (!rows.length) return 0;
+    if (!rows.length && !kinds.length) return 0;
     const stmt = this.db.prepare('INSERT INTO evidence(note_id, kind, source, participant_key, name, t0, t1, weight, meta) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)');
     this.db.exec('BEGIN');
     try {
+      if (kinds.length) this.db.prepare(`DELETE FROM evidence WHERE note_id = ? AND kind IN (${kinds.map(() => '?').join(',')})`).run(noteId, ...kinds);
       for (const r of rows) stmt.run(noteId, r.kind, r.source || '', r.key || '', String(r.name || '').slice(0, 120), r.t0 ?? null, r.t1 ?? null, r.weight ?? 1, r.meta ? JSON.stringify(r.meta) : null);
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }

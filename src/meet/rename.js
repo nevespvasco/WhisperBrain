@@ -25,10 +25,10 @@ function renameFromEvidence({ notes, speakers, evidence, noteId, selfNames = [] 
   }
 
   // what says the words: transcript lines (already matched to utterances) and live captions (matched now)
-  const transcript = by('transcript').map((r) => ({ startMs: r.t0, endMs: r.t1, name: r.name }));
+  const transcript = by('transcript').map((r) => ({ startMs: r.t0, endMs: r.t1, name: r.name, from: 'transcript' }));
   const captions = by('caption').map((r) => ({ t: r.t0, name: r.name, text: r.meta?.text || '' }));
   const fromCaptions = captions.length ? alignCaptions({ captions, utterances }) : [];
-  const saying = [...transcript, ...fromCaptions.map(({ startMs, endMs, name }) => ({ startMs, endMs, name }))];
+  const saying = [...transcript, ...fromCaptions.map(({ startMs, endMs, name }) => ({ startMs, endMs, name, from: 'caption' }))];
   const active = saying.length ? mergeIntervals(saying, highlight) : highlight;
 
   let latest = null;
@@ -37,14 +37,16 @@ function renameFromEvidence({ notes, speakers, evidence, noteId, selfNames = [] 
   const selfKeys = [...new Set([...selfNames.map(nameKey), ...by('roster').filter((r) => r.meta?.self).map((r) => r.key)])].filter(Boolean);
 
   const res = nameSpeakers({ speech, active, remotes, selfKeys, candidates: by('calendar').map((r) => r.name) });
-  const source = transcript.length ? 'transcript' : fromCaptions.length ? 'meeting:caption' : 'meeting:highlight';
-  const named = [], kept = [];
+  const sourceOf = (n) => (n.via === 'sole' ? 'meeting:roster' : n.from === 'transcript' ? 'transcript' : n.from === 'caption' ? 'meeting:caption' : 'meeting:highlight');
+  const named = [], kept = [], conflicts = [];
   for (const n of res.named) {
-    const r = speakers.nameFromMeeting(noteId, n.speakerId, n.name, { source: n.via === 'sole' ? 'meeting:roster' : source, confidence: n.score ?? n.share, replaceInferred: true });
+    const source = sourceOf(n);
+    const r = speakers.nameFromMeeting(noteId, n.speakerId, n.name, { source, confidence: n.score ?? n.share, replaceInferred: true });
     if (r === 'named' || r === 'agrees') named.push({ speakerId: n.speakerId, name: n.name, source, score: n.score ?? n.share });
     else if (r === 'kept') kept.push(n.speakerId);
+    else if (r === 'conflict') conflicts.push(n.speakerId);   // a saved voice that sounds like somebody else holds this one
   }
-  return { named, kept, unresolved: res.unresolved.length };
+  return { named, kept, conflicts, unresolved: res.unresolved.length };
 }
 
 module.exports = { renameFromEvidence };

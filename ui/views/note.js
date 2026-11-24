@@ -394,7 +394,7 @@ async function attachTranscript(file) {
   try {
     const r = await api('POST', `/api/notes/${N.id}/attach-transcript?filename=${encodeURIComponent(file.name)}`, file);
     await reloadTranscript();
-    toast(r.named.length ? t('Named {n} speaker(s) from the transcript.', { n: r.named.length }) + (r.kept.length ? ` ${t('{n} you named yourself were left as they are.', { n: r.kept.length })}` : '') : t('The transcript matched, but it names nobody new.'), { ok: true });
+    toast(r.named.length ? t('Named {n} speaker(s) from the transcript.', { n: r.named.length }) + (r.kept.length ? ` ${t('{n} already named were left as they are.', { n: r.kept.length })}` : '') : t('The transcript matched, but it names nobody new.'), { ok: true });
   } catch (e) { fail(e); }
 }
 

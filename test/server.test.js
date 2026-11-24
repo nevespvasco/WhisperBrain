@@ -323,3 +323,27 @@ test('attach a platform transcript: SRT with "Name: text" lines works too; other
   const empty = await s.json('POST', '/api/notes', { title: 'No recording' });
   await assert.rejects(attach(s, empty.id, vtt()), (e) => e.status === 409 && /recorded/.test(e.message));
 });
+
+test('attach a platform transcript: the user\'s own (microphone) lines help find the offset but are not evidence about anyone', async (t) => {
+  const s = await boot(t);
+  const n = await recordedMeeting(s);
+  s.app.speakers.save(n.id, { speakerId: 'm1', channel: 'mic', centroid: new Float32Array(4).fill(0.1), count: 4 });
+  s.app.notes.addSegments(n.id, [{ speaker: 'me', speakerId: 'm1', startMs: 41000, endMs: 46000, text: 'I will confirm the contractor decision tomorrow morning after the review' }]);
+  const body = vtt().replace(/\n$/, '') + '\n\n9\n00:01:11.000 --> 00:01:16.000\n<v Vasco Neves>I will confirm the contractor decision tomorrow morning after the review</v>\n';
+  const r = await attach(s, n.id, body);
+  assert.ok(Math.abs(r.offsetMs - -30000) <= 1000);
+  assert.equal(s.app.evidence.forNote(n.id, { kind: 'transcript' }).length, 6, 'the six remote lines, not the user\'s');
+  assert.ok(!r.named.some((x) => x.speakerId === 'm1'));
+});
+
+test('attach a platform transcript: refused while a recording is in progress, and the source is the file type', async (t) => {
+  const s = await boot(t);
+  const n = await recordedMeeting(s);
+  s.app.recording.status = () => ({ active: true, noteId: 'other' });
+  await assert.rejects(attach(s, n.id, vtt()), (e) => e.status === 409 && /recording/.test(e.message));
+  delete s.app.recording.status;
+  await attach(s, n.id, vtt(), 'a-very-long-name-without-any-dot');
+  assert.equal(s.app.evidence.forNote(n.id, { kind: 'transcript' })[0].source, 'file');
+  await attach(s, n.id, vtt(), 'Teams Meeting.VTT');
+  assert.equal(s.app.evidence.forNote(n.id, { kind: 'transcript' })[0].source, 'vtt');
+});

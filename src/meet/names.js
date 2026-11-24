@@ -12,9 +12,8 @@ const DEFAULTS = {
   minMs: 200,        // a highlight shorter than this is a flicker
   maxMs: 5 * 60000,  // a highlight is never believed for longer than this without a new event
   minOverlapMs: 1500, // the winning name must have been highlighted at least this long over the voice's speech
-  minShare: 0.6,     // ...and hold this share of all the highlighted time over the voice's speech
   minMargin: 1.5,    // ...and beat the runner-up by this factor
-  floorShare: 0.35,  // a voice only considers a name that was highlighted over at least this share of its highlighted time
+  floorShare: 0.4,   // a voice only considers a name that was highlighted over at least this share of its highlighted time
   minScore: 0.45,    // sqrt(precision x recall) a name needs to be given at all: below it the voice stays "unknown"
   soleMinMs: 4000,   // a call with one other person: their voice needs this much speech to be named without any highlight
 };
@@ -107,10 +106,21 @@ function canonicalizer(candidates) {
     const exact = list.find((c) => c.key === key);
     if (exact) return exact;
     const tok = key.split(' ');
-    const fits = list.filter((c) => tok.length <= c.tok.length && tok.every((w, i) => c.tok[i].startsWith(w)));
+    // the first name must be the same ('Jo' is not 'John'); later words may be initials or short forms ('Ana S.' for 'Ana Silva')
+    const fits = list.filter((c) => tok.length <= c.tok.length && tok[0] === c.tok[0] && tok.every((w, i) => c.tok[i].startsWith(w)));
     return fits.length === 1 ? fits[0] : null;
   };
 }
+
+// The invited people's names: the calendar's name where it has one, else a careful guess from "first.last@..." (a prior only, see
+// canonicalizer: it never names a voice by itself). Generic mailboxes and single-word addresses give nothing.
+const GENERIC = new Set(['info', 'team', 'admin', 'support', 'hello', 'sales', 'contact', 'office', 'noreply', 'reply', 'mail', 'meeting', 'calendar', 'events']);
+function nameFromEmail(email) {
+  const local = String(email || '').split('@')[0].split('+')[0];
+  const words = local.split(/[._-]+/).filter((w) => /^\p{L}{2,}$/u.test(w) && !GENERIC.has(w.toLowerCase()));
+  return words.length >= 2 ? words.map((w) => w[0].toUpperCase() + w.slice(1).toLowerCase()).join(' ') : '';
+}
+const invitedNames = (attendees) => (attendees || []).map((p) => (p?.name ? p.name : nameFromEmail(p?.email))).filter(Boolean);
 
 // speech: Map(speakerId -> [[startMs, endMs]]); active: from activeIntervals; remotes: names of the other people on the
 // call from the roster (null when no roster); selfKeys: name keys that are the user.
@@ -119,7 +129,8 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], candidate
   const o = { ...DEFAULTS, ...options };
   const self = new Set(selfKeys);
   const display = new Map(); // key -> the name as first seen
-  const canon = canonicalizer(candidates);
+  const canon = canonicalizer((candidates || []).filter((c) => !self.has(nameKey(c))));   // the user is never somebody else's name
+  const isSelf = canonicalizer([...self]);                                                  // ...and a short form of the user's name is the user
   const keyOf = (name) => {
     const c = canon(name);
     if (c) { display.set(c.key, c.name); return c.key; }
@@ -127,21 +138,24 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], candidate
     if (k && !display.has(k)) display.set(k, name);
     return k;
   };
-  const iv = active.map((a) => ({ ...a, key: keyOf(a.name) })).filter((a) => a.key && !self.has(a.key));
+  const iv = active.map((a) => ({ ...a, key: keyOf(a.name) })).filter((a) => a.key && !self.has(a.key) && !self.has(nameKey(a.name)) && !isSelf(a.name));
 
   // overlap of each voice's speech with each highlighted name
   const rows = [];
   for (const [speakerId, spans] of speech) {
-    const per = new Map();
+    const per = new Map(), perFrom = new Map();   // name key -> ms; name key -> Map(kind of evidence -> ms)
     let total = 0;
     for (const [s, e] of spans) {
       for (const a of iv) {
         const ms = overlap(s, e, a.startMs, a.endMs);
-        if (ms > 0) { per.set(a.key, (per.get(a.key) || 0) + ms); total += ms; }
+        if (ms > 0) {
+          per.set(a.key, (per.get(a.key) || 0) + ms); total += ms;
+          const f = perFrom.get(a.key) || new Map(); f.set(a.from || 'highlight', (f.get(a.from || 'highlight') || 0) + ms); perFrom.set(a.key, f);
+        }
       }
     }
     const ranked = [...per].sort((x, y) => y[1] - x[1]);
-    rows.push({ speakerId, speechMs: spans.reduce((n, [s, e]) => n + e - s, 0), ranked, total, per });
+    rows.push({ speakerId, speechMs: spans.reduce((n, [s, e]) => n + e - s, 0), ranked, total, per, perFrom });
   }
 
   // How well each name fits each voice, from both sides: precision = of the time a name was lit over this voice's speech and
@@ -160,8 +174,7 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], candidate
   const unresolved = [];
   const eligible = fits.map(({ r, cands }) => {
     const [top, second] = cands;
-    if (top && top.score >= o.minScore && top.share >= o.floorShare && (!second || top.score >= o.minMargin * second.score)) return { r, cands: cands.filter((c) => c.score >= o.minScore && c.score * o.minMargin >= top.score) };
-    return { r, cands: [] };
+    return top && top.score >= o.minScore && (!second || top.score >= o.minMargin * second.score) ? { r, cands: [top] } : { r, cands: [] };
   });
 
   // One name to one voice, the best total: Hungarian over the voices and names, each voice with a column of its own for "unknown".
@@ -180,7 +193,8 @@ function nameSpeakers({ speech, active, remotes = null, selfKeys = [], candidate
     if (col >= 0 && col < keys.length) {
       const c = e.cands.find((x) => x.key === keys[col]);
       takenBy.set(c.key, e.r.speakerId);
-      named.push({ speakerId: e.r.speakerId, name: display.get(c.key), ms: c.ms, share: c.share, score: c.score, via: 'vote' });
+      const from = [...e.r.perFrom.get(c.key)].sort((x, y) => y[1] - x[1])[0][0];   // the kind of evidence that carried most of it
+      named.push({ speakerId: e.r.speakerId, name: display.get(c.key), ms: c.ms, share: c.share, score: c.score, from, via: 'vote' });
     }
   });
   for (const e of eligible) {
@@ -230,4 +244,4 @@ function remoteHeadCount(participants, { max = 6, selfKeys = [] } = {}) {
   return seen.size >= 1 && seen.size <= max ? seen.size : null;
 }
 
-module.exports = { nameSpeakers, nameFromEvents, estimateLag, activeIntervals, rawIntervals, speechOf, remoteHeadCount, DEFAULTS };
+module.exports = { nameSpeakers, nameFromEvents, invitedNames, estimateLag, activeIntervals, rawIntervals, speechOf, remoteHeadCount, DEFAULTS };

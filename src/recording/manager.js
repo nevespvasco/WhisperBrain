@@ -10,7 +10,7 @@ const { expectedSpeakers } = require('../speakers/hint');
 const { MeetingCollector } = require('../meet/collector');
 const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
-const { speechOf } = require('../meet/names');
+const { speechOf, invitedNames } = require('../meet/names');
 const { Spool } = require('./spool');
 const { pickTargetApp } = require('../platform/apps');
 
@@ -199,6 +199,15 @@ class RecordingManager {
     if (r.isNew || sp.count === 3 || sp.count === 8) this.speakers.autoMatch(a.noteId);
     if (r.isNew) this.bus.publish('speakers.updated', { noteId: a.noteId });
     return r.id;
+  }
+
+  // The people invited to the meeting, kept as evidence (a prior for the names; see names.js canonicalizer). Replaced, not added to.
+  recordInvitation(a) {
+    try {
+      const rows = (this.notes.get(a.noteId)?.attendees || []).map((p) => ({ ...p, name: p.name || invitedNames([p])[0] || '' })).filter((p) => p.name)
+        .map((p) => ({ kind: 'calendar', source: 'calendar', key: nameKey(p.name), name: p.name, weight: 1, meta: { email: p.email || '' } }));
+      this.evidence?.replace(a.noteId, ['calendar'], rows);
+    } catch { /* a record, never a reason to fail the stop */ }
   }
 
   // The application the system channel should follow: the one named, else the single confident meeting app using the
@@ -495,23 +504,26 @@ class RecordingManager {
   nameFromMeeting(a, s) {
     try {
       const m = s.meet;
-      const invited = (this.notes.get(a.noteId)?.attendees || []).map((p) => p.name).filter(Boolean);
+      const invited = invitedNames(this.notes.get(a.noteId)?.attendees);
       const run = () => a.meet.vote(this.notes.segmentWords(a.noteId), { endMs: a.accMs, candidates: invited });
       let res = run();
       const fixed = m.refine ? this.fixVoicesFromMeeting(a, res) : { merged: 0, moved: 0 };
       if (fixed.merged || fixed.moved) res = run();
       const named = [], conflicts = [];
       for (const n of res.named) {
-        const source = n.via === 'sole' ? 'meeting:roster' : res.captionNamed ? 'meeting:caption' : 'meeting:highlight';
+        const source = n.via === 'sole' ? 'meeting:roster' : n.from === 'caption' ? 'meeting:caption' : 'meeting:highlight';
         const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.score ?? n.share });
         if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
       }
       let learned = 0;
       if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
       try {
-        this.evidence?.add(a.noteId, [...a.meet.toEvidence({ endMs: a.accMs }),
-          ...(this.notes.get(a.noteId)?.attendees || []).filter((p) => p.name).map((p) => ({ kind: 'calendar', source: 'calendar', key: nameKey(p.name), name: p.name, weight: 1, meta: { email: p.email || '' } }))]);
+        // this recording's highlights and captions are new; the roster is the latest one, and replaces the earlier
+        const rows = a.meet.toEvidence({ endMs: a.accMs });
+        this.evidence?.add(a.noteId, rows.filter((r) => r.kind === 'highlight' || r.kind === 'caption'));
+        this.evidence?.replace(a.noteId, ['roster'], rows.filter((r) => r.kind === 'roster'));
       } catch { /* a record, never a reason to fail the stop */ }
+      this.recordInvitation(a);
       a.meetResult = { ...a.meet.summary(), named: named.map((n) => ({ speakerId: n.speakerId, name: n.name, via: n.via })), unresolved: res.unresolved.length, conflicts, learned, lagMs: res.lagMs, ...fixed };
       if (named.length || a.meetResult.events || a.meetResult.roster) this.bus.publish('recording.meet-names', { noteId: a.noteId, ...a.meetResult });
     } catch (e) { this.bus.publish('recording.warning', { message: `meeting names: ${e.message}` }); }
@@ -576,7 +588,10 @@ class RecordingManager {
       a.spool[ch] = null; // no raw audio is kept for these: each person is already known, so there is nothing for the after-recording speaker pass to do
       a.fed[ch] = 0; a.epoch[ch] = 0; a.base[ch] = 0; a.stretches[ch] = []; a.env[ch] = new EnergyEnvelope();
       try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system'); } catch { /* the label falls back to the id */ }
-      try { this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'discord', key: nameKey(name), name, t0: this.elapsed(a), weight: 1, meta: { userId, speakerId: r.speakerId } }]); } catch { /* evidence is a record, never a reason to lose audio */ }
+      try {
+        const key = nameKey(name);
+        if (!this.evidence?.forNote(a.noteId, { kind: 'stream' }).some((e) => e.key === key && e.meta?.userId === String(userId))) this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'discord', key, name, t0: this.elapsed(a), weight: 1, meta: { userId: String(userId), speakerId: r.speakerId } }]);
+      } catch { /* evidence is a record, never a reason to lose audio */ }
     }
     r.chain = r.chain.then(() => this.feedDiscord(a, ch, r, pcm, ts)).catch((e) => this.bus.publish('recording.warning', { message: `Discord audio: ${e.message}` }));
   }

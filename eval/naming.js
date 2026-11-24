@@ -5,7 +5,8 @@
 // speakers (perfect diarization), so what is measured is only the naming. The reference turns come from the recordings
 // `node eval/prepare.js` builds (AMI, libri-call); the window's behaviour is simulated:
 //
-//   lagged      the highlight follows the speaker, late by the source's real delay (300 / 900 / 1600 ms, while 500 is assumed)
+//   lagged      the highlight follows the speaker, late by the source's real delay (350 / 940 / 1630 ms, while 500 is assumed), every event
+//               a little early or late (about +-150 ms), as a screen reader or a web page really is
 //   noisy       one highlight in five names somebody else, and now and then somebody lights up with nobody speaking
 //   dominant    only the loudest voice is ever shown: a short interjection (< 1.2 s) and the quieter side of an overlap never are
 //   hard        all three together (late by 900 ms)
@@ -36,7 +37,8 @@ function turnsOf(words) {
 const speechOf = (turns) => { const m = new Map(); for (const t of turns) { if (!m.has(t.speaker)) m.set(t.speaker, []); m.get(t.speaker).push([t.startMs, t.endMs]); } return m; };
 
 // What the window shows: events [{ t, name }] (name null = nobody). `show(turn)` decides what is shown for a turn.
-function simulate(turns, { lagMs = PRIOR_LAG, wrongRate = 0, ghostRate = 0, dominantOnly = false, rand, names }) {
+function simulate(turns, { lagMs = PRIOR_LAG, jitterMs = 150, wrongRate = 0, ghostRate = 0, dominantOnly = false, rand, names }) {
+  const jit = () => (rand() * 2 - 1) * jitterMs;
   const people = [...new Set(turns.map((t) => t.speaker))];
   let shown = turns.map((t) => ({ ...t }));
   if (dominantOnly) {
@@ -47,7 +49,7 @@ function simulate(turns, { lagMs = PRIOR_LAG, wrongRate = 0, ghostRate = 0, domi
   const events = [];
   for (const t of shown) {
     const name = rand() < wrongRate ? names[people[Math.floor(rand() * people.length)]] : names[t.speaker];
-    events.push({ t: t.startMs + lagMs, name }, { t: t.endMs + lagMs, name: null });
+    events.push({ t: t.startMs + lagMs + jit(), name }, { t: t.endMs + lagMs + jit(), name: null });
   }
   if (ghostRate) {
     const end = Math.max(...turns.map((t) => t.endMs));
@@ -57,9 +59,9 @@ function simulate(turns, { lagMs = PRIOR_LAG, wrongRate = 0, ghostRate = 0, domi
 }
 
 const SCENARIOS = {
-  lagged300: (r, n) => ({ lagMs: 300, rand: r, names: n }),
-  lagged900: (r, n) => ({ lagMs: 900, rand: r, names: n }),
-  lagged1600: (r, n) => ({ lagMs: 1600, rand: r, names: n }),
+  lagged350: (r, n) => ({ lagMs: 350, rand: r, names: n }),
+  lagged940: (r, n) => ({ lagMs: 940, rand: r, names: n }),
+  lagged1630: (r, n) => ({ lagMs: 1630, rand: r, names: n }),
   noisy: (r, n) => ({ lagMs: 500, wrongRate: 0.2, ghostRate: 0.25, rand: r, names: n }),
   dominant: (r, n) => ({ lagMs: 500, dominantOnly: true, rand: r, names: n }),
   hard: (r, n) => ({ lagMs: 900, wrongRate: 0.15, ghostRate: 0.2, dominantOnly: true, rand: r, names: n }),

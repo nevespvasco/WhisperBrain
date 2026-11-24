@@ -82,7 +82,9 @@ class MeetingCollector {
       for (const iv of rawIntervals(list, { endMs })) rows.push({ kind: 'highlight', source, key: nameKey(iv.name), name: iv.name, t0: iv.startMs, t1: iv.endMs, weight: 1, meta: { lagMs: lag } });
     }
     for (const [source, r] of this.rosters) for (const p of r.participants) rows.push({ kind: 'roster', source, key: nameKey(p.name), name: p.name, t0: r.t, weight: 1, meta: { self: !!p.self } });
-    for (const c of this.captions) if (c.name) rows.push({ kind: 'caption', source: c.source || 'captions', key: nameKey(c.name), name: c.name, t0: c.t, weight: 1, meta: { text: c.text, final: !!c.final, lagMs: c.lagMs ?? null } });
+    // interim readings of a growing caption are many rows saying the same thing: only finals are kept, unless nothing marks a final
+    const finals = this.captions.some((c) => c.final);
+    for (const c of this.captions) if (c.name && (!finals || c.final)) rows.push({ kind: 'caption', source: c.source || 'captions', key: nameKey(c.name), name: c.name, t0: c.t, weight: 1, meta: { text: c.text, final: !!c.final, lagMs: c.lagMs ?? null } });
     return rows;
   }
 
@@ -97,7 +99,7 @@ class MeetingCollector {
     const speech = speechOf(mine);
     const highlight = this.intervals(endMs, speech);
     // the captions name the stretches whose words they match; where they do, they outrank the highlight
-    const named = this.useCaptions && this.captions.length ? alignCaptions({ captions: this.captions.map((c) => ({ t: c.t, name: c.name, text: c.text })), utterances: mine }) : [];
+    const named = this.useCaptions && this.captions.length ? alignCaptions({ captions: this.captions.map((c) => ({ t: c.t, name: c.name, text: c.text })), utterances: mine }).map((n) => ({ ...n, from: 'caption' })) : [];
     this.captionNamed = named.length;
     const active = named.length ? mergeIntervals(named, highlight) : highlight;
     const roster = this.roster();

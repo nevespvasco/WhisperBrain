@@ -208,3 +208,23 @@ test('candidates: an invitation alone names nobody (one invited person is not "t
   const r = nameSpeakers({ speech: new Map([['s1', [[0, 20000]]]]), active: [], candidates: ['Bruno Costa'] });
   assert.equal(r.named.length, 0);
 });
+
+// ---- found in review ----
+test('candidates: the user being invited does not make a remote voice the user', () => {
+  const speech = new Map([['s1', [[0, 12000]]]]);
+  const active = [{ startMs: 0, endMs: 12000, name: 'Vasco' }];
+  assert.equal(nameSpeakers({ speech, active, selfKeys: [nameKey('Vasco')], candidates: ['Vasco Neves', 'Ana Silva'] }).named.length, 0);
+  assert.equal(nameSpeakers({ speech, active, selfKeys: [nameKey('Vasco Neves')], candidates: ['Vasco Neves'] }).named.length, 0);
+});
+
+test('candidates: a first name has to be the same: "Jo" is not "John Smith"', () => {
+  const speech = new Map([['s1', [[0, 12000]]]]);
+  const r = nameSpeakers({ speech, active: [{ startMs: 0, endMs: 12000, name: 'Jo' }], candidates: ['John Smith'] });
+  assert.deepEqual(r.named.map((n) => n.name), ['Jo']);
+});
+
+test('vote: a voice whose best name holds barely a third of what was lit over it is not named', () => {
+  const speech = new Map([['s1', [[0, 30000]]]]);
+  const active = [{ startMs: 0, endMs: 10800, name: 'Ana' }, { startMs: 10800, endMs: 20400, name: 'Bruno' }, { startMs: 20400, endMs: 30000, name: 'Carla' }];
+  assert.equal(nameSpeakers({ speech, active }).named.length, 0);
+});

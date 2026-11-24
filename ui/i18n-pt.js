@@ -348,7 +348,7 @@ export const PT = {
   'Attach platform transcript': 'Juntar transcrição da plataforma',
   'Name the speakers from a Teams, Zoom or Meet transcript file (.vtt, .srt, .docx) of this meeting': 'Dar nome aos oradores a partir de um ficheiro de transcrição do Teams, Zoom ou Meet (.vtt, .srt, .docx) desta reunião',
   'Named {n} speaker(s) from the transcript.': 'Foram identificados {n} orador(es) a partir da transcrição.',
-  '{n} you named yourself were left as they are.': '{n} que nomeaste tu ficaram como estavam.',
+  '{n} already named were left as they are.': '{n} que já tinham nome ficaram como estavam.',
   'The transcript matched, but it names nobody new.': 'A transcrição corresponde, mas não identifica ninguém de novo.',
   'You named this speaker.': 'Foste tu que deste nome a este orador.',
   'Recognised from a saved voice.': 'Reconhecido a partir de uma voz guardada.',

@@ -152,3 +152,97 @@ test('naming again from the evidence knows the invitation too (renameFromEvidenc
   const r = renameFromEvidence({ notes, speakers, evidence: ev, noteId: n.id });
   assert.deepEqual(r.named.map((x) => x.name), ['Ana Silva']);
 });
+
+// ---- found in review: provenance must stay true ----
+function twoSpeakers() {
+  const r = speakerRig();
+  return r;
+}
+
+test('a voice learned from the meeting keeps meeting provenance (it was not typed by the person)', () => {
+  const { speakers, n, src } = twoSpeakers();
+  speakers.nameFromMeeting(n.id, 's1', 'Ana', { source: 'meeting:highlight', confidence: 0.8 });
+  assert.equal(speakers.learnFromMeeting(n.id, 's1', { consent: true }), true);
+  assert.deepEqual(src('s1'), ['meeting:highlight', 0.8]);
+  speakers.nameFromMeeting(n.id, 's1', 'Ana', { source: 'meeting:highlight', confidence: 0.8 });
+});
+
+test('a meeting name that agrees with the saved voice does not take the voice\'s place as the source', () => {
+  const { db, speakers, n } = twoSpeakers();
+  speakers.rename(n.id, 's1', 'Ana', { remember: true, consentSource: 'user' });
+  const notes = new Notes(db, null), m = notes.create({});
+  speakers.save(m.id, { speakerId: 's1', channel: 'system', centroid: voice(1), count: 5 });
+  notes.addSegments(m.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'x' }]);
+  speakers.autoMatch(m.id);
+  assert.equal(speakers.nameFromMeeting(m.id, 's1', 'Ana', { source: 'meeting:highlight', confidence: 0.9 }), 'agrees');
+  assert.equal(speakers.forNote(m.id).find((s) => s.speakerId === 's1').nameSource, 'voice');
+});
+
+test('a name inferred earlier can be corrected even when it had linked a saved voice', () => {
+  const { db, speakers, n } = twoSpeakers();
+  speakers.rename(n.id, 's2', 'Wrongway', { remember: true, consentSource: 'user' });          // a saved voice called Wrongway
+  const notes = new Notes(db, null), m = notes.create({});
+  speakers.save(m.id, { speakerId: 's1', channel: 'system', centroid: voice(2), count: 5 });
+  notes.addSegments(m.id, [{ speaker: 'them', speakerId: 's1', startMs: 0, endMs: 12000, text: 'x' }]);
+  assert.equal(speakers.nameFromMeeting(m.id, 's1', 'Wrongway', { source: 'meeting:highlight', confidence: 0.6 }), 'named');   // linked to the voice
+  assert.equal(speakers.nameFromMeeting(m.id, 's1', 'Ana', { source: 'transcript', confidence: 1, replaceInferred: true }), 'named', 'corrected, not dropped as a conflict');
+  const s = speakers.forNote(m.id).find((x) => x.speakerId === 's1');
+  assert.deepEqual([s.name, s.nameSource, s.voiceId], ['Ana', 'transcript', null]);
+});
+
+test('merging speakers carries the name\'s provenance with the name', () => {
+  const { speakers, n, src } = twoSpeakers();
+  speakers.nameFromMeeting(n.id, 's2', 'Bruno', { source: 'meeting:caption', confidence: 0.7 });
+  assert.equal(speakers.mergeSpeakers(n.id, 's2', 's1', { minSimilarity: -1 }), true);
+  assert.deepEqual([speakers.forNote(n.id).find((s) => s.speakerId === 's1').name, ...src('s1')], ['Bruno', 'meeting:caption', 0.7]);
+});
+
+// ---- per-voice provenance from the intervals ----
+test('nameSpeakers says, per voice, which kind of evidence carried the name', () => {
+  const { nameSpeakers } = require('../src/meet/names');
+  const speech = new Map([['s1', [[0, 9000]]], ['s2', [[10000, 19000]]], ['s3', [[20000, 29000]]]]);
+  const active = [
+    { startMs: 0, endMs: 9000, name: 'Ana' },                                  // highlight (untagged)
+    { startMs: 10000, endMs: 19000, name: 'Bruno', from: 'caption' },
+    { startMs: 20000, endMs: 29000, name: 'Carla', from: 'transcript' },
+  ];
+  const by = Object.fromEntries(nameSpeakers({ speech, active }).named.map((n) => [n.speakerId, n.from]));
+  assert.deepEqual(by, { s1: 'highlight', s2: 'caption', s3: 'transcript' });
+});
+
+// ---- invitations without a display name ----
+test('invitedNames: a name when there is one, else a careful guess from the address, else nothing', () => {
+  const { invitedNames } = require('../src/meet/names');
+  assert.deepEqual(invitedNames([{ name: 'Ana Silva', email: 'x@y.org' }, { name: '', email: 'bruno.costa@acme.com' }, { name: '', email: 'carla_dias+cal@acme.com' }, { name: '', email: 'info@acme.com' }, { name: '', email: 'jd@acme.com' }, { name: '', email: '' }]),
+    ['Ana Silva', 'Bruno Costa', 'Carla Dias']);
+});
+
+// ---- the evidence is not written twice ----
+test('captions are kept once they are final (interim readings only when nothing marks a final)', () => {
+  const { c, say } = collectorRig();
+  say(1000, { type: 'caption', name: 'Ana', text: 'hello there', final: false });
+  say(1500, { type: 'caption', name: 'Ana', text: 'hello there everyone', final: false });
+  say(2000, { type: 'caption', name: 'Ana', text: 'hello there everyone today', final: true });
+  assert.deepEqual(c.toEvidence({}).filter((r) => r.kind === 'caption').map((r) => r.meta.text), ['hello there everyone today']);
+  const { c: d, say: say2 } = collectorRig();
+  say2(1000, { type: 'caption', name: 'Ana', text: 'only interim readings here', final: false });
+  assert.equal(d.toEvidence({}).filter((r) => r.kind === 'caption').length, 1);
+});
+
+test('Evidence.replace swaps some kinds for new rows in one step: a failure leaves what was there', () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, null), ev = new Evidence(db);
+  const n = notes.create({});
+  ev.add(n.id, [{ kind: 'transcript', source: 'vtt', key: 'ana', name: 'Ana', t0: 0, t1: 5 }, { kind: 'roster', source: 'x', key: 'bruno', name: 'Bruno', t0: 0 }]);
+  const cycle = {}; cycle.self = cycle;
+  assert.throws(() => ev.replace(n.id, ['transcript'], [{ kind: 'transcript', source: 'vtt', key: 'carla', name: 'Carla', t0: 0, t1: 5, meta: cycle }]));
+  assert.deepEqual(ev.forNote(n.id).map((e) => e.name), ['Ana', 'Bruno'], 'nothing was lost');
+  ev.replace(n.id, ['transcript'], [{ kind: 'transcript', source: 'vtt', key: 'carla', name: 'Carla', t0: 0, t1: 5 }]);
+  assert.deepEqual(ev.forNote(n.id).map((e) => e.name), ['Bruno', 'Carla']);
+});
+
+test('evidence kind "mention" (planned in docs/plans.md) is accepted', () => {
+  const db = open(':memory:');
+  const n = new Notes(db, null).create({});
+  assert.equal(new Evidence(db).add(n.id, [{ kind: 'mention', source: 'llm', key: 'ana', name: 'Ana', t0: 1000, meta: { quote: 'thanks Ana' } }]), 1);
+});

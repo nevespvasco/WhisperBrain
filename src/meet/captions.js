@@ -63,7 +63,7 @@ function mergeIntervals(fromCaptions, fromHighlight) {
     }
     for (const [a, b] of pieces) kept.push({ ...h, startMs: a, endMs: b });
   }
-  return [...kept, ...fromCaptions.map(({ startMs, endMs, name }) => ({ startMs, endMs, name }))].sort((x, y) => x.startMs - y.startMs || x.endMs - y.endMs);
+  return [...kept, ...fromCaptions.map(({ startMs, endMs, name, from }) => ({ startMs, endMs, name, ...(from ? { from } : {}) }))].sort((x, y) => x.startMs - y.startMs || x.endMs - y.endMs);
 }
 
 module.exports = { alignCaptions, mergeIntervals, containment, tokens, DEFAULTS };

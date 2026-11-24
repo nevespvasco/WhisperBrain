@@ -153,30 +153,33 @@ Embed every speaker turn of sherpa's output and regroup the prints: average-link
 
 Whether the *names* the meeting window gives to the voices are right, apart from whether the voices are right. No audio and no
 models: the voices are the reference's own speakers (perfect diarization), and the window is simulated from the reference
-turns. `node eval/naming.js [--only ami-IS1009a] [--seeds 20] [--json]`.
+turns, every event a little early or late (about +-150 ms, random). `node eval/naming.js [--only ami-IS1009a] [--seeds 20] [--json]`.
 
 - **Accuracy**: the share of speech time whose final name is the right person's (unnamed speech counts as not right).
 - **Precision**: of the speech that was named at all, the share named rightly. A wrong name is worse than none.
 
 | Scenario | What the window does |
 |---|---|
-| `lagged300/900/1600` | the highlight follows the speaker, late by 0.3 / 0.9 / 1.6 s (0.5 s is assumed) |
+| `lagged350/940/1630` | the highlight follows the speaker, late by 0.35 / 0.94 / 1.63 s (0.5 s is assumed) |
 | `noisy` | one highlight in five names somebody else; people light up now and then with nobody speaking |
 | `dominant` | only the loudest voice is shown: interjections (< 1.2 s) and the quieter side of an overlap never are |
-| `hard` | all of it together, 0.9 s late |
+| `hard` | all of it together, 0.94 s late |
 
-Mean over 20 seeds (2026-11-24), aligner before and after the change in 3.2 (the delay of each source found from the data,
+Mean over 20 seeds (2026-11-24), the aligner before and after the change in 3.2 (the delay of each source found from the data,
 sqrt(precision x recall) scores, one name to one voice by the Hungarian method with an "unknown" column):
 
-| Recording | Scenario | Accuracy before | Accuracy after | Precision (before -> after) |
+| Recording | Scenario | Accuracy before | Accuracy after | Precision before -> after |
 |---|---|---|---|---|
-| ami-IS1009a | lagged300 / lagged900 | 100.0 | 100.0 | 100 -> 100 |
-| ami-IS1009a | lagged1600 | 89.8 | **100.0** | 100 -> 100 |
-| ami-IS1009a | noisy | 64.8 | **97.0** | 100 -> 100 |
-| ami-IS1009a | dominant | 100.0 | 100.0 | 100 -> 100 |
-| ami-IS1009a | hard | 90.9 | **95.0** | 100 -> 100 |
-| libri-call | all six | 96.9 - 100.0 | 100.0 | 100 -> 100 |
-| **mean** | | **95.1** | **99.3** | **100 -> 100** |
+| ami-IS1009a | lagged350 | 100.0 | 100.0 | 100 -> 100 |
+| ami-IS1009a | lagged940 | 98.5 | **100.0** | 100 -> 100 |
+| ami-IS1009a | lagged1630 | 89.8 | **100.0** | 100 -> 100 |
+| ami-IS1009a | noisy | 63.8 | **95.4** | 95.0 -> **100** |
+| ami-IS1009a | dominant | 97.5 | **100.0** | 100 -> 100 |
+| ami-IS1009a | hard | 88.4 | **94.5** | 100 -> 100 |
+| libri-call | noisy | 97.8 | **100.0** | 100 -> 100 |
+| libri-call | the other five | 100.0 | 100.0 | 100 -> 100 |
+| **mean** | | **94.6** | **99.2** | **99.6 -> 100** |
 
-These are simulations of how a meeting window behaves, with perfect voices: they show that the aligner copes with late, noisy and
-partial highlights, not what a given platform does. Measuring the real delays and gaps per platform is the latency harness (4.2).
+These are simulations of how a meeting window behaves, with perfect voices and one source: they show that the aligner copes with late,
+jittery, noisy and partial highlights, not what a given platform does. Captions, a roster, the calendar and several sources
+at once are not simulated here. Measuring the real delays and gaps per platform is the latency harness (4.2).

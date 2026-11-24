@@ -77,7 +77,7 @@ class Account {
   deleteEverything({ removeModels = false } = {}) {
     tx(this.db, () => {
       for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segments', 'note_speakers', 'search', 'notes', 'folders',
-        'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
+        'evidence', 'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
     this.settings.reset();

@@ -233,3 +233,13 @@ test('calendar: a guest who was not invited keeps the name the window showed', a
   await r.call([T('Ana', E.ana, 0), T('Gina Guest', E.bruno, 1), T('Ana', E.ana, 2), T('Gina Guest', E.bruno, 3)]);
   assert.deepEqual([...new Set(r.labels())].sort(), ['Ana Silva', 'Gina Guest']);
 });
+
+test('evidence: recording a meeting again (continuing the note) does not duplicate the invitation or the roster', async (t) => {
+  const r = rig(t);
+  r.notes.update(r.n.id, { attendees: [{ name: 'Ana Silva', email: 'a@x.org' }] });
+  const roster = () => r.hub.ingest({ type: 'roster', participants: [{ name: 'Ana' }, { name: 'Bruno' }, { name: 'Me', self: true }] }, { source: 'x', kind: 'extension', lagMs: 400 });
+  await r.mgr.start(r.n.id, { mic: true, system: true }); roster(); await r.mgr.stop();
+  await r.mgr.start(r.n.id, { mic: true, system: true }); roster(); await r.mgr.stop();
+  assert.equal(r.evidence.forNote(r.n.id, { kind: 'calendar' }).length, 1);
+  assert.equal(r.evidence.forNote(r.n.id, { kind: 'roster' }).length, 2, 'the latest roster, once (the placeholder "Me" is not a name)');
+});
