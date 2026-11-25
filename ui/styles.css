@@ -107,7 +107,8 @@ a:hover { text-decoration: underline; }
 .usercard .who span { display: block; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .side-label, .app.collapsed .usercard .who, .app.collapsed .usercard .chev, .app.collapsed .side-more { display: none; }
 .app.collapsed .navlink { justify-content: center; padding: 9px; }
-.app.collapsed .brand { justify-content: center; padding-left: 14px; }
+.app.collapsed .brand { flex-direction: column; justify-content: center; gap: 8px; padding: 16px 0 6px; }
+.app.collapsed .brand .collapse-btn { margin: 0; }
 .app.collapsed .side-scroll { padding: 4px 12px; }
 
 .topbar { height: var(--top-h); display: flex; align-items: center; gap: 10px; padding: 0 22px; border-bottom: 1px solid transparent; flex: none; position: relative; z-index: 20; }
@@ -700,7 +701,7 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   .app.collapsed .brand .name, .app.collapsed .navlink .lbl, .app.collapsed .navlink .count, .app.collapsed .usercard .who, .app.collapsed .usercard .chev { display: block; }
   .app.collapsed .side-label { display: flex; }
   .app.collapsed .navlink { justify-content: flex-start; padding: 7px 10px; }
-  .app.collapsed .brand { justify-content: flex-start; padding-left: 18px; }
+  .app.collapsed .brand { flex-direction: row; justify-content: flex-start; gap: 10px; padding: 16px 14px 10px 18px; }
   .app.collapsed .side-scroll { padding: 4px 10px 12px; }
   .collapse-btn { display: none !important; }
   .settings-layout { grid-template-columns: minmax(0, 1fr); }
