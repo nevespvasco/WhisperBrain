@@ -397,7 +397,8 @@ async function smoke() {
     let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200) && r.assistant.every((x) => x === 200);
     applyFloat(true); // the floating recorder must open, load its page and have its native bridge
     await new Promise((res) => { const t0 = Date.now(); const poll = () => (float && !float.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
-    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.dragMove, ask: typeof window.wbWidget?.focusInput, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
+    // the pill is drawn after the page asked the server for the settings and the recording: wait for it (up to 5 s), do not race it
+    const fl = float ? await float.webContents.executeJavaScript(`(async () => { for (let i = 0; i < 50 && !document.querySelector('.pill'); i++) await new Promise((r) => setTimeout(r, 100)); return { bridge: typeof window.wbWidget?.dragMove, ask: typeof window.wbWidget?.focusInput, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state }; })()`) : null;
     console.log('SMOKE_FLOAT ' + JSON.stringify(fl));
     if (!fl || fl.bridge !== 'function' || fl.ask !== 'function' || !fl.pill) ok = false;
     hideFloat();
