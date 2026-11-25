@@ -190,3 +190,20 @@ test('state tells the UI what is going on', (t) => {
   r.eng.reset();
   assert.equal(r.eng.state().phase, 'idle');
 });
+
+test('the user answering ends the other side\'s turn: their earlier lines are not the preamble of the next question', (t) => {
+  const r = rig(t);
+  r.them('We have been discussing the new billing service.');
+  r.tick(1000);
+  r.me('Yes, I built most of the invoicing part.');
+  r.them('How would you test it?');
+  r.tick(600);
+  assert.equal(r.seen[0].question, 'How would you test it?');
+  r.me('yeah');
+  r.them('And the deadline is Friday.');
+  r.tick(1000);
+  r.me('mm-hmm');
+  r.them('Can we make it?');
+  r.tick(600);
+  assert.equal(r.seen[2].question, 'And the deadline is Friday. Can we make it?', 'a backchannel from the user does not end their turn');
+});

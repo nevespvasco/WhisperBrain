@@ -1,0 +1,15 @@
+{ "name": "en-meeting", "mode": "meeting", "lines": [
+  { "t": 0, "dur": 3000, "s": "them", "text": "Let's go through the release plan for next week." },
+  { "t": 3500, "dur": 2500, "s": "them", "text": "The API freeze is on Wednesday." },
+  { "t": 6500, "dur": 3000, "s": "them", "text": "Do we have the load test results from Monday?", "q": true },
+  { "t": 10500, "dur": 6000, "s": "me", "text": "Yes, p95 was 180 milliseconds at twice the normal traffic." },
+  { "t": 17000, "dur": 600, "s": "them", "text": "Nice." },
+  { "t": 18000, "dur": 3000, "s": "them", "text": "who owns the migration script" , "q": true },
+  { "t": 25000, "dur": 3000, "s": "them", "text": "I think we should also update the runbook." },
+  { "t": 28500, "dur": 3000, "s": "them", "text": "Tell me about the rollback plan.", "q": false },
+  { "t": 33000, "dur": 3500, "s": "them", "text": "When can we switch the feature flag on in production?", "q": true },
+  { "t": 37000, "dur": 3500, "s": "them", "text": "When can we switch the feature flag on in production", "dup": true },
+  { "t": 42000, "dur": 3000, "s": "them", "text": "Okay, let's move on." },
+  { "t": 46000, "dur": 3000, "s": "them", "text": "Is anyone blocked on the database upgrade?", "q": true },
+  { "t": 50000, "dur": 2000, "s": "them", "text": "Thanks everyone." }
+] }

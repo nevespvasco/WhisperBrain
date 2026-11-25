@@ -50,3 +50,11 @@ test('question kind: a question, a prompt ("tell me about…") or a statement; E
   assert.equal(questionKind('We shipped the release on Friday.'), 'statement');
   assert.equal(questionKind('Vamos rever o orçamento na próxima semana.'), 'statement');
 });
+
+test('question kind: a short lead-in clause before the question or prompt ("So, to start, tell me…") does not hide it', () => {
+  assert.equal(questionKind('So, to start, tell me a bit about yourself.'), 'prompt');
+  assert.equal(questionKind('Right, and then, what happened next'), 'question');
+  assert.equal(questionKind('Ok, pois, como é que resolveste isso'), 'question');
+  assert.equal(questionKind('Bom, para começar, fala-me do teu percurso.'), 'prompt');
+  assert.equal(questionKind('We moved to Kubernetes, then what happened was a long outage.'), 'statement', 'a question word deep inside a statement is not a question');
+});

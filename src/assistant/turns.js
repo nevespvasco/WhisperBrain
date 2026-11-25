@@ -59,7 +59,12 @@ class TurnEngine extends EventEmitter {
     const s = String(text ?? '').trim();
     if (!s) return;
     if (speaker === 'me') {
-      if (final) { this.me.push(s); if (this.me.length > KEEP_ME) this.me.shift(); }
+      if (!final) return;
+      this.me.push(s);
+      if (this.me.length > KEEP_ME) this.me.shift();
+      // the user answering ends the other side's turn: what they said before is not the start of their next question
+      // (a backchannel such as "yeah" does not; nor does talking over a suggestion that is being prepared)
+      if (!isBackchannel(s) && !isFiller(s) && this.phase !== 'preparing') { this.clearTimers(); this.lines = []; this.phase = 'idle'; }
       return;
     }
     if (isBackchannel(s) || (final && isFiller(s))) return;
@@ -91,7 +96,7 @@ class TurnEngine extends EventEmitter {
     if (!wanted) { this.phase = 'idle'; return; }
     const now = Date.now();
     this.asked = this.asked.filter((a) => now - a.at < this.dedupMs);
-    if (this.asked.some((a) => sameQuestion(a.question, question))) {
+    if (this.asked.some((a) => sameQuestion(a.question, question) || sameQuestion(a.last, last))) {
       this.lines = []; this.phase = 'idle';
       this.emit('suppress', { reason: 'duplicate', question });
       return;
@@ -103,7 +108,7 @@ class TurnEngine extends EventEmitter {
 
   speculate(question, { kind = questionKind(question), quick = false, manual = false } = {}) {
     this.seq++;
-    this.current = { seq: this.seq, question, quick };
+    this.current = { seq: this.seq, question, quick, last: this.lines[this.lines.length - 1] || question };
     this.phase = 'preparing';
     this.emit('speculate', { seq: this.seq, question, kind, manual, variation: this.variation });
   }
@@ -113,7 +118,7 @@ class TurnEngine extends EventEmitter {
     if (!this.current || this.phase !== 'preparing') return;
     this.phase = 'shown';
     this.lastQuestion = this.current.question;
-    this.asked.push({ question: this.current.question, at: Date.now() });
+    this.asked.push({ question: this.current.question, last: this.current.last, at: Date.now() });
     this.lines = [];
     this.emit('reveal', { seq: this.current.seq, question: this.current.question });
   }

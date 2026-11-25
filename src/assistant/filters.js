@@ -70,16 +70,22 @@ function sameQuestion(a, b) {
   return x.startsWith(y) || y.startsWith(x);
 }
 
-const PROMPT = /^(?:(?:ok|so|right|well|now|then|pois|então|bem|ok então)\s*,?\s+)?(tell me (about|more)|walk me through|talk me through|take me through|describe|give me an example|explain (to me )?(how|why|what|the)|share (an|a) example|fala-me|fale-me|conta-me|conte-me|descreve|descreva|dá-me um exemplo|dê-me um exemplo|explica-me|explique-me)\b/;
+const PROMPT = /^(?:(?:ok|so|right|well|now|then|pois|então|bem|ok então)\s*,?\s+)?(tell (me|us)( a (bit|little)| a bit more| more)? about|tell me more|walk me through|talk me through|take me through|describe|give me an example|explain (to me )?(how|why|what|the)|share (an|a) example|fala-me|fale-me|conta-me|conte-me|descreve|descreva|dá-me um exemplo|dê-me um exemplo|explica-me|explique-me)\b/;
 const ASKS = /^(?:(?:ok|so|right|well|and|now|then|pois|então|e|bem)\s*,?\s+)?(what|how|why|when|where|who|which|whose|whom|can|could|would|will|do|does|did|is|are|was|were|have|has|should|shall|may|might|qual|quais|como|porque|porquê|por que|quando|onde|quem|quanto|quanta|quantos|quantas|o que|que|podes|pode|poderia|podia|consegues|consegue|achas|acha|sabes|sabe|tens|tem|há|será|é que)\b/;
 // 'question' | 'prompt' (an invitation to talk: "tell me about…") | 'statement'
 function questionKind(text) {
   const t = String(text ?? '').trim();
   if (!t) return 'statement';
   if (/[?？؟]\s*$/.test(t)) return 'question';
-  const f = flat(t);
-  if (PROMPT.test(f)) return 'prompt';
-  if (ASKS.test(f)) return 'question';
+  // the question may come after a short lead-in ("So, to start, tell me…", "Bom, para começar, fala-me…"): up to two clauses of at
+  // most three words each are skipped. A longer clause is a statement of its own ("We moved to Kubernetes, then what happened…").
+  const clauses = t.split(/[,;:]\s*/);
+  for (let i = 0; i < Math.min(3, clauses.length); i++) {
+    if (i > 0 && words(clauses[i - 1]).length > 3) break;
+    const f = flat(clauses.slice(i).join(' '));
+    if (PROMPT.test(f)) return 'prompt';
+    if (ASKS.test(f)) return 'question';
+  }
   return 'statement';
 }
 

@@ -1,0 +1,14 @@
+{ "name": "pt-meeting", "mode": "meeting", "lines": [
+  { "t": 0, "dur": 3000, "s": "them", "text": "Bom dia, vamos rever o plano do trimestre." },
+  { "t": 3500, "dur": 3000, "s": "them", "text": "O orçamento de marketing foi aprovado ontem." },
+  { "t": 7000, "dur": 3000, "s": "them", "text": "Já temos os números de conversão de outubro?", "q": true },
+  { "t": 11000, "dur": 5000, "s": "me", "text": "Sim, subiu para 3,2 por cento depois da campanha." },
+  { "t": 16500, "dur": 700, "s": "them", "text": "Boa." },
+  { "t": 17500, "dur": 3000, "s": "them", "text": "quem fica responsável pelo relatório", "q": true },
+  { "t": 24000, "dur": 3000, "s": "them", "text": "Acho que devíamos falar com a equipa jurídica." },
+  { "t": 28000, "dur": 3000, "s": "them", "text": "Quando é que podemos lançar a versão nova?", "q": true },
+  { "t": 32000, "dur": 3000, "s": "them", "text": "Quando é que podemos lançar a versão nova", "dup": true },
+  { "t": 37000, "dur": 2500, "s": "them", "text": "Ok, vamos avançar." },
+  { "t": 40500, "dur": 3000, "s": "them", "text": "Há algum bloqueio com o fornecedor?", "q": true },
+  { "t": 44500, "dur": 2000, "s": "them", "text": "Obrigado a todos." }
+] }
