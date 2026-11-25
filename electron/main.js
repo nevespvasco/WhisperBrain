@@ -3,7 +3,8 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen, safeStorage } = require('electron');
 const { electronSecretBox } = require('../src/core/secret-box');
-const { SIZE, shouldShow, placeWithin, defaultBounds } = require('./float');
+const { SIZE, shouldShow, placeWithin, defaultBounds, expandedSize } = require('./float');
+const { planHotkeys } = require('../src/assistant/hotkeys');
 
 const ROOT = path.join(__dirname, '..');
 const SMOKE = process.env.WB_SMOKE === '1';
@@ -29,6 +30,8 @@ let floatTimer = null;
 let floatSaveTimer = null;
 let quitting = false;
 let registeredHotkey = null;
+let assistantKeys = [];      // accelerators registered for the meeting assistant
+let assistantKeysFailed = ''; // what was last reported as unavailable (settings change often: say it once)
 let origin = '';
 
 // The OS clipboard as the platform adapters expect it (sync read/write of text).
@@ -62,6 +65,7 @@ async function start() {
   wireEvents();
   wireFloat();
   registerHotkey();
+  registerAssistantKeys();
 }
 
 function setupSession() {
@@ -171,7 +175,7 @@ function wireEvents() {
     else if (e.type === 'meeting.starting') notify('Meeting starting', e.data.event.summary, () => win?.webContents.executeJavaScript(`location.hash = '#/'`).catch(() => {}));
     else if (e.type === 'dictation.state') updatePill(e.data.state);
     else if (e.type === 'dictation.result' && e.data.paste && !e.data.paste.ok && e.data.text) notify('Dictation copied', e.data.paste.reason || 'The text is on your clipboard.');
-    else if (e.type === 'settings') { registerHotkey(); updateFloat(); }
+    else if (e.type === 'settings') { registerHotkey(); registerAssistantKeys(); updateFloat(); }
     else if (e.type === 'recording.started' || e.type === 'recording.finalizing') updateFloat();
     else if (e.type === 'recording.stopped') { floatKeepUntil = Date.now() + 4500; updateFloat(); setTimeout(updateFloat, 4700); }
   });
@@ -190,6 +194,72 @@ function registerHotkey() {
     if (globalShortcut.register(cfg.hotkey, toggleDictation)) registeredHotkey = cfg.hotkey;
     else notify('Dictation', `Could not register ${cfg.hotkey}. Another app (or this desktop session) may own it.`);
   } catch (e) { notify('Dictation', `Invalid shortcut ${cfg.hotkey}`); }
+}
+
+// ---- meeting assistant: global shortcuts (src/assistant/hotkeys.js plans them; only while the assistant is switched on) ----
+const recordingNote = () => { const st = core.recording.status(); return st.active ? st.noteId : null; };
+function assistantDo(fn) {
+  const noteId = recordingNote();
+  if (!noteId) { notify('Assistant', 'Start recording a meeting first: the assistant helps during a recorded call.'); return; }
+  Promise.resolve().then(() => fn(noteId)).catch((e) => notify('Assistant', e.message));
+}
+function askFromShortcut(noteId) {
+  applyFloat(true);
+  const open = () => {
+    if (!float || float.isDestroyed()) return openAskInApp(noteId);
+    setFloatExpanded(true);
+    float.setFocusable(true);
+    float.focus();
+    float.webContents.send('widget:ask');
+    // some desktops (several Wayland compositors) never give focus to a window like this one: ask in the main window instead
+    setTimeout(() => { if (float && !float.isDestroyed() && !float.isFocused()) openAskInApp(noteId); }, 400);
+  };
+  if (float && !float.webContents.isLoading()) open(); else float?.webContents.once('did-finish-load', open);
+}
+function openAskInApp(noteId) {
+  showWindow();
+  win?.webContents.executeJavaScript(`location.hash = '#/note/${noteId}'; setTimeout(() => document.querySelector('.as-ask input')?.focus(), 600);`).catch(() => {});
+}
+// A picture of the screen under the pointer, without the floating window in it, for "question on screen".
+async function captureScreenQuestion(noteId) {
+  if (process.platform === 'darwin' && systemPreferences.getMediaAccessStatus('screen') !== 'granted') throw new Error('Allow WhisperBrain to record the screen (System Settings → Privacy & Security → Screen Recording), then try again.');
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const hid = float && !float.isDestroyed() && float.isVisible();
+  if (hid) float.hide();
+  await new Promise((r) => setTimeout(r, 150));
+  try {
+    const { width, height } = display.size;
+    const scale = Math.min(1, 1568 / Math.max(width, height));
+    const sources = await desktopCapturer.getSources({ types: ['screen'], thumbnailSize: { width: Math.round(width * scale), height: Math.round(height * scale) } });
+    const src = sources.find((s) => String(s.display_id) === String(display.id)) || sources[0];
+    if (!src || src.thumbnail.isEmpty()) throw new Error('Could not take a picture of the screen.');
+    await core.assistant.screenshot(noteId, src.thumbnail.toJPEG(80), { mime: 'image/jpeg' });
+  } finally { if (hid && float && !float.isDestroyed()) float.showInactive(); }
+}
+const ASSISTANT_ACTIONS = {
+  answer: () => assistantDo((id) => core.assistant.action(id, 'answer')),
+  regenerate: () => assistantDo((id) => core.assistant.action(id, 'regenerate')),
+  ask: () => assistantDo((id) => askFromShortcut(id)),
+  toggle: () => assistantDo((id) => { const on = !core.assistant.state(id).enabled; core.assistant.toggle(id, on); notify('Assistant', on ? 'On for this meeting.' : 'Off for this meeting.'); }),
+  screenshot: () => assistantDo((id) => captureScreenQuestion(id)),
+};
+function registerAssistantKeys() {
+  for (const k of assistantKeys) globalShortcut.unregister(k);
+  assistantKeys = [];
+  const cfg = core.settings.get('assistant');
+  if (!cfg.enabled) return;
+  const dict = core.settings.get('dictation');
+  const { register, problems } = planHotkeys(cfg.hotkeys, { reserved: dict.enabled && dict.hotkey ? [dict.hotkey] : [] });
+  const failed = problems.map((p) => `${p.accelerator || p.action} (${p.reason})`);
+  for (const { action, accelerator } of register) {
+    try {
+      if (globalShortcut.register(accelerator, ASSISTANT_ACTIONS[action])) assistantKeys.push(accelerator);
+      else failed.push(`${accelerator} (taken)`);
+    } catch { failed.push(`${accelerator} (invalid)`); }
+  }
+  const report = failed.join(', ');
+  if (report && report !== assistantKeysFailed) notify('Assistant shortcuts', `Not available: ${report}. Change them in Settings → Assistant.`);
+  assistantKeysFailed = report;
 }
 
 function updatePill(state) {
@@ -269,7 +339,9 @@ function setFloatExpanded(expanded) {
   let next;
   if (expanded) {
     floatAnchorRight = b.x + b.width / 2 > wa.x + wa.width / 2; // grow towards the middle of the screen
-    next = { ...SIZE.expanded, x: floatAnchorRight ? b.x + b.width - SIZE.expanded.width : b.x, y: b.y };
+    const noteId = recordingNote();
+    const big = expandedSize(!!noteId && core.assistant.state(noteId).active);
+    next = { ...big, x: floatAnchorRight ? b.x + b.width - big.width : b.x, y: b.y };
   } else {
     next = { ...SIZE.collapsed, x: floatAnchorRight ? b.x + b.width - SIZE.collapsed.width : b.x, y: b.y };
   }
@@ -293,6 +365,15 @@ function wireFloat() {
     clipboard.writeText(text);
     return true;
   });
+  // the ask box of the assistant: focusable only while typing (it never takes the keyboard by itself)
+  ipcMain.on('widget:focusable', (e, on) => {
+    if (!mine(e)) return;
+    float.setFocusable(!!on);
+    if (!on) { float.blur(); return; }
+    float.focus();
+    // a desktop that never focuses a window like this one (several Wayland compositors): type the question in the main window
+    setTimeout(() => { const id = recordingNote(); if (id && float && !float.isDestroyed() && !float.isFocused()) { float.setFocusable(false); openAskInApp(id); } }, 400);
+  });
   ipcMain.on('widget:drag-end', (e) => { if (!mine(e)) return; floatDrag = null; rememberFloat(); });
   ipcMain.on('widget:open', (e, noteId) => {
     if (!mine(e)) return;
@@ -309,15 +390,16 @@ async function smoke() {
       await wait(500);
       const state = await fetch('/api/state').then((x) => x.json());
       return { title: document.title, sidebar: document.querySelector('#sidebar')?.children.length || 0, main: document.querySelector('#main h1')?.textContent || '', platform: state.platform, version: state.version,
-               worklet: await fetch('/pcm-worklet.js').then((x) => x.status), widget: await Promise.all(['/widget.html', '/widget.js', '/widget.css'].map((u) => fetch(u).then((x) => x.status))), gum: typeof navigator.mediaDevices?.getUserMedia, secure: window.isSecureContext };
+               worklet: await fetch('/pcm-worklet.js').then((x) => x.status), widget: await Promise.all(['/widget.html', '/widget.js', '/widget.css'].map((u) => fetch(u).then((x) => x.status))),
+               assistant: await Promise.all(['/views/assistant-panel.js', '/views/briefings.js', '/api/briefings', '/api/settings'].map((u) => fetch(u).then((x) => x.status))), gum: typeof navigator.mediaDevices?.getUserMedia, secure: window.isSecureContext };
     })()`);
     console.log('SMOKE_RESULT ' + JSON.stringify(r));
-    let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200);
+    let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200) && r.assistant.every((x) => x === 200);
     applyFloat(true); // the floating recorder must open, load its page and have its native bridge
     await new Promise((res) => { const t0 = Date.now(); const poll = () => (float && !float.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
-    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.dragMove, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
+    const fl = float ? await float.webContents.executeJavaScript(`({ bridge: typeof window.wbWidget?.dragMove, ask: typeof window.wbWidget?.focusInput, pill: !!document.querySelector('.pill'), root: document.getElementById('w')?.dataset.state })`) : null;
     console.log('SMOKE_FLOAT ' + JSON.stringify(fl));
-    if (!fl || fl.bridge !== 'function' || !fl.pill) ok = false;
+    if (!fl || fl.bridge !== 'function' || fl.ask !== 'function' || !fl.pill) ok = false;
     hideFloat();
     if (process.env.WB_SMOKE_MODELS) { // the ASR worker must run on Electron's own Node, as it does in the packaged app
       const { Models } = require('../src/asr/models');

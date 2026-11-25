@@ -160,6 +160,7 @@ flowchart LR
 | **Glossary** | Acronyms and jargon collected automatically (never overwriting your own definitions), underlined in transcripts with their definition, each with every place it was said |
 | **People** | Everyone who spoke or was invited: their quotes, meetings, topics, talk time and the action items they own |
 | **Speaker analytics** | Talk time, words per minute, turns, questions, talk % / listen %, and a timeline of who spoke when |
+| **Meeting assistant** | While a meeting records, notices questions from the other side and drafts a short suggestion from your **briefings** (CV, job description, project notes; PDF, Word, Markdown) and what was said, marking anything your material does not support. Live summary with decisions, action items and open questions, technical term cards, "ask about this call", a question read off your screen, global shortcuts, and the floating window. Off by default, local AI server unless you allow another, visible like any window. See [docs/assistant.md](docs/assistant.md) |
 | **Search** | ⌘K palette over meetings, transcript lines (who said what), topics, people, glossary, tags and action items, with filter chips, sort, date range, grouped by day, keyboard-only |
 
 </details>
@@ -202,6 +203,7 @@ Only three things differ per OS; everything else is shared code.
 - **Reading the meeting window** (the accessibility readers, the browser extension, the optional look at the window) is local and runs only while a recording does. The extension talks to a port of its own on 127.0.0.1 with its own secret and accepts calls from browser extensions only. Only the optional vision source sends a picture, to the LLM you configured.
 - **The local server** listens on 127.0.0.1 only, requires a per-launch token and refuses foreign `Host` and `Origin` headers.
 - **API keys** are never sent to the UI or included in exports.
+- **The meeting assistant** is off by default, uses a local AI server unless you allow another, stays off in a meeting where someone objected, and never hides from screen sharing ([details](docs/assistant.md#privacy)).
 
 ## Documentation
 
@@ -211,6 +213,7 @@ Only three things differ per OS; everything else is shared code.
 | [Echo cancellation](docs/echo-cancellation.md) | The two layers, the Linux PipeWire helper, what is untested on macOS and Windows |
 | [Live draft captions](docs/live-draft-captions.md) | Streaming drafts, their cost, and how to measure it |
 | [Names from the meeting window](docs/meeting-names.md) | How speaker names are read from Meet, and what is verified |
+| [Meeting assistant](docs/assistant.md) | Live suggestions, briefings, live summary, shortcuts, privacy, measurements |
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
 | [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |

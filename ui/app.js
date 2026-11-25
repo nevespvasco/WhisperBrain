@@ -13,6 +13,7 @@ import * as calendar from './views/calendar.js';
 import * as actions from './views/actions.js';
 import * as topics from './views/topics.js';
 import * as glossary from './views/glossary.js';
+import * as briefings from './views/briefings.js';
 import * as people from './views/people.js';
 import * as chat from './views/chat.js';
 import * as integrations from './views/integrations.js';
@@ -43,7 +44,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, people, person: people, chat, integrations, settings,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
@@ -111,6 +112,7 @@ export function renderSidebar() {
         ${navlink('#/topics', icon('network'), t('Topics'), { count: st.topics, current: cur(['topics', 'topic']) })}
         ${navlink('#/glossary', icon('book'), t('Glossary'), { count: st.glossary, current: cur(['glossary', 'term']) })}
         ${navlink('#/people', icon('users'), t('People'), { current: cur(['people', 'person']) })}
+        ${navlink('#/briefings', icon('doc'), t('Briefings'), { current: cur(['briefings']) })}
       </nav>
       <div class="side-label">${t('Sources')}</div>
       <nav class="nav">

@@ -5,6 +5,7 @@ const { SecretBox } = require('./secret-box');
 const { PRESETS: CONSENT_PRESETS } = require('../consent/notice');
 const { isLanguage } = require('../llm/languages');
 const { isLocalUrl } = require('./policy');
+const { DEFAULT_HOTKEYS, validateHotkeys } = require('../assistant/hotkeys');
 
 // Speech-model threads: about half the logical CPUs (they are usually SMT siblings), 2..8. Decoding stops scaling near 8.
 function defaultAsrThreads(cpus = os.availableParallelism()) {
@@ -38,6 +39,19 @@ const DEFAULTS = {
     live: false,                // translate while recording, line by line (keeps the AI busy during the call)
     view: 'original',           // what a meeting shows by default once it has a translation: original | translation | both
     notesLanguage: '',          // the language the notes are written in: '' = the language of the meeting
+  },
+  // The live meeting assistant (src/assistant): suggestions for questions asked on the call, grounded in the user's briefings.
+  assistant: {
+    enabled: false,             // off until switched on (here for every meeting, or per meeting from the recording)
+    mode: 'meeting',            // meeting (short bullet points) | interview (a first-person answer to say aloud)
+    trigger: 'auto',            // auto (a question from the other side prepares help by itself) | manual (only the "answer now" shortcut or button)
+    revealMs: 1500,             // how long the other side must stay quiet before a prepared suggestion is shown (a question with "?" is shown sooner)
+    words: 90,                  // length of a suggestion
+    language: '',               // '' = the language of the question
+    liveSummaryMin: 5,          // refresh the live summary, decisions and action items every N minutes (0 = only when asked)
+    termCards: true,            // explain technical terms the other side uses (once each, a few per meeting)
+    allowRemote: false,         // also when the AI server is not on this computer: what is said on the call is then sent to it
+    hotkeys: { ...DEFAULT_HOTKEYS }, // global shortcuts; '' switches one off
   },
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
@@ -97,7 +111,7 @@ const DEFAULTS = {
 };
 
 const MAX_TRANSLATION_TARGETS = 8;
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord', 'translation']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord', 'translation', 'assistant']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
 const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
@@ -130,6 +144,16 @@ function validate(key, value) {
       if (typeof merged[k] !== typeof def[k]) throw new Error(`${key}.${k} must be a ${typeof def[k]}`);
     }
     if (key === 'meet' && !(Number.isInteger(merged.port) && merged.port >= 1024 && merged.port <= 65000)) throw new Error('meet.port must be a port from 1024 to 65000');
+    if (key === 'assistant') {
+      if (!['meeting', 'interview'].includes(merged.mode)) throw new Error('assistant.mode must be meeting or interview');
+      if (!['auto', 'manual'].includes(merged.trigger)) throw new Error('assistant.trigger must be auto or manual');
+      if (!(Number.isInteger(merged.revealMs) && merged.revealMs >= 0 && merged.revealMs <= 10000)) throw new Error('assistant.revealMs must be 0 to 10000 ms');
+      if (!(Number.isInteger(merged.words) && merged.words >= 20 && merged.words <= 300)) throw new Error('assistant.words must be 20 to 300');
+      if (!(Number.isInteger(merged.liveSummaryMin) && merged.liveSummaryMin >= 0 && merged.liveSummaryMin <= 60)) throw new Error('assistant.liveSummaryMin must be 0 to 60');
+      if (merged.language && !isLanguage(merged.language)) throw new Error(`assistant.language: unknown language "${merged.language}"`);
+      merged.hotkeys = { ...def.hotkeys, ...(value.hotkeys || {}) };
+      try { validateHotkeys(merged.hotkeys); } catch (e) { throw new Error(`assistant.hotkeys: ${e.message}`); }
+    }
     if (key === 'translation') {
       const list = merged.targets;
       if (!Array.isArray(list)) throw new Error('translation.targets must be a list of language codes');
@@ -329,6 +353,7 @@ class Settings {
     const next = {}, stored = {};
     for (const [key, value] of Object.entries(patch)) {
       let v = value;
+      if (key === 'assistant' && v && typeof v === 'object' && v.hotkeys && typeof v.hotkeys === 'object') v = { ...v, hotkeys: { ...current.assistant.hotkeys, ...v.hotkeys } };   // one shortcut changed, the others kept
       if (SECRETS[key] && v && typeof v === 'object') {
         v = { ...v };
         for (const f of SECRETS[key]) if (v[f] === MASK) v[f] = current[key][f];

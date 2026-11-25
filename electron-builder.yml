@@ -57,7 +57,7 @@ mac:
   extendInfo:
     NSMicrophoneUsageDescription: WhisperBrain records your microphone to transcribe your meetings on this device.
     NSAudioCaptureUsageDescription: WhisperBrain captures system audio to transcribe the other side of your calls on this device.
-    NSScreenCaptureUsageDescription: WhisperBrain needs screen recording access to capture system audio.
+    NSScreenCaptureUsageDescription: WhisperBrain needs screen recording access to capture system audio, and to read a question on your screen when you ask the meeting assistant to.
     NSAppleEventsUsageDescription: WhisperBrain pastes dictated text into the focused app.
     NSAccessibilityUsageDescription: WhisperBrain reads who is speaking in the meeting window of your browser, to name the voices on the call.
 win:

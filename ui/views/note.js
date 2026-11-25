@@ -7,6 +7,7 @@ import { startRecording, stopRecording } from '../recording.js';
 import { openExport } from './transfer.js';
 import { renderChat } from './chat.js';
 import { follow } from '../follow.js';
+import { assistantSlot, dropAssistant } from './assistant-panel.js';
 
 const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', 'waves'], ['notes', 'Notes', 'edit'], ['snippets', 'Snippets', 'star'], ['chat', 'Chat', 'chat']];
 let N = null; // the open meeting's state
@@ -27,7 +28,7 @@ export async function render(main, { parts, params }) {
   const onEvent = (e) => handleEvent(main, e.detail.type, e.detail.data);
   window.addEventListener('wb:event', onEvent);
   offEvents = () => window.removeEventListener('wb:event', onEvent);
-  window.addEventListener('hashchange', () => { if (!location.hash.startsWith(`#/note/${id}`)) { offEvents?.(); offEvents = null; } }, { once: true });
+  window.addEventListener('hashchange', () => { if (!location.hash.startsWith(`#/note/${id}`)) { offEvents?.(); offEvents = null; dropAssistant(id); } }, { once: true });
 }
 
 const count = (k) => ({ transcript: N.segs.length || '', snippets: N.snippets.length || '', summary: N.actions.filter((a) => !a.done).length || '' }[k] || '');
@@ -476,6 +477,7 @@ function renderAside() {
     ${N.glossary.length ? `<section class="panel"><div class="panel-head"><h3>${icon('book')} ${t('Glossary')}</h3><a class="link" href="#/glossary">${t('All')}</a></div><div class="stack tight">${N.glossary.slice(0, 8).map((g) => `<a class="quote" href="#/term/${g.id}"><b>${esc(g.term)}</b><span class="xsmall muted clamp2">${esc(g.definition || t('No definition yet'))}</span></a>`).join('')}</div></section>` : ''}
     ${linkedPanel()}
     ${N.related.length ? `<section class="panel"><div class="panel-head"><h3>${icon('layers')} ${t('Related meetings')}</h3></div><div class="list">${N.related.map((r) => meetingRow(r, { snippet: esc(r.reasons.join(' · ')) })).join('')}</div></section>` : ''}`;
+  box.prepend(assistantSlot(N.id));   // the same node every time: a suggestion being written survives the redraw
   fitLive();
 }
 

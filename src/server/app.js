@@ -30,6 +30,9 @@ const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { nameFromTranscript, isLocalServer } = require('../speakers/transcript-names');
 const { Translator } = require('../llm/translate');
+const { LlmScheduler } = require('../llm/scheduler');
+const { Briefings } = require('../knowledge/briefings');
+const { AssistantService } = require('../assistant/service');
 
 const NAMES_TIMEOUT_MS = 90000;   // names from the conversation must not hold the notes back if the AI hangs
 const { loadPolicy } = require('../core/policy');
@@ -53,13 +56,18 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
   const llm = new LlmClient(() => settings.get('llm'));
+  // One queue in front of the AI server for every feature: the live assistant first, then chat, summaries, translation, background work
+  const scheduler = new LlmScheduler(llm);
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
-  const ai = new AiService({ notes, templates, settings, llm, bus, knowledge });
-  const translator = new Translator({ notes, settings, llm, bus });
+  const briefings = new Briefings({ db: conn, bus });
+  const ai = new AiService({ notes, templates, settings, llm: scheduler.client('chat'), bus, knowledge });
+  const translator = new Translator({ notes, settings, llm: scheduler.client('translation'), bus });
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
-  const meet = new MeetService({ settings, bus, version, llm, captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
-  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings }, id) });
+  const meet = new MeetService({ settings, bus, version, llm: scheduler.client('background'), captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
+  const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings, briefings }, id) });
+  const assistant = new AssistantService({ db: conn, notes, settings, bus, llm: scheduler, knowledge, briefings });
+  assistant.attach();   // live help while recording (off until switched on in Settings → Assistant)
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
@@ -74,7 +82,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     if (!notes.get(id)) return;
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
     if (ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)))) {
-      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm, userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, id); if (r.named.length) notes.reindex(id); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
+      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, id); if (r.named.length) notes.reindex(id); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
     if (settings.get('autoSummarize')) {
       try {
@@ -141,7 +149,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, ai, translator, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -168,6 +176,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     close() {
       self.pendingGoogleAuth?.cancel?.();
       detector.stop();
+      assistant.close();
       clearInterval(retentionTimer);
       meet.close().catch(() => {});
       discord.logout().catch(() => {});

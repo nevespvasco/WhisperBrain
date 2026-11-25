@@ -96,8 +96,9 @@ test('after a recording the voices are named by themselves only when asked: auto
   const stopped = (id) => s.app.bus.publish('recording.stopped', { noteId: id, durationMs: 1000 });
   const nameOf = (id) => s.app.speakers.forNote(id).find((x) => x.speakerId === 's1').name;
   let asked = 0;
-  const real = s.app.llm.complete.bind(s.app.llm);
-  s.app.llm.complete = async (...a) => { asked++; return real(...a); };
+  // every feature reaches the AI server through the shared queue (src/llm/scheduler.js), which streams from this client
+  const real = s.app.llm.stream.bind(s.app.llm);
+  s.app.llm.stream = (...a) => { asked++; return real(...a); };
 
   assert.equal(s.app.settings.get('speakerNamesFromTranscript'), 'auto', 'the default');
   await s.json('PUT', '/api/settings', { llm: local });

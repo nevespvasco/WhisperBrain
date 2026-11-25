@@ -19,6 +19,16 @@ jobs:
       - run: node scripts/fetch-models.js parakeet-tdt-110m-en
       - run: npm test
 
+  # The meeting assistant is plain JavaScript and must behave the same on a Mac: its tests run there too (no audio, no AI server needed).
+  test-macos:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - run: npm ci
+      - run: node --test --test-concurrency=1 test/assistant-*.test.js test/briefings.test.js test/llm-scheduler.test.js test/eval-assistant.test.js test/float.test.js test/llm.test.js
+
   # The helpers that read a browser's Meet window cannot be built or run on the Linux machine the tests run on:
   # compile (macOS) and load (Windows) them here, so a mistake shows up early. It runs beside the installers and does not
   # hold them back (the macOS installer job builds the helper too, so a mistake there still shows up in that job).
@@ -27,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, run: npm run build:ax && npm run build:tap }
+          - { os: macos-15, run: npm run build:ax && npm run build:tap }
           - { os: windows-latest, run: 'powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/whisperbrain-uia.ps1 -Mode selftest' }
     runs-on: ${{ matrix.os }}
     steps:
@@ -60,8 +70,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-24.04, script: dist:linux, artifact: linux }
-          - { os: macos-14, script: dist:mac, artifact: macos-arm64 }
-          - { os: macos-13, script: dist:mac, artifact: macos-x64 }
+          - { os: macos-15, script: dist:mac, artifact: macos-arm64 }
+          - { os: macos-15-intel, script: dist:mac, artifact: macos-x64 }
           - { os: windows-latest, script: dist:win, artifact: windows }
     runs-on: ${{ matrix.os }}
     steps:
@@ -75,6 +85,12 @@ jobs:
       - run: npm run ${{ matrix.script }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"   # unsigned builds; set signing secrets to enable
+      # The built app must start, serve its UI (meeting assistant included) and open the floating window: WB_SMOKE=1 does that and exits
+      - if: runner.os == 'macOS'
+        run: |
+          APP="$(find dist -maxdepth 2 -name 'WhisperBrain.app' | head -1)"
+          WB_SMOKE=1 WB_USER_DATA="$RUNNER_TEMP/wb-smoke" "$APP/Contents/MacOS/WhisperBrain" | tee smoke.log
+          grep -q SMOKE_OK smoke.log
       - uses: actions/upload-artifact@v4
         with:
           name: whisperbrain-${{ matrix.artifact }}

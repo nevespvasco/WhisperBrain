@@ -4,6 +4,7 @@
 const SIZE = {
   collapsed: { width: 212, height: 60 },   // includes the margin that holds the drop shadow
   expanded: { width: 380, height: 470 },
+  assistant: { width: 420, height: 600 },  // expanded while the meeting assistant is on: room for a suggestion above the transcript
 };
 const MARGIN = 16;
 
@@ -31,4 +32,7 @@ function defaultBounds(workArea, size = SIZE.collapsed) {
   return { x: Math.round(workArea.x + workArea.width - size.width - MARGIN), y: Math.round(workArea.y + MARGIN), ...size };
 }
 
-module.exports = { SIZE, MARGIN, shouldShow, placeWithin, defaultBounds };
+// The expanded size: larger when the assistant is helping with this recording.
+const expandedSize = (assistant) => (assistant ? SIZE.assistant : SIZE.expanded);
+
+module.exports = { expandedSize, SIZE, MARGIN, shouldShow, placeWithin, defaultBounds };

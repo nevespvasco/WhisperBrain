@@ -221,3 +221,20 @@ have not been measured yet; fill this table from a few recordings per platform:
 
 - **Only a line of 2 s or more can start a speaker while recording** (`NEW_SPEAKER_MIN_SEC`, `SpeakerTracker.assign`). A shorter line that matches nobody stays unlabelled, keeps its voice print, and is placed after Stop (`Speakers.placeUnlabelled`, or the diarization/refine passes). These recordings are cut into long utterances, so the harness cannot show the effect: it exists to keep a cough or a "yeah" from making a "Speaker 5" in the live view. The scores above only say it did no harm.
 - **Not measured:** the live view itself (how often a speaker is shown that is later folded away), the display rule (`src/speakers/display.js`: five substantive lines, two voices), and names from the conversation (`src/speakers/transcript-names.js`). Both AMI and libri-call have almost nobody saying names, so naming needs a small set of written dialogues (introductions, "Thanks, George", a name in an advert, a name of somebody absent) scored for precision first: a wrong name costs more than none. That set, as a `transcript` source in `eval/naming.js`, is still to do.
+
+## Meeting assistant (2026-11-25)
+
+`node eval/assistant-replay.js` replays the timed dialogs in `test/fixtures/assistant/` (en/pt-PT, meeting/interview: 18 questions, fillers, backchannels, cut-off sentences, a repeat request, duplicates, the user's answer heard back on the call channel) through `src/assistant/turns.js` on a simulated clock. A line's final text arrives 700 ms after the speaker stops, as in the app (VAD 0.6 s + decoding).
+
+| | precision | recall | F1 | median speech end → suggestion shown |
+|---|---|---|---|---|
+| question detection | 1.00 | 1.00 | 1.00 | 1220 ms (engine only) |
+
+The rules were tuned on these dialogs, which found two real bugs: a short lead-in ("So, to start, tell me…") hid a prompt, and the other side's old lines were glued onto their next question after the user had answered. So this is a regression check, not a measure of accuracy on real calls. `test/eval-assistant.test.js` keeps F1 ≥ 0.85.
+
+With a real model (`WB_EVAL_LLM=1 WB_EVAL_LLM_URL=http://127.0.0.1:11434/v1 WB_EVAL_LLM_MODEL=llama3.1:8b`, Ollama on an RTX 3070 Ti, 12 questions):
+- first words of a suggestion: median **93 ms** after it is asked for (76–168 ms);
+- the whole suggestion: 0.9–2.1 s (29–69 words);
+- the first request after loading took 8.9 s (the model loading).
+
+So with a local GPU model, the first words appear about 1.3 s after the other person stops talking. A CPU-only model will be several times slower; the speculative start (a suggestion is prepared during the pause, before it is shown) hides part of that.

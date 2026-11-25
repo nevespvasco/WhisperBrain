@@ -1,7 +1,7 @@
 // Floating recorder. Lives in its own small always-on-top window while a recording runs and the app is not in
 // front: a pill (pulsing dot + timer) that opens into the live transcript, like a glance at the meeting notes.
 // It talks to the same local API as the main window; the only native help it needs is move / resize / "open app".
-import { api, events } from './api.js';
+import { api, events, stream } from './api.js';
 import { setLang, t } from './i18n.js';
 import { esc } from './md.js';
 import { icon } from './icons.js';
@@ -19,6 +19,10 @@ const S = { rec: { active: false }, expanded: false, lines: [], drafts: {}, leve
 // translation that comes before its line loses nothing.
 S.tx = null;
 S.tr = new Map();
+// The live assistant (src/assistant): the newest suggestion above the transcript, an "ask" box, a mark on the pill when help is new.
+// as.state: GET /api/assistant/state; as.card: { seq, question, lines: Map(index -> {text, gap, bullet}), open, done, text, error }
+S.as = { state: null, card: null, fresh: false, ask: { q: '', a: '', busy: false } };
+const asOn = () => !!(S.as.state?.active && !S.as.state?.blocked);
 let savedTimer = 0;
 
 const stateOf = () => (S.saved ? 'saved' : !S.rec.active ? 'idle' : S.rec.finalizing ? 'finalizing' : S.rec.paused ? 'paused' : 'recording');
@@ -97,13 +101,14 @@ function buildShell(want) {
   mode = want;
   if (want === 'pill') {
     root.innerHTML = `<div class="pill" data-drag data-act="expand" role="button" tabindex="0" aria-label="${esc(t('Show live transcript'))}" title="${esc(t('Show live transcript'))}">
-      <span class="dot"></span><span class="time"></span><span class="mid"></span><span class="warn"></span><span class="grow"></span><span class="chev">${icon('chevdown', 'sm')}</span></div>`;
+      <span class="dot"></span><span class="time"></span><span class="mid"></span><span class="warn"></span><span class="help"></span><span class="grow"></span><span class="chev">${icon('chevdown', 'sm')}</span></div>`;
     return;
   }
   root.innerHTML = `<section class="card">
     <header data-drag><span class="title"><span class="dot"></span><span class="time"></span><span class="sub"></span></span>
       <button class="btn sm icon ghost" data-act="open" title="${esc(t('Open WhisperBrain'))}" aria-label="${esc(t('Open WhisperBrain'))}">${icon('external', 'sm')}</button>
       <button class="btn sm icon ghost" data-act="collapse" title="${esc(t('Minimise'))}" aria-label="${esc(t('Minimise'))}">${icon('chevdown', 'sm')}</button></header>
+    <div class="slot-assistant"></div>
     <div class="lines-wrap"><div class="lines" tabindex="0"></div><button type="button" class="jump-latest" hidden title="${esc(t('Back to the live transcript'))}" aria-label="${esc(t('Back to the live transcript'))}">${icon('chevdown', 'sm')}<span>${esc(t('Latest'))}</span></button></div>
     <div class="slot-consent"></div>
     <footer data-drag></footer></section>`;
@@ -117,6 +122,7 @@ function render() {
   for (const el of root.querySelectorAll('.time')) el.textContent = fmtTimer(S.rec.elapsedMs || 0);
   if (want === 'pill') {
     put(root.querySelector('.mid'), state === 'recording' ? meterHtml() : `<span class="state">${esc(statusText())}</span>`);
+    put(root.querySelector('.help'), asOn() && S.as.fresh ? `<span class="helpmark" title="${esc(t('New suggestion: open to read it'))}">${icon('wand', 'sm')}</span>` : '');
     put(root.querySelector('.warn'), consentUnknown() ? `<span class="warnmark" title="${esc(t('Were the other people on the call told this is being recorded?'))}">${icon('alert', 'sm')}</span>` : '');
   } else {
     const busy = state === 'finalizing' || state === 'saved';
@@ -127,11 +133,57 @@ function render() {
     syncLines(box);
     box.follow.update();
     put(root.querySelector('.slot-consent'), consentStrip());
+    drawAssistant();
     put(root.querySelector('footer'), `${S.rec.micAvailable === false ? '' : `<button class="btn sm ${S.rec.micMuted ? 'danger' : ''}" data-act="mute" ${busy ? 'disabled' : ''} aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic', 'sm')} ${S.rec.micMuted ? t('Unmute') : t('Mute')}</button>`}<button class="btn sm" data-act="pause" ${busy ? 'disabled' : ''}>${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button>
       <button class="btn sm stop" data-act="stop" ${busy ? 'disabled' : ''}>${icon('stop', 'sm')} ${t('Stop')}</button>`);
   }
   paintMeters();
 }
+
+// The suggestion card and the ask box. The input is built once (typing must survive redraws); the card is written when it changed.
+function assistantCard() {
+  const c = S.as.card;
+  if (!c) return `<div class="as-wait">${icon('wand', 'sm')} ${esc(S.as.state?.trigger === 'manual' ? t('Press “Answer now” after a question.') : t('Listening for questions…'))}</div>`;
+  const lines = [...c.lines.entries()].sort((a, b) => a[0] - b[0]).map(([, l]) => l);
+  const one = (l) => `<${l.bullet ? 'li' : 'span'} class="as-s${l.gap ? ' gap' : ''}">${esc(l.text)}</${l.bullet ? 'li' : 'span'}>`;
+  const bullets = lines.filter((l) => l.bullet), prose = lines.filter((l) => !l.bullet);
+  return `<div class="as-q">${esc(c.question)}</div>
+    ${prose.length || (c.open && !bullets.length) ? `<p class="as-text">${prose.map(one).join(' ')} ${!bullets.length && c.open ? `<span class="as-s open">${esc(c.open)}</span>` : ''}</p>` : ''}
+    ${bullets.length ? `<ul class="as-list">${bullets.map(one).join('')}${c.open ? `<li class="as-s open">${esc(c.open)}</li>` : ''}</ul>` : ''}
+    ${!lines.length && !c.open && !c.error ? `<div class="as-wait">${esc(t('Writing a suggestion…'))}</div>` : ''}
+    ${c.error ? `<div class="as-err">${esc(c.error)}</div>` : ''}`;
+}
+function assistantButtons() {
+  const c = S.as.card;
+  if (!c) return '';
+  return `<div class="as-btns"><button class="btn xs" data-act="as-regenerate">${icon('refresh', 'sm')} ${esc(t('Another angle'))}</button>${c.done ? `<button class="btn xs ghost" data-act="as-copy">${icon('copy', 'sm')} ${esc(t('Copy'))}</button>` : ''}<button class="btn xs ghost icon" data-act="as-dismiss" title="${esc(t('Dismiss'))}" aria-label="${esc(t('Dismiss'))}">${icon('x', 'sm')}</button></div>`;
+}
+function drawAssistant() {
+  const slot = root.querySelector('.slot-assistant');
+  if (!slot) return;
+  if (!asOn() || !S.rec.active) { put(slot, ''); return; }
+  if (!slot.querySelector('.as-box')) {
+    slot._h = null;
+    slot.innerHTML = `<div class="as-box"><div class="as-card"></div><div class="as-btns-slot"></div><form class="w-ask"><input name="q" placeholder="${esc(t('Ask about this call…'))}" autocomplete="off" aria-label="${esc(t('Ask about this call'))}"><button class="btn xs" type="submit" aria-label="${esc(t('Ask'))}">${icon('sparkles', 'sm')}</button></form><div class="as-answer"></div></div>`;
+  }
+  put(slot.querySelector('.as-card'), assistantCard());
+  put(slot.querySelector('.as-btns-slot'), assistantButtons());
+  put(slot.querySelector('.as-answer'), S.as.ask.q ? `<div class="as-q">${esc(S.as.ask.q)}</div><p class="as-text">${esc(S.as.ask.a || (S.as.ask.busy ? t('Thinking…') : ''))}</p>` : '');
+  S.as.fresh = false;
+}
+async function loadAssistant() {
+  if (!S.rec.active || !S.rec.noteId) { S.as.state = null; return; }
+  try { S.as.state = await api('GET', `/api/assistant/state?noteId=${encodeURIComponent(S.rec.noteId)}`); draw(); } catch { /* the server is restarting */ }
+}
+async function askAssistant(q) {
+  if (!q || S.as.ask.busy || !S.rec.noteId) return;
+  S.as.ask = { q, a: '', busy: true };
+  draw();
+  try { await stream('/api/assistant/ask', { noteId: S.rec.noteId, question: q }, { onDelta: (d) => { S.as.ask.a += d; draw(); } }); } catch (e) { S.as.ask.a = e.message; }
+  S.as.ask.busy = false;
+  draw();
+}
+const sameCard = (d) => S.as.card && String(S.as.card.seq) === String(d.seq) && d.noteId === S.rec.noteId;
 
 let raf = 0;
 const draw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); }); };
@@ -165,14 +217,14 @@ function setRec(st) {
 async function sync() {
   try {
     setRec(await api('GET', '/api/recording'));
-    if (S.rec.active) { await loadLines(); loadConsent(); } else S.lines = [];
+    if (S.rec.active) { await loadLines(); loadConsent(); loadAssistant(); } else S.lines = [];
     draw();
   } catch { /* the server is restarting */ }
 }
 
 events({
   open: sync,
-  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0, micAvailable: d.channels ? d.channels.includes('mic') : true }); S.lines = []; S.tr.clear(); S.drafts = {}; draw(); loadConsent(); },
+  'recording.started': (d) => { setRec({ active: true, noteId: d.noteId, elapsedMs: 0, micAvailable: d.channels ? d.channels.includes('mic') : true }); S.lines = []; S.tr.clear(); S.drafts = {}; draw(); loadConsent(); S.as.card = null; setTimeout(loadAssistant, 300); },
   'recording.mic-muted': (d) => { if (S.rec.active && S.rec.noteId === d.noteId) { S.rec.micMuted = d.muted; draw(); } },
   'recording.paused': () => { S.drafts = {}; S.rec.paused = true; S.rec.baseMs = S.rec.elapsedMs; draw(); },
   'recording.resumed': () => { S.rec.paused = false; S.rec.base = Date.now(); draw(); },
@@ -198,6 +250,13 @@ events({
   'translation.segment': (d) => { if (S.tx && d.lang === S.tx.lang && d.noteId === S.rec.noteId) { S.tr.set(d.segmentId, d.text); draw(); } },
   'transcript.removed': (d) => { const gone = new Set(d.ids); S.lines = S.lines.filter((l) => !gone.has(l.id)); for (const id of gone) S.tr.delete(id); draw(); },
   'speakers.updated': relabelSoon,
+  'assistant.state': (d) => { if (d.noteId === S.rec.noteId) { S.as.state = d; draw(); } },
+  'assistant.question': (d) => { if (d.noteId !== S.rec.noteId) return; S.as.card = { seq: d.seq, question: d.question, lines: new Map(), open: '', done: false }; S.as.fresh = !S.expanded; draw(); },
+  'assistant.repeat': (d) => { if (d.noteId !== S.rec.noteId) return; S.as.card = { seq: `r${Date.now()}`, question: d.question, lines: new Map([[0, { text: d.text }]]), open: '', done: true, text: d.text }; S.as.fresh = !S.expanded; draw(); },
+  'assistant.sentence': (d) => { if (!sameCard(d)) return; if (d.closed) { S.as.card.lines.set(d.index, { text: d.text, gap: !!d.gap, bullet: !!d.bullet }); S.as.card.open = ''; } else S.as.card.open = d.text; draw(); },
+  'assistant.flag': (d) => { if (!sameCard(d)) return; const l = S.as.card.lines.get(d.index); if (l) { l.gap = true; draw(); } },
+  'assistant.done': (d) => { if (!sameCard(d)) return; Object.assign(S.as.card, { done: true, text: d.text, open: '' }); draw(); },
+  'assistant.error': (d) => { if (!sameCard(d)) return; S.as.card.error = d.message; draw(); },
   settings: () => applySettings(),
 });
 
@@ -274,7 +333,28 @@ root.addEventListener('click', async (e) => {
     else if (b.dataset.act === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
     else if (b.dataset.act === 'mute') await api('POST', '/api/recording/mic-mute', { muted: !S.rec.micMuted });
     else if (b.dataset.act === 'stop') { b.disabled = true; await api('POST', '/api/recording/stop'); }
+    else if (b.dataset.act === 'as-regenerate') await api('POST', '/api/assistant/action', { noteId: S.rec.noteId, action: 'regenerate' });
+    else if (b.dataset.act === 'as-dismiss') { S.as.card = null; draw(); await api('POST', '/api/assistant/action', { noteId: S.rec.noteId, action: 'dismiss' }); }
+    else if (b.dataset.act === 'as-copy' && S.as.card?.text) { if (bridge) await bridge.copyText(S.as.card.text); else await navigator.clipboard.writeText(S.as.card.text); }
   } catch { b.disabled = false; }
 });
+
+// The window is not focusable (it must never take the keyboard from the call): it asks the main process for focus only while
+// the user types a question, and gives it back on send or when the box loses focus.
+root.addEventListener('pointerdown', (e) => { if (e.target.closest('.w-ask input')) bridge?.focusInput(true); }, true);
+root.addEventListener('focusout', (e) => { if (e.target.closest?.('.w-ask input')) bridge?.focusInput(false); });
+root.addEventListener('submit', (e) => {
+  const form = e.target.closest('.w-ask');
+  if (!form) return;
+  e.preventDefault();
+  const input = form.querySelector('input');
+  const q = input.value.trim();
+  input.value = '';
+  input.blur();
+  bridge?.focusInput(false);
+  askAssistant(q);
+});
+// The "ask" shortcut: open the card and put the cursor in the box
+bridge?.onAsk?.(() => { if (!S.expanded) setExpanded(true); requestAnimationFrame(() => root.querySelector('.w-ask input')?.focus()); });
 
 applySettings().then(sync);

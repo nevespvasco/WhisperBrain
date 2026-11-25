@@ -1,0 +1,60 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R 7 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Length 201 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+14 TL
+(Vasco Neves - Curriculum Vitae) Tj
+T* (Backend engineer in Lisboa, cafÈ regular.) Tj
+T* (Experience) Tj
+T* (Kubernetes operators written in Go. Kubernetes upgrades.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 197 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+14 TL
+(Built the payments gateway with PostgreSQL and Kafka.) Tj
+T* (Kafka streams for the payments gateway.) Tj
+T* (Education) Tj
+T* (IST Lisbon, MSc Computer Science) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000127 00000 n 
+0000000224 00000 n 
+0000000476 00000 n 
+0000000602 00000 n 
+0000000850 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+976
+%%EOF
