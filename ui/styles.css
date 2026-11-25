@@ -798,3 +798,20 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 /* translation: the translated line under (or instead of) the words as said */
 .seg .tr-line { color: var(--muted); font-style: italic; margin-top: 2px; }
 .seg .untranslated { opacity: .6; }
+
+/* ---------- live meeting assistant (ui/views/assistant-panel.js, widget assistant mode) ---------- */
+.assistant .as-body { display: grid; gap: 10px; }
+.assistant .as-card { padding: 10px 12px; border-radius: 12px; background: var(--sunken); border: 1px solid var(--line); display: grid; gap: 6px; min-width: 0; }
+.assistant .as-card.failed { border-color: var(--danger, #c93c3c); }
+.as-q { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: flex-start; overflow-wrap: anywhere; }
+.as-q > span { color: var(--text-2); font-weight: 600; }
+.as-text { margin: 0; line-height: 1.5; overflow-wrap: anywhere; }
+.as-list { margin: 0; padding-left: 18px; display: grid; gap: 4px; line-height: 1.45; }
+.as-s.gap { text-decoration: underline wavy var(--accent); text-underline-offset: 3px; }
+.as-s.open { color: var(--muted); }
+.as-card-foot { gap: 8px; }
+.as-actions { flex-wrap: wrap; gap: 6px; }
+.as-ask { gap: 6px; }
+.as-ask input { flex: 1; min-width: 0; }
+.as-hist summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
+.as-hist[open] summary { margin-bottom: 4px; }

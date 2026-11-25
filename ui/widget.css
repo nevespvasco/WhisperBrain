@@ -61,3 +61,20 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .card .slot-consent:empty { display: none; }
 
 .line .tr-line { opacity: .75; font-style: italic; }
+
+/* live assistant: the newest suggestion above the transcript, and the ask box */
+.slot-assistant:empty { display: none; }
+.as-box { margin: 8px 10px; padding: 8px 10px; border-radius: 12px; background: var(--accent-softer); border: 1px solid var(--accent-line); display: grid; gap: 6px; flex: none; }
+.as-box .as-card { display: grid; gap: 6px; max-height: 190px; overflow: auto; }
+.as-box .as-answer { max-height: 120px; overflow: auto; }
+.as-box .as-q { font-size: 11px; font-weight: 600; color: var(--muted); }
+.as-box .as-text, .as-box .as-list { font-size: 13px; }
+.as-wait, .as-err { font-size: 12px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+.as-err { color: var(--danger); }
+.as-btns { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.w-ask { display: flex; gap: 4px; }
+.w-ask input { flex: 1; min-width: 0; font-size: 12px; padding: 4px 8px; }
+.as-answer:empty { display: none; }
+.helpmark { color: var(--accent); display: inline-flex; animation: helppulse 1.4s ease-in-out infinite; }
+@keyframes helppulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .helpmark { animation: none; } }

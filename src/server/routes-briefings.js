@@ -24,6 +24,7 @@ module.exports = function briefingRoutes(add, app, { HttpError, noteOr404, readB
     const buf = await readBody(req, MAX_IMPORT);
     return store().importFile(name, buf);
   });
+  r('GET', '/api/briefings/:id', async ({ params }) => found(store().get(params.id)));
   r('PATCH', '/api/briefings/:id', async ({ params, body }) => {
     const { title, kind, text } = object(body);
     return found(store().update(params.id, { title, kind, text }));

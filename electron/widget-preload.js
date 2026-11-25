@@ -12,4 +12,7 @@ contextBridge.exposeInMainWorld('wbWidget', {
   openApp: (noteId) => ipcRenderer.send('widget:open', String(noteId || '')),
   // The window is not focusable, so the page's own clipboard API refuses to write: the main process does it.
   copyText: (text) => ipcRenderer.invoke('widget:copy', String(text || '')),
+  // The assistant's ask box: the window becomes focusable only while the user types in it.
+  focusInput: (on) => ipcRenderer.send('widget:focusable', !!on),
+  onAsk: (cb) => { ipcRenderer.on('widget:ask', () => cb()); },
 });
