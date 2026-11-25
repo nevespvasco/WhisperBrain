@@ -1,0 +1,89 @@
+name: release
+# Installers for every system, published as a GitHub Release so WhisperBrain can be installed on other computers.
+# Push a tag (git tag v0.2.0 && git push origin v0.2.0) or run it by hand with the tag to publish.
+# The builds are unsigned (no Apple or Windows signing secrets yet): macOS and Windows warn on first start, see the notes.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag: { description: 'Tag to publish, e.g. v0.2.0 (created on the current commit if it does not exist)', required: true }
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, script: dist:linux, name: linux }
+          - { os: macos-15, script: dist:mac, name: macos-arm64 }
+          - { os: macos-15-intel, script: dist:mac, name: macos-x64 }
+          - { os: windows-latest, script: dist:win, name: windows }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: npm }
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev xvfb
+      - run: npm ci
+      # Each system builds its own installer so npm installs the matching native speech engine.
+      - run: npm run ${{ matrix.script }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      # The installer must start: the built app serves its UI (assistant included), opens the floating window and exits.
+      - if: runner.os == 'Linux'
+        run: WB_SMOKE=1 WB_USER_DATA="$RUNNER_TEMP/wb" xvfb-run -a dist/linux-unpacked/whisperbrain --no-sandbox --disable-gpu | tee smoke.log && grep -q SMOKE_OK smoke.log
+      - if: runner.os == 'macOS'
+        run: |
+          APP="$(find dist -maxdepth 2 -name 'WhisperBrain.app' | head -1)"
+          WB_SMOKE=1 WB_USER_DATA="$RUNNER_TEMP/wb" "$APP/Contents/MacOS/WhisperBrain" | tee smoke.log
+          grep -q SMOKE_OK smoke.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisperbrain-${{ matrix.name }}
+          if-no-files-found: error
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.dmg
+            dist/*-mac.zip
+            dist/*.exe
+
+  publish:
+    needs: build
+    if: ${{ !cancelled() }}   # publish what was built, even if one system failed (the notes say which)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: out, merge-multiple: true }
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          ls -la out
+          cd out && sha256sum * > SHA256SUMS.txt && cd ..
+          cat > notes.md <<'EOF'
+          ## Install
+
+          | System | File | First start |
+          |---|---|---|
+          | Linux (Debian, Ubuntu) | `whisperbrain_*_amd64.deb` | `sudo apt install ./whisperbrain_*_amd64.deb` |
+          | Linux (any) | `WhisperBrain-*.AppImage` | `chmod +x WhisperBrain-*.AppImage` and run it |
+          | macOS Apple silicon | `WhisperBrain-*-arm64.dmg` | Unsigned: drag to Applications, then right-click → Open (or `xattr -dr com.apple.quarantine /Applications/WhisperBrain.app`) |
+          | macOS Intel | `WhisperBrain-*.dmg` (no `arm64`) | as above |
+          | Windows | `WhisperBrain Setup *.exe` | Unsigned: SmartScreen → More info → Run anyway |
+
+          Speech models are downloaded on first use from Settings → Audio & transcription. Checksums: `SHA256SUMS.txt`.
+          Linux is tested on real hardware; the macOS and Windows builds start and pass the smoke test on CI, but have not been tried on a real call yet.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* --title "WhisperBrain ${TAG#v}" --notes-file notes.md --target "$GITHUB_SHA"
+          fi

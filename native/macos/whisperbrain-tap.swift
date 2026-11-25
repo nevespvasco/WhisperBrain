@@ -149,11 +149,12 @@ final class Tap {
     }
 
     private func build(_ objects: Set<AudioObjectID>) {
-        let description = objects.isEmpty
-            ? CATapDescription(stereoGlobalTapButExcludeProcesses: ownObjects().map { NSNumber(value: $0) })
-            : CATapDescription(stereoMixdownOfProcesses: objects.map { NSNumber(value: $0) })
+        // the macOS 15 SDK takes the process objects as they are (older SDKs wanted NSNumbers)
+        let description: CATapDescription = objects.isEmpty
+            ? CATapDescription(stereoGlobalTapButExcludeProcesses: ownObjects())
+            : CATapDescription(stereoMixdownOfProcesses: Array(objects))
         description.uuid = UUID()
-        description.muteBehavior = .unmuted   // listen, never change what the person hears
+        description.muteBehavior = CATapMuteBehavior.unmuted   // listen, never change what the person hears
         description.isPrivate = true
 
         var status = AudioHardwareCreateProcessTap(description, &tapID)
