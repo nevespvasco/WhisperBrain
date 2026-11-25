@@ -19,9 +19,27 @@ test('migration v13: a v12 database gains briefings, note links and assistant ev
   old.close();
   const db = open(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 13);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
     for (const t of ['briefings', 'note_briefings', 'assistant_events']) assert.ok(tables(db).includes(t), t);
     assert.equal(db.prepare("SELECT title FROM notes WHERE id = 'n1'").get().title, 'Kept');
+  } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('migration v14: briefings of the kinds that are gone become notes, the others and their text are kept', () => {
+  const dir = tmpDir('wb-brief-');
+  const file = path.join(dir, 'v13.db');
+  const old = new DatabaseSync(file);
+  for (let v = 0; v < 13; v++) old.exec(MIGRATIONS[v]);
+  old.exec('PRAGMA user_version = 13');
+  const add = old.prepare("INSERT INTO briefings (id, title, kind, text, created_at, updated_at) VALUES (?, ?, ?, 'kept', 1, 1)");
+  for (const [id, kind] of [['a', 'resume'], ['b', 'job'], ['c', 'project'], ['d', 'company']]) add.run(id, id.toUpperCase(), kind);
+  old.close();
+  const db = open(file);
+  try {
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+    const kinds = Object.fromEntries(db.prepare('SELECT id, kind FROM briefings').all().map((r) => [r.id, r.kind]));
+    assert.deepEqual(kinds, { a: 'notes', b: 'notes', c: 'project', d: 'company' });
+    assert.equal(db.prepare("SELECT count(*) AS c FROM briefings WHERE text = 'kept'").get().c, 4);
   } finally { db.close(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -38,18 +56,18 @@ function stores() {
   return { db, bus, events, notes: new Notes(db, bus), briefings: new Briefings({ db, bus }) };
 }
 
-const JOB = `Senior Backend Engineer at Acme Robotics.
-Acme Robotics builds warehouse automation. The Senior Backend Engineer owns the fleet scheduler and the telemetry pipeline.
-Requirements: Kubernetes, PostgreSQL, event sourcing. Kubernetes experience in production. PostgreSQL tuning.
+const CLIENT = `Acme Robotics, client brief.
+Acme Robotics builds warehouse automation. Our team runs the fleet scheduler and the telemetry pipeline for them.
+Stack: Kubernetes, PostgreSQL, event sourcing. Kubernetes in production since March. PostgreSQL tuning.
 The fleet scheduler talks to every robot; the telemetry pipeline ingests sensor data. Acme Robotics values event sourcing.`;
 
 test('create and get: a briefing keeps its title, kind and text', () => {
   const { briefings } = stores();
-  const b = briefings.create({ title: 'Acme job', kind: 'job', text: JOB });
+  const b = briefings.create({ title: 'Acme brief', kind: 'client', text: CLIENT });
   assert.ok(b.id);
-  assert.equal(b.title, 'Acme job');
-  assert.equal(b.kind, 'job');
-  assert.equal(b.text, JOB);
+  assert.equal(b.title, 'Acme brief');
+  assert.equal(b.kind, 'client');
+  assert.equal(b.text, CLIENT);
   assert.ok(b.createdAt > 0 && b.updatedAt >= b.createdAt);
   assert.deepEqual(briefings.get(b.id), b);
   assert.equal(briefings.get('nope'), null);
@@ -57,7 +75,7 @@ test('create and get: a briefing keeps its title, kind and text', () => {
 
 test('terms: extracted offline from the text, at most 40, none longer than 40 characters', () => {
   const { briefings } = stores();
-  const b = briefings.create({ title: 'Acme job', kind: 'job', text: JOB });
+  const b = briefings.create({ title: 'Acme brief', kind: 'client', text: CLIENT });
   for (const want of ['Kubernetes', 'PostgreSQL', 'Acme Robotics']) assert.ok(b.terms.includes(want), `${want} in ${JSON.stringify(b.terms)}`);
   const long = Array.from({ length: 300 }, (_, i) => `Project${i.toString(36)}x Zeta${i.toString(36)}q. Project${i.toString(36)}x Zeta${i.toString(36)}q.`).join('\n');
   const many = briefings.create({ title: 'big', text: long });
@@ -68,12 +86,12 @@ test('terms: extracted offline from the text, at most 40, none longer than 40 ch
 
 test('list: every briefing with its size and terms but not the full text, most recently changed first', () => {
   const { briefings } = stores();
-  const a = briefings.create({ title: 'A', text: JOB });
+  const a = briefings.create({ title: 'A', text: CLIENT });
   const b = briefings.create({ title: 'B', kind: 'agenda', text: 'Intro' });
   const list = briefings.list();
   assert.deepEqual(list.map((x) => x.id).sort(), [a.id, b.id].sort());
   const la = list.find((x) => x.id === a.id);
-  assert.equal(la.size, JOB.length);
+  assert.equal(la.size, CLIENT.length);
   assert.equal(la.text, undefined);
   assert.deepEqual(la.terms, a.terms);
   assert.equal(list.find((x) => x.id === b.id).kind, 'agenda');
@@ -81,27 +99,28 @@ test('list: every briefing with its size and terms but not the full text, most r
 
 test('update: changes title and kind, recomputes terms only when the text changes; unknown id → null', () => {
   const { briefings } = stores();
-  const b = briefings.create({ title: 'Acme job', kind: 'job', text: JOB });
-  const renamed = briefings.update(b.id, { title: 'Acme role', kind: 'company' });
-  assert.equal(renamed.title, 'Acme role');
+  const b = briefings.create({ title: 'Acme brief', kind: 'client', text: CLIENT });
+  const renamed = briefings.update(b.id, { title: 'Acme account', kind: 'company' });
+  assert.equal(renamed.title, 'Acme account');
   assert.equal(renamed.kind, 'company');
-  assert.equal(renamed.text, JOB);
+  assert.equal(renamed.text, CLIENT);
   assert.deepEqual(renamed.terms, b.terms);
   const rewritten = briefings.update(b.id, { text: 'Grafana dashboards. Grafana alerts. Terraform modules and Terraform state.' });
   assert.ok(rewritten.terms.includes('Grafana') && !rewritten.terms.includes('Kubernetes'), JSON.stringify(rewritten.terms));
-  assert.equal(briefings.get(b.id).title, 'Acme role');
+  assert.equal(briefings.get(b.id).title, 'Acme account');
   assert.equal(briefings.update('nope', { title: 'x' }), null);
 });
 
-test('kinds: resume, job, company, project, agenda or notes (the default); anything else is refused', () => {
+test('kinds: project, agenda, client, company or notes (the default); anything else is refused', () => {
   const { briefings } = stores();
   assert.equal(briefings.create({ title: 'x' }).kind, 'notes');
-  for (const kind of ['resume', 'job', 'company', 'project', 'agenda', 'notes']) assert.equal(briefings.create({ kind }).kind, kind);
+  for (const kind of ['project', 'agenda', 'client', 'company', 'notes']) assert.equal(briefings.create({ kind }).kind, kind);
   assert.throws(() => briefings.create({ kind: 'diary' }), (e) => e.status === 400 && /kind/.test(e.message));
+  assert.throws(() => briefings.create({ kind: 'job' }), (e) => e.status === 400, 'a kind that is gone');
   const b = briefings.create({});
   assert.throws(() => briefings.update(b.id, { kind: 'diary' }), (e) => e.status === 400);
   assert.throws(() => briefings.create({ text: { not: 'text' } }), (e) => e.status === 400 && /text/.test(e.message));
-  assert.equal(briefings.list().length, 8, 'nothing half-created');
+  assert.equal(briefings.list().length, 7, 'nothing half-created');
 });
 
 test('text is capped at 200k characters, on create and on update', () => {
@@ -112,23 +131,23 @@ test('text is capped at 200k characters, on create and on update', () => {
   assert.equal(briefings.update(b.id, { text: huge + ' more' }).text.length, 200000);
 });
 
-const RESUME = `Vasco Neves — Curriculum Vitae.
-Backend engineer. Kubernetes operators in Go. Kubernetes upgrades. Built the Lisbon payments gateway with PostgreSQL and Kafka.
+const PROJECT = `Payments gateway — project notes.
+Kubernetes operators in Go. Kubernetes upgrades. Built the Lisbon payments gateway with PostgreSQL and Kafka.
 Kafka streams for the Lisbon payments gateway.`;
 
 test('attach to a note: setForNote replaces the set, forNote lists full briefings, termsForNote is their deduplicated union', () => {
   const { notes, briefings } = stores();
-  const n = notes.create({ title: 'Interview' });
-  const job = briefings.create({ title: 'Acme job', kind: 'job', text: JOB });
-  const cv = briefings.create({ title: 'CV', kind: 'resume', text: RESUME });
+  const n = notes.create({ title: 'Project review' });
+  const client = briefings.create({ title: 'Acme brief', kind: 'client', text: CLIENT });
+  const proj = briefings.create({ title: 'Payments gateway', kind: 'project', text: PROJECT });
   const other = briefings.create({ title: 'Other', text: 'Unrelated Zebra notes. Zebra.' });
   assert.deepEqual(briefings.forNote(n.id), []);
   assert.deepEqual(briefings.termsForNote(n.id), []);
-  briefings.setForNote(n.id, [job.id, other.id]);
-  briefings.setForNote(n.id, [job.id, cv.id, job.id]);
+  briefings.setForNote(n.id, [client.id, other.id]);
+  briefings.setForNote(n.id, [client.id, proj.id, client.id]);
   const attached = briefings.forNote(n.id);
-  assert.deepEqual(attached.map((b) => b.id).sort(), [job.id, cv.id].sort());
-  assert.equal(attached.find((b) => b.id === cv.id).text, RESUME, 'full objects');
+  assert.deepEqual(attached.map((b) => b.id).sort(), [client.id, proj.id].sort());
+  assert.equal(attached.find((b) => b.id === proj.id).text, PROJECT, 'full objects');
   const terms = briefings.termsForNote(n.id);
   for (const want of ['Kubernetes', 'PostgreSQL', 'Acme Robotics', 'Kafka']) assert.ok(terms.includes(want), `${want} in ${JSON.stringify(terms)}`);
   assert.equal(terms.filter((t) => t.toLowerCase() === 'kubernetes').length, 1, 'deduplicated');
@@ -151,8 +170,8 @@ test('attach: an unknown briefing or note is refused with 404 and the links stay
 test('remove: the briefing and its links to notes go; unknown id → false', () => {
   const { notes, briefings } = stores();
   const n = notes.create({});
-  const a = briefings.create({ title: 'A', text: JOB });
-  const b = briefings.create({ title: 'B', text: RESUME });
+  const a = briefings.create({ title: 'A', text: CLIENT });
+  const b = briefings.create({ title: 'B', text: PROJECT });
   briefings.setForNote(n.id, [a.id, b.id]);
   assert.equal(briefings.remove(a.id), true);
   assert.equal(briefings.get(a.id), null);
@@ -163,7 +182,7 @@ test('remove: the briefing and its links to notes go; unknown id → false', () 
 test('deleting a note takes its briefing links and assistant events with it, the briefings stay', () => {
   const { db, notes, briefings } = stores();
   const n = notes.create({});
-  const b = briefings.create({ title: 'A', text: JOB });
+  const b = briefings.create({ title: 'A', text: CLIENT });
   briefings.setForNote(n.id, [b.id]);
   db.prepare("INSERT INTO assistant_events (note_id, kind, question, text, created_at) VALUES (?, 'answer', 'q', 'a', 1)").run(n.id);
   notes.remove(n.id);
@@ -193,7 +212,7 @@ test('every change publishes briefings.changed; reads and failed changes do not'
 // ---------- import ----------
 test('import Markdown or plain text: the file name without its extension is the title, the text is kept', async () => {
   const { briefings, events } = stores();
-  const md = await briefings.importFile('Acme Robotics.md', Buffer.from(`# Acme Robotics\n\n${JOB}\n`, 'utf8'));
+  const md = await briefings.importFile('Acme Robotics.md', Buffer.from(`# Acme Robotics\n\n${CLIENT}\n`, 'utf8'));
   assert.equal(md.title, 'Acme Robotics');
   assert.equal(md.kind, 'notes');
   assert.match(md.text, /fleet scheduler/);
@@ -205,18 +224,13 @@ test('import Markdown or plain text: the file name without its extension is the 
   assert.ok(events.some((e) => e.type === 'briefings.changed' && e.data.id === txt.id));
 });
 
-test('import guesses a resume from the file name or the text, anything else is notes', async () => {
+test('import: every imported file is notes, whatever its name or text (the kind can be changed afterwards)', async () => {
   const { briefings } = stores();
   const kindOf = async (name, text) => (await briefings.importFile(name, Buffer.from(text, 'utf8'))).kind;
-  assert.equal(await kindOf('Vasco_CV_2026.md', 'Backend engineer.'), 'resume');
-  assert.equal(await kindOf('my-resume.txt', 'Backend engineer.'), 'resume');
-  assert.equal(await kindOf('curriculum.txt', 'Backend engineer.'), 'resume');
-  assert.equal(await kindOf('vasco.txt', RESUME), 'resume');
-  assert.equal(await kindOf('vasco.md', '# Vasco Neves\n\n## Experience\n\nAcme, 2020–2026\n\n## Education\n\nIST Lisbon\n'), 'resume');
-  assert.equal(await kindOf('Acme.md', JOB), 'notes');
-  assert.equal(await kindOf('Acme role.md', 'Backend role at Acme.\nSend your CV and a resume of your projects to jobs@acme.com.'), 'notes');
-  assert.equal(await kindOf('vasco.txt', 'Vasco Neves\nRésumé\nBackend engineer.'), 'resume');
-  assert.equal(await kindOf('cvs-pharmacy.txt', 'Store hours.'), 'notes');
+  assert.equal(await kindOf('Payments gateway project.md', PROJECT), 'notes');
+  assert.equal(await kindOf('Acme client.md', CLIENT), 'notes');
+  assert.equal(await kindOf('agenda.txt', '# Kickoff\n\n## Agenda\n\nIntro\nRoadmap\n'), 'notes');
+  assert.equal(await kindOf('company.txt', 'Acme Robotics, founded 2015.'), 'notes');
 });
 
 test('import HTML: the visible text, without tags, scripts or styles', async () => {
@@ -233,22 +247,22 @@ const FIX = path.join(__dirname, 'fixtures', 'briefings');
 
 test('import DOCX (fixture): paragraphs and headings become text, terms come from it', async () => {
   const { briefings } = stores();
-  const b = await briefings.importFile('job.docx', fs.readFileSync(path.join(FIX, 'job.docx')));
-  assert.equal(b.title, 'job');
+  const b = await briefings.importFile('client.docx', fs.readFileSync(path.join(FIX, 'client.docx')));
+  assert.equal(b.title, 'client');
   assert.equal(b.kind, 'notes');
-  assert.match(b.text, /^# Senior Backend Engineer/);
+  assert.match(b.text, /^# Acme Robotics - client brief/);
   assert.match(b.text, /fleet scheduler and the telemetry pipeline/);
   assert.doesNotMatch(b.text, /<w:/);
   for (const want of ['Fleet scheduler', 'Telemetry pipeline', 'PostgreSQL']) assert.ok(b.terms.includes(want), `${want} in ${JSON.stringify(b.terms)}`);
 });
 
-test('import PDF (fixture): the text of every page, read as a resume', async () => {
+test('import PDF (fixture): the text of every page, as notes', async () => {
   const { briefings } = stores();
-  const b = await briefings.importFile('Vasco Neves.pdf', fs.readFileSync(path.join(FIX, 'resume.pdf')));
-  assert.equal(b.title, 'Vasco Neves');
-  assert.equal(b.kind, 'resume');
-  assert.match(b.text, /Curriculum Vitae/);
-  assert.match(b.text, /café regular/);
+  const b = await briefings.importFile('Payments gateway.pdf', fs.readFileSync(path.join(FIX, 'project.pdf')));
+  assert.equal(b.title, 'Payments gateway');
+  assert.equal(b.kind, 'notes');
+  assert.match(b.text, /project notes/);
+  assert.match(b.text, /café by the office/);
   assert.match(b.text, /payments gateway with PostgreSQL and Kafka/, 'second page');
   assert.doesNotMatch(b.text, /endobj|\bTj\b|%PDF/, 'the text, not the PDF source');
   assert.ok(b.terms.includes('Kafka') && b.terms.includes('Kubernetes'), JSON.stringify(b.terms));
@@ -281,12 +295,12 @@ test('import refuses, with a 400 and nothing created: empty files, recordings, i
 test('vocabulary: the terms of the briefings attached to a note reach termsForNote; callers without briefings are unchanged', () => {
   const { termsForNote } = require('../src/asr/vocabulary');
   const { notes, briefings } = stores();
-  const n = notes.create({ title: 'Interview', attendees: [{ name: 'Ana Silva', email: 'ana@acme.com' }] });
-  const job = briefings.create({ title: 'Acme job', kind: 'job', text: JOB });
+  const n = notes.create({ title: 'Client call', attendees: [{ name: 'Ana Silva', email: 'ana@acme.com' }] });
+  const client = briefings.create({ title: 'Acme brief', kind: 'client', text: CLIENT });
   briefings.create({ title: 'not attached', text: 'Zebra stripes. Zebra herds.' });
   const before = termsForNote({ notes }, n.id);
   assert.deepEqual(termsForNote({ notes, briefings }, n.id), before, 'nothing attached yet');
-  briefings.setForNote(n.id, [job.id]);
+  briefings.setForNote(n.id, [client.id]);
   const t = termsForNote({ notes, briefings }, n.id);
   for (const want of ['Ana Silva', 'Kubernetes', 'PostgreSQL', 'Acme Robotics']) assert.ok(t.includes(want), `${want} in ${JSON.stringify(t)}`);
   assert.ok(!t.includes('Zebra'));
@@ -326,45 +340,45 @@ test('HTTP: briefings CRUD, import and note links, behind the token', async (t) 
   const s = await serve(t);
   assert.equal((await fetch(`${s.base}/api/briefings`)).status, 401, 'needs the token');
 
-  let r = await s.json('POST', '/api/briefings', { title: 'Acme job', kind: 'job', text: JOB });
+  let r = await s.json('POST', '/api/briefings', { title: 'Acme brief', kind: 'client', text: CLIENT });
   assert.equal(r.status, 200);
-  const job = r.body;
-  assert.ok(job.id && job.terms.includes('Kubernetes'));
+  const client = r.body;
+  assert.ok(client.id && client.terms.includes('Kubernetes'));
   assert.equal((await s.json('POST', '/api/briefings', { kind: 'diary' })).status, 400);
 
   r = await s.json('GET', '/api/briefings');
-  assert.deepEqual(r.body.map((b) => b.id), [job.id]);
+  assert.deepEqual(r.body.map((b) => b.id), [client.id]);
   assert.equal(r.body[0].text, undefined);
-  assert.equal(r.body[0].size, JOB.length);
+  assert.equal(r.body[0].size, CLIENT.length);
 
-  r = await s.json('PATCH', `/api/briefings/${job.id}`, { title: 'Acme role' });
-  assert.equal(r.body.title, 'Acme role');
+  r = await s.json('PATCH', `/api/briefings/${client.id}`, { title: 'Acme account' });
+  assert.equal(r.body.title, 'Acme account');
   assert.equal((await s.json('PATCH', '/api/briefings/nope', { title: 'x' })).status, 404);
-  assert.equal((await s.json('PATCH', `/api/briefings/${job.id}`, { kind: 'diary' })).status, 400);
+  assert.equal((await s.json('PATCH', `/api/briefings/${client.id}`, { kind: 'diary' })).status, 400);
 
-  r = await s.json('POST', `/api/briefings/import?name=${encodeURIComponent('Vasco Neves.pdf')}`, fs.readFileSync(path.join(FIX, 'resume.pdf')));
+  r = await s.json('POST', `/api/briefings/import?name=${encodeURIComponent('Payments gateway.pdf')}`, fs.readFileSync(path.join(FIX, 'project.pdf')));
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  const cv = r.body;
-  assert.equal(cv.title, 'Vasco Neves');
-  assert.equal(cv.kind, 'resume');
-  r = await s.json('POST', '/api/briefings/import?name=job.docx', fs.readFileSync(path.join(FIX, 'job.docx')));
+  const proj = r.body;
+  assert.equal(proj.title, 'Payments gateway');
+  assert.equal(proj.kind, 'notes');
+  r = await s.json('POST', '/api/briefings/import?name=client.docx', fs.readFileSync(path.join(FIX, 'client.docx')));
   assert.equal(r.status, 200);
   assert.equal((await s.json('POST', '/api/briefings/import?name=x.txt', Buffer.alloc(0))).status, 400);
   assert.equal((await s.json('POST', '/api/briefings/import', Buffer.from('hello'))).status, 400, 'name is required');
 
-  const note = s.app.notes.create({ title: 'Interview' });
+  const note = s.app.notes.create({ title: 'Project review' });
   assert.deepEqual((await s.json('GET', `/api/notes/${note.id}/briefings`)).body, []);
-  r = await s.json('PUT', `/api/notes/${note.id}/briefings`, { ids: [job.id, cv.id] });
+  r = await s.json('PUT', `/api/notes/${note.id}/briefings`, { ids: [client.id, proj.id] });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.map((b) => b.id).sort(), [job.id, cv.id].sort());
+  assert.deepEqual(r.body.map((b) => b.id).sort(), [client.id, proj.id].sort());
   assert.equal((await s.json('GET', `/api/notes/${note.id}/briefings`)).body.length, 2);
   assert.equal((await s.json('PUT', `/api/notes/${note.id}/briefings`, { ids: ['nope'] })).status, 404);
   assert.equal((await s.json('PUT', `/api/notes/${note.id}/briefings`, { ids: 'x' })).status, 400);
   assert.equal((await s.json('PUT', '/api/notes/nope/briefings', { ids: [] })).status, 404);
   assert.equal((await s.json('GET', '/api/notes/nope/briefings')).status, 404);
 
-  r = await s.json('DELETE', `/api/briefings/${job.id}`);
+  r = await s.json('DELETE', `/api/briefings/${client.id}`);
   assert.deepEqual(r.body, { ok: true });
-  assert.equal((await s.json('DELETE', `/api/briefings/${job.id}`)).status, 404);
-  assert.deepEqual((await s.json('GET', `/api/notes/${note.id}/briefings`)).body.map((b) => b.id), [cv.id]);
+  assert.equal((await s.json('DELETE', `/api/briefings/${client.id}`)).status, 404);
+  assert.deepEqual((await s.json('GET', `/api/notes/${note.id}/briefings`)).body.map((b) => b.id), [proj.id]);
 });

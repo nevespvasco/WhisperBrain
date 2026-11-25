@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 // A look at the live assistant without a real call: `node scripts/assistant-demo.js [--port 3799] [--llm http://127.0.0.1:11434/v1 --model llama3.2]`
-// Starts the headless server on a throw-away data folder, adds a briefing, and plays a short interview as if it were being
+// Starts the headless server on a throw-away data folder, adds a project briefing, and plays a short client project review as if it were being
 // recorded (lines from the other side and from you, through the same events the recorder publishes). Without --llm a small
 // built-in stand-in streams canned answers, so the whole flow can be seen offline. Prints the URL to open.
 const fs = require('node:fs');
@@ -17,11 +17,11 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const DIALOG = [
   [1500, 'them', 'Thanks for joining. Shall we start?'],
   [1800, 'me', 'Sure, happy to be here.'],
-  [2500, 'them', 'Tell me about the billing migration you led at Acme.'],
-  [9000, 'me', 'We moved billing to Kubernetes and cut deploys from sixty minutes to ten.'],
+  [2500, 'them', 'Tell me about the billing migration so far.'],
+  [9000, 'me', 'Billing runs on Kubernetes now, and deploys went from sixty minutes to ten.'],
   [2500, 'them', 'How did you keep the SLA during the cut-over?'],
-  [9000, 'them', 'Our stack is mostly Go and gRPC on k8s.'],
-  [3000, 'them', 'What is your notice period?'],
+  [9000, 'them', 'Our reporting jobs are mostly Go and gRPC on k8s.'],
+  [3000, 'them', 'When can the next release go out?'],
   [9000, 'them', 'Sorry, can you repeat that?'],
 ];
 
@@ -31,12 +31,12 @@ function standIn() {
     // look only at what is being asked (the question tag, or the term), never at the briefing around it
     const asked = (/The question just asked:\n<transcript>\n([\s\S]*?)\n<\/transcript>/.exec(user) || [])[1] || '';
     const term = (/Term: (.*)/.exec(user) || [])[1] || '';
-    if (/running summary/.test(sys)) return JSON.stringify({ summary: 'Interview for a backend role: the billing migration at Acme, reliability during the cut-over, notice period.', decisions: [], actions: [{ text: 'Send the reliability write-up', owner: 'Me' }], openQuestions: ['Start date'] });
+    if (/running summary/.test(sys)) return JSON.stringify({ summary: 'Project review with Acme: the billing migration, reliability during the cut-over, the next release date.', decisions: [], actions: [{ text: 'Send the cut-over report', owner: 'Me' }], openQuestions: ['When the reporting jobs move'] });
     if (/ONE plain sentence/.test(sys)) return { SLA: 'A service level agreement: the uptime or response time a service promises its users.', gRPC: 'A remote procedure call framework from Google that uses HTTP/2 and Protocol Buffers.', k8s: 'Short for Kubernetes, a system that runs containers across many machines.' }[term] || `A technical term used in the conversation: ${term}.`;
-    if (/notice period/i.test(asked)) return 'My notice period is one month. [GAP] I could ask to start a little earlier if the team needs it.';
+    if (/next release/i.test(asked)) return 'The next release can go out on the 12th, once the billing tests pass. [GAP] We could move the reporting jobs in the same window if your team agrees.';
     if (/SLA/.test(asked)) return 'We ran both billing systems side by side for two weeks and compared every invoice. Traffic moved in 10% steps behind a feature flag, so we could roll back in seconds. We kept the 99.95% SLA through the whole cut-over.';
-    if (/billing migration/i.test(asked)) return 'At Acme I led the move of billing to Kubernetes. Deploys went from sixty minutes to ten, and on-call pages dropped by half. I set up the CI pipeline and coached two engineers through their first on-call.';
-    return 'They asked about your experience; your briefing has the details.';
+    if (/billing migration/i.test(asked)) return 'Billing now runs on Kubernetes. Deploys went from sixty minutes to ten, and on-call pages dropped by half. The reporting jobs are the last piece, planned for May.';
+    return 'They asked about the project; your briefing has the details.';
   };
   const srv = http.createServer((req, res) => {
     let raw = '';
@@ -60,9 +60,9 @@ function standIn() {
   const app = createApp({ dataDir, platform: fake, version: 'demo' });
   await app.ready;
   const llm = arg('llm') ? { url: arg('llm'), close() {} } : await standIn();
-  app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: llm.url, model: arg('model', arg('llm') ? '' : 'stand-in') }, assistant: { enabled: true, mode: 'interview', liveSummaryMin: 1 } });
-  const brief = app.briefings.create({ title: 'CV — Ana Silva', kind: 'resume', text: 'Ana Silva, senior backend engineer.\n\nAcme (2019-2024): led the billing migration to Kubernetes; deploys from 60 to 10 minutes; on-call pages halved; kept the 99.95% SLA with a two-week parallel run and 10% traffic steps behind a feature flag.\n\nInitech (2016-2019): Java, PostgreSQL, on-call lead.\n\nNotice period: one month.' });
-  const note = app.notes.create({ title: 'Interview — Backend engineer (demo)', source: 'recorded' });
+  app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: llm.url, model: arg('model', arg('llm') ? '' : 'stand-in') }, assistant: { enabled: true, mode: 'spoken', liveSummaryMin: 1 } });
+  const brief = app.briefings.create({ title: 'Acme — billing migration', kind: 'project', text: 'Billing migration for Acme. Lead: Ana Silva.\n\nDone: billing runs on Kubernetes; deploys from 60 to 10 minutes; on-call pages halved; kept the 99.95% SLA with a two-week parallel run and 10% traffic steps behind a feature flag.\n\nNext: the reporting jobs (Go, gRPC) move in May.\n\nNext release: the 12th, once the billing tests pass.' });
+  const note = app.notes.create({ title: 'Acme — project review (demo)', source: 'recorded' });
   app.briefings.setForNote(note.id, [brief.id]);
   const srv = createServer(app, { uiDir: path.join(__dirname, '..', 'ui') });
   const { port, token } = await srv.listen(Number(arg('port', 3799)));

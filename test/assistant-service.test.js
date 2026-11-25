@@ -17,7 +17,7 @@ async function until(fn, ms = 3000) {
 }
 
 // A service on a real database, bus, settings and a fake AI server; the turn engine runs on short delays.
-async function rig(t, { reply = () => '- One month notice.\n- Can start in January.', assistant = {}, llmUrl, briefings = [], consent } = {}) {
+async function rig(t, { reply = () => '- The 12th, after the billing tests.\n- Reporting follows in May.', assistant = {}, llmUrl, briefings = [], consent } = {}) {
   const fake = await startFakeLlm((messages) => reply(messages));
   t.after(() => fake.close());
   const db = open(':memory:');
@@ -47,8 +47,9 @@ test('settings: the assistant is off by default, with checked modes, delays and 
   assert.equal(DEFAULTS.assistant.allowRemote, false, 'a remote AI server needs an explicit yes');
   const s = new Settings(open(':memory:'), new Bus());
   await s.init();
-  s.update({ assistant: { enabled: true, mode: 'interview' } });
-  assert.equal(s.get('assistant').mode, 'interview');
+  assert.equal(DEFAULTS.assistant.mode, 'bullets');
+  s.update({ assistant: { enabled: true, mode: 'spoken' } });
+  assert.equal(s.get('assistant').mode, 'spoken');
   assert.equal(s.get('assistant').trigger, 'auto', 'the rest is kept');
   s.update({ assistant: { hotkeys: { answer: 'CommandOrControl+Alt+A' } } });
   assert.equal(s.get('assistant').hotkeys.answer, 'CommandOrControl+Alt+A');
@@ -59,22 +60,35 @@ test('settings: the assistant is off by default, with checked modes, delays and 
   assert.throws(() => s.update({ assistant: { hotkeys: { answer: 'Banana+Q' } } }), /answer/);
 });
 
+test('settings: the old style names still work: "meeting" reads as bullets and "interview" as spoken', async () => {
+  const db = open(':memory:');
+  db.prepare('INSERT INTO settings(key, value) VALUES(?, ?)').run('assistant', JSON.stringify({ enabled: true, mode: 'interview' }));
+  const s = new Settings(db, new Bus());
+  await s.init();
+  assert.equal(s.get('assistant').mode, 'spoken', 'a value stored by an older version');
+  assert.equal(s.get('assistant').enabled, true, 'and the rest of it is kept');
+  s.update({ assistant: { mode: 'meeting' } });
+  assert.equal(s.get('assistant').mode, 'bullets', 'an older client sending the old name');
+  assert.equal(JSON.parse(db.prepare('SELECT value FROM settings WHERE key = ?').get('assistant').value).mode, 'bullets', 'stored under the new name');
+  assert.throws(() => s.update({ assistant: { mode: 'stealth' } }), /assistant.mode must be bullets or spoken/);
+});
+
 test('a question from the other side becomes a grounded suggestion: question, sentences, done, saved in the history', async (t) => {
-  const r = await rig(t, { briefings: [{ title: 'Contract', kind: 'notes', text: 'Notice period: one month.\n\nStart date: flexible, January.' }] });
-  r.say('them', 'What is your notice period?');
+  const r = await rig(t, { briefings: [{ title: 'Release plan', kind: 'project', text: 'Next release: the 12th, after the billing tests.\n\nReporting: moves in May.' }] });
+  r.say('them', 'When can the next release go out?');
   await until(() => r.of('assistant.done').length);
-  assert.equal(r.of('assistant.question')[0].question, 'What is your notice period?');
+  assert.equal(r.of('assistant.question')[0].question, 'When can the next release go out?');
   const closed = r.of('assistant.sentence').filter((s) => s.closed);
-  assert.deepEqual(closed.map((s) => s.text), ['One month notice.', 'Can start in January.']);
+  assert.deepEqual(closed.map((s) => s.text), ['The 12th, after the billing tests.', 'Reporting follows in May.']);
   assert.ok(closed.every((s) => s.bullet));
-  assert.equal(r.of('assistant.done')[0].text, '- One month notice.\n- Can start in January.');
+  assert.equal(r.of('assistant.done')[0].text, '- The 12th, after the billing tests.\n- Reporting follows in May.');
   const sent = r.fake.requests[0].messages;
-  assert.match(sent[1].content, /Notice period: one month/, 'the briefing excerpt is in the request');
-  assert.match(sent[1].content, /What is your notice period\?/);
+  assert.match(sent[1].content, /Next release: the 12th/, 'the briefing excerpt is in the request');
+  assert.match(sent[1].content, /When can the next release go out\?/);
   const hist = r.svc.history(r.note.id);
   assert.equal(hist.length, 1);
   assert.equal(hist[0].kind, 'suggestion');
-  assert.equal(hist[0].question, 'What is your notice period?');
+  assert.equal(hist[0].question, 'When can the next release go out?');
 });
 
 test('the other side speaking again before it is shown cancels the suggestion: nothing reaches the screen', async (t) => {
@@ -90,19 +104,19 @@ test('the other side speaking again before it is shown cancels the suggestion: n
 
 test('privacy gates: a remote AI server needs allowRemote, a meeting where someone objected gets no help, and off is off', async (t) => {
   const remote = await rig(t, { llmUrl: 'https://api.example.com/v1' });
-  remote.say('them', 'What is your notice period?');
+  remote.say('them', 'When can the next release go out?');
   await wait(300);
   assert.equal(remote.fake.requests.length, 0);
   assert.equal(remote.svc.state(remote.note.id).blocked, 'remote');
 
   const declined = await rig(t, { consent: 'declined' });
-  declined.say('them', 'What is your notice period?');
+  declined.say('them', 'When can the next release go out?');
   await wait(300);
   assert.equal(declined.fake.requests.length, 0);
   assert.equal(declined.svc.state(declined.note.id).blocked, 'consent');
 
   const off = await rig(t, { assistant: { enabled: false } });
-  off.say('them', 'What is your notice period?');
+  off.say('them', 'When can the next release go out?');
   await wait(300);
   assert.equal(off.fake.requests.length, 0);
   assert.equal(off.svc.state(off.note.id).active, false);
@@ -146,7 +160,7 @@ test('when the recording stops the assistant goes quiet and says so', async (t) 
   const r = await rig(t);
   r.bus.publish('recording.stopped', { noteId: r.note.id });
   assert.equal(r.svc.state(r.note.id).active, false);
-  r.say('them', 'What is your notice period?');
+  r.say('them', 'When can the next release go out?');
   await wait(300);
   assert.equal(r.fake.requests.length, 0);
   assert.ok(r.of('assistant.state').some((s) => s.active === false));

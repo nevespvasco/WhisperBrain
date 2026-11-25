@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { evaluate } = require('../eval/assistant-replay');
 
-test('eval: question detection on the timed dialogs (en, pt-PT; meeting, interview) stays at F1 ≥ 0.85, repeats and duplicates handled', () => {
+test('eval: question detection on the timed dialogs (en, pt-PT; bullet points, spoken reply) stays at F1 ≥ 0.85, repeats and duplicates handled', () => {
   const { rows, total } = evaluate();
   assert.ok(rows.length >= 4);
   assert.ok(total.f1 >= 0.85, `F1 ${total.f1.toFixed(2)}`);

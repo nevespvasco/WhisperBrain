@@ -1,0 +1,16 @@
+{ "name": "pt-spoken", "mode": "spoken", "lines": [
+  { "t": 0, "dur": 2500, "s": "them", "text": "Olá, obrigado por te juntares a nós." },
+  { "t": 3000, "dur": 1500, "s": "me", "text": "Obrigado eu pelo convite." },
+  { "t": 5000, "dur": 3000, "s": "them", "text": "Para começar, fala-me um pouco do ponto da migração.", "q": true },
+  { "t": 9000, "dur": 9000, "s": "me", "text": "Já passámos quatro dos seis serviços para o novo cluster, e a faturação passa na próxima semana." },
+  { "t": 19000, "dur": 700, "s": "them", "text": "Pois." },
+  { "t": 20000, "dur": 3500, "s": "them", "text": "Qual foi o maior problema durante a passagem?", "q": true },
+  { "t": 31000, "dur": 2500, "s": "them", "text": "E como é que lidaste com, hum" },
+  { "t": 35000, "dur": 2000, "s": "them", "text": "a janela de manutenção tão curta?", "q": true, "joins": true },
+  { "t": 42000, "dur": 1500, "s": "them", "text": "Certo, certo." },
+  { "t": 44000, "dur": 3000, "s": "them", "text": "Os relatórios ainda correm nos servidores antigos." },
+  { "t": 48000, "dur": 3000, "s": "them", "text": "Como passarias os relatórios para o novo cluster", "q": true },
+  { "t": 56000, "dur": 2000, "s": "them", "text": "Desculpa, podes repetir?", "repeat": true },
+  { "t": 61000, "dur": 2500, "s": "them", "text": "Quando pode sair a próxima versão?", "q": true },
+  { "t": 65000, "dur": 2000, "s": "them", "text": "Ótimo, da minha parte é tudo." }
+] }

@@ -1,8 +1,8 @@
-// Briefings: the user's own material (CV, job description, company and project notes, agenda) that the live assistant grounds
+// Briefings: the user's own material (project notes, an agenda, client or company notes) that the live assistant grounds
 // its suggestions on. Added by pasting text or importing a file (PDF, Word, Markdown, text); attached to a meeting from its page.
 import { api, t, esc, icon, fail, done, modal, confirmDialog, fmtDate, empty } from '../lib.js';
 
-const KINDS = [['resume', 'CV / résumé'], ['job', 'Job description'], ['company', 'Company'], ['project', 'Project'], ['agenda', 'Agenda'], ['notes', 'Notes']];
+const KINDS = [['project', 'Project'], ['agenda', 'Agenda'], ['client', 'Client'], ['company', 'Company'], ['notes', 'Notes']];
 const kindLabel = (k) => t((KINDS.find(([v]) => v === k) || [k, k])[1]);
 
 export async function render(main) {
@@ -14,7 +14,7 @@ export async function render(main) {
         <div class="grow" style="min-width:0"><div class="main-t">${icon('doc', 'sm')} ${esc(b.title || t('Untitled'))} <span class="badge">${esc(kindLabel(b.kind))}</span></div>
           <div class="xsmall muted">${fmtDate(b.updatedAt)} · ${Math.max(1, Math.round(b.size / 1000))} k ${t('characters')}${b.terms?.length ? ` · ${esc(b.terms.slice(0, 8).join(', '))}` : ''}</div></div>
         <button class="btn xs" data-edit="${esc(b.id)}">${t('Edit')}</button><button class="btn xs danger-outline" data-del="${esc(b.id)}">${t('Delete')}</button></div>`).join('')}</div>`
-      : empty('doc', t('No briefings yet'), t('Import your CV or paste a job description, project notes or an agenda. Then attach it to a meeting from the meeting page.'))}
+      : empty('doc', t('No briefings yet'), t('Import or paste project notes, an agenda, or client or company notes. Then attach them to a meeting from the meeting page.'))}
   </div>`;
   bind(main);
 }

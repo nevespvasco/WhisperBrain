@@ -1,6 +1,6 @@
 'use strict';
 // Builds the briefing import fixtures from scratch (nothing downloaded): `node test/fixtures/briefings/make-fixtures.js`
-// writes resume.pdf and job.docx next to this file. makePdf / makeDocx are also used by the tests directly.
+// writes project.pdf and client.docx next to this file. makePdf / makeDocx are also used by the tests directly.
 const fs = require('node:fs');
 const path = require('node:path');
 const { zip } = require('../../../src/core/zip-writer');
@@ -47,16 +47,16 @@ function makeDocx(paras, { title = '' } = {}) {
   ], { now: new Date(2026, 0, 1) });
 }
 
-const RESUME_PAGES = [
-  ['Vasco Neves - Curriculum Vitae', 'Backend engineer in Lisboa, caf\xe9 regular.', 'Experience', 'Kubernetes operators written in Go. Kubernetes upgrades.'],
-  ['Built the payments gateway with PostgreSQL and Kafka.', 'Kafka streams for the payments gateway.', 'Education', 'IST Lisbon, MSc Computer Science'],
+const PROJECT_PAGES = [
+  ['Payments gateway - project notes', 'Kickoff in Lisboa, at the caf\xe9 by the office.', 'Platform', 'Kubernetes operators written in Go. Kubernetes upgrades.'],
+  ['Built the payments gateway with PostgreSQL and Kafka.', 'Kafka streams for the payments gateway.', 'Next steps', 'Load tests before the March release'],
 ];
-const JOB_PARAS = ['# Senior Backend Engineer', 'Acme Robotics builds warehouse automation.', 'You will own the fleet scheduler and the telemetry pipeline.',
-  'The fleet scheduler talks to every robot. The telemetry pipeline ingests sensor data.', 'Requirements: Kubernetes, PostgreSQL, Terraform.'];
+const CLIENT_PARAS = ['# Acme Robotics - client brief', 'Acme Robotics builds warehouse automation.', 'We run the fleet scheduler and the telemetry pipeline for them.',
+  'The fleet scheduler talks to every robot. The telemetry pipeline ingests sensor data.', 'Stack: Kubernetes, PostgreSQL, Terraform.'];
 
 if (require.main === module) {
-  fs.writeFileSync(path.join(__dirname, 'resume.pdf'), makePdf(RESUME_PAGES));
-  fs.writeFileSync(path.join(__dirname, 'job.docx'), makeDocx(JOB_PARAS, { title: 'Senior Backend Engineer' }));
+  fs.writeFileSync(path.join(__dirname, 'project.pdf'), makePdf(PROJECT_PAGES));
+  fs.writeFileSync(path.join(__dirname, 'client.docx'), makeDocx(CLIENT_PARAS, { title: 'Acme Robotics - client brief' }));
 }
 
-module.exports = { makePdf, makeDocx, RESUME_PAGES, JOB_PARAS };
+module.exports = { makePdf, makeDocx, PROJECT_PAGES, CLIENT_PARAS };

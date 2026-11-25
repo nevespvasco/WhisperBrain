@@ -1,6 +1,6 @@
 # Meeting assistant
 
-Help *during* a call. When somebody on the other side asks a question, the assistant drafts a short suggestion from your own material (your **briefings**: CV, job description, project notes, agenda) and from what was said. It also keeps a live summary, explains technical terms, answers questions you type about the call, and can read a question on your screen.
+Help *during* a call. When somebody on the other side asks a question, the assistant drafts a short suggestion from your own material (your **briefings**: project notes, an agenda, client or company notes) and from what was said. It also keeps a live summary, explains technical terms, answers questions you type about the call, and can read a question on your screen.
 
 It is **off by default**. Turn it on in *Settings → Assistant*, or for a single meeting with the switch on the meeting page.
 
@@ -22,7 +22,7 @@ After the meeting, the same panel lists what the assistant showed.
 - The collapsed pill shows a mark when a new suggestion arrives.
 - The window never takes the keyboard by itself. It becomes focusable only while you type a question, and gives the focus back when you send it.
 
-**Briefings** (`#/briefings` in the sidebar). Paste text, or import PDF, Word, Markdown, text or HTML. Each briefing keeps a list of terms, which also bias speech recognition for the meetings it is attached to.
+**Briefings** (`#/briefings` in the sidebar). Paste text, or import PDF, Word, Markdown, text or HTML. A briefing is a *project*, an *agenda*, a *client*, a *company* or plain *notes* (an imported file starts as notes). Each briefing keeps a list of terms, which also bias speech recognition for the meetings it is attached to.
 
 ## How it decides
 
@@ -36,7 +36,7 @@ The decision is made in `src/assistant/turns.js`. It runs on the live transcript
 | ends normally | 600 ms |
 | is cut off ("…and how did you, um") | 3.2 s, for the rest |
 
-**2. Decide whether to help.** In **meeting** style, only questions trigger help. In **interview** style, prompts such as "tell me about…" or "walk me through…" do too. Lines in English and European Portuguese are understood, including a short lead-in such as "So, to start, …".
+**2. Decide whether to help.** In the **bullet points** style, only questions trigger help. In the **spoken reply** style, prompts such as "tell me about the project…" or "walk me through the plan…" do too. Lines in English and European Portuguese are understood, including a short lead-in such as "So, to start, …".
 
 **3. Ignore what is not a question.** These never trigger help:
 - fillers ("ok", "pois") and backchannels ("mm-hmm");
@@ -60,9 +60,11 @@ The decision is made in `src/assistant/turns.js`. It runs on the live transcript
 
 When the budget is short, your facts go first, then older answers, then the oldest lines, and the briefing is cut last.
 
-The prompt (`assistantMessages` in `src/llm/prompts.js`) says to use only facts from that context and never invent experience. A sentence the material does not support must start with `[GAP]`; on screen it is underlined as *not in your briefings*.
+The prompt (`assistantMessages` in `src/llm/prompts.js`) says to use only facts from that context and never invent facts, names, numbers, dates or decisions. A sentence the material does not support must start with `[GAP]`; on screen it is underlined as *not in your briefings*.
 
-Meeting style asks for 2 to 4 bullet points. Interview style asks for a first-person answer you can say aloud.
+The two styles (*Settings → Assistant → Style*):
+- **Bullet points** (the default): 2 to 4 short points to glance at while you talk.
+- **Spoken reply**: a first-person reply you can say aloud, for example when you present a project or answer a client's question on the call.
 
 ## Privacy
 
@@ -88,12 +90,12 @@ On Wayland, global shortcuts depend on the compositor. Some report success and n
 
 ## Measured
 
-- **Question detection.** `node eval/assistant-replay.js` replays timed dialogs (`test/fixtures/assistant/`: English and Portuguese, meeting and interview, with fillers, backchannels, cut-off sentences, repeats, duplicates and echo) on a simulated clock.
+- **Question detection.** `node eval/assistant-replay.js` replays timed dialogs (`test/fixtures/assistant/`: English and Portuguese, a team meeting in the bullet-points style and a client project review in the spoken-reply style, with fillers, backchannels, cut-off sentences, repeats, duplicates and echo) on a simulated clock.
   - Result: precision 1.00, recall 1.00 (F1 1.00).
   - A suggestion is shown a median **1.2 s** after the speaker stops (ASR finalisation included; AI time not included).
   - The rules were tuned on these same dialogs, so treat this as a regression check, not as accuracy on real calls.
 - **AI time.** `WB_EVAL_LLM=1 WB_EVAL_LLM_URL=… WB_EVAL_LLM_MODEL=…` adds the time to the first words of a real suggestion. See [eval/README.md](../eval/README.md) for the numbers measured on this machine.
-- **Try it without a call.** `node scripts/assistant-demo.js` starts the app on a throw-away folder with a briefing and plays a short interview through the recorder's events, with a built-in stand-in AI. Add `--llm http://127.0.0.1:11434/v1 --model <name>` to use a real one.
+- **Try it without a call.** `node scripts/assistant-demo.js` starts the app on a throw-away folder with a project briefing and plays a short client project review through the recorder's events, with a built-in stand-in AI. Add `--llm http://127.0.0.1:11434/v1 --model <name>` to use a real one.
 
 ## Limits
 

@@ -2,7 +2,7 @@
 // HTTP routes for briefings (src/knowledge/briefings.js): the user's own material the meeting assistant is grounded on.
 // Registered by http.js.
 
-const MAX_IMPORT = 20 * 1024 * 1024; // a resume or a job description, not a library
+const MAX_IMPORT = 20 * 1024 * 1024; // project notes or an agenda, not a library
 
 module.exports = function briefingRoutes(add, app, { HttpError, noteOr404, readBody }) {
   const store = () => app.briefings;
@@ -20,7 +20,7 @@ module.exports = function briefingRoutes(add, app, { HttpError, noteOr404, readB
   r('POST', '/api/briefings', async ({ body }) => { const { title, kind, text } = object(body); return store().create({ title, kind, text }); });
   r('POST', '/api/briefings/import', async ({ req, query }) => {
     const name = String(query.name || '').trim();
-    if (!name) throw new HttpError(400, 'name is required (the file name, e.g. ?name=resume.pdf)');
+    if (!name) throw new HttpError(400, 'name is required (the file name, e.g. ?name=project-notes.pdf)');
     const buf = await readBody(req, MAX_IMPORT);
     return store().importFile(name, buf);
   });

@@ -1,4 +1,4 @@
-{ "name": "pt-meeting", "mode": "meeting", "lines": [
+{ "name": "pt-meeting", "mode": "bullets", "lines": [
   { "t": 0, "dur": 3000, "s": "them", "text": "Bom dia, vamos rever o plano do trimestre." },
   { "t": 3500, "dur": 3000, "s": "them", "text": "O orçamento de marketing foi aprovado ontem." },
   { "t": 7000, "dur": 3000, "s": "them", "text": "Já temos os números de conversão de outubro?", "q": true },

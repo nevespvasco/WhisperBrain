@@ -19,12 +19,12 @@ function rig(t, opts = {}) {
 
 test('a question with a question mark is prepared after ~120 ms of quiet and shown soon after', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(100);
   assert.deepEqual(r.types(), [], 'not before the short pause');
   r.tick(30);
   assert.deepEqual(r.types(), ['speculate']);
-  assert.equal(r.seen[0].question, 'What is your notice period?');
+  assert.equal(r.seen[0].question, 'When can the next release go out?');
   r.tick(400);
   assert.deepEqual(r.types(), ['speculate', 'reveal']);
   assert.equal(r.seen[1].seq, r.seen[0].seq, 'the reveal is for the speculation that was prepared');
@@ -56,43 +56,43 @@ test('a sentence cut off mid-way waits 3.2 s for the rest, and the rest joins it
 
 test('the other side speaking again cancels a prepared answer before it is shown; the next question is new', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(130);
   const first = r.seen[0].seq;
-  r.them('and also your salary expectations', false);
+  r.them('and also the budget for it', false);
   assert.deepEqual(r.types(), ['speculate', 'cancel']);
   assert.equal(r.seen[1].seq, first);
   r.tick(5000);
   assert.deepEqual(r.types(), ['speculate', 'cancel'], 'nothing is shown while they are still talking');
-  r.them('and also your salary expectations?');
+  r.them('and also the budget for it?');
   r.tick(130);
   assert.equal(r.seen[2].type, 'speculate');
   assert.notEqual(r.seen[2].seq, first);
-  assert.match(r.seen[2].question, /notice period\? and also your salary/);
+  assert.match(r.seen[2].question, /release go out\? and also the budget/);
 });
 
 test('backchannels, fillers and the user\'s own answer heard back do not cancel or trigger anything', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(130);
   r.them('mm-hmm', false);
   r.them('ok');
   r.tick(400);
   assert.deepEqual(r.types(), ['speculate', 'reveal']);
-  r.eng.answered('My notice period is one month, and I can start in early January if needed.');
-  r.them('my notice period is one month and I can start in early January');
+  r.eng.answered('The next release can go out on the 12th, once the billing tests pass.');
+  r.them('the next release can go out on the 12th once the billing tests pass');
   r.tick(5000);
   assert.deepEqual(r.types(), ['speculate', 'reveal'], 'the echo of the answer is ignored');
 });
 
-test('statements do not trigger in meeting mode; prompts do in interview mode', (t) => {
+test('statements do not trigger in bullets mode; prompts do in spoken mode', (t) => {
   const r = rig(t);
   r.them('We shipped the release on Friday.');
-  r.them('Tell me about a time you disagreed with your manager.');
+  r.them('Tell me about the plan for the cut-over.');
   r.tick(5000);
-  assert.deepEqual(r.types(), [], 'meeting mode: only questions');
-  const r2 = rig(t, { mode: 'interview' });
-  r2.them('Tell me about a time you disagreed with your manager.');
+  assert.deepEqual(r.types(), [], 'bullets mode: only questions');
+  const r2 = rig(t, { mode: 'spoken' });
+  r2.them('Tell me about the plan for the cut-over.');
   r2.tick(610);
   assert.deepEqual(r2.types(), ['speculate']);
   assert.match(r2.seen[0].question, /^Tell me about/);
@@ -115,14 +115,14 @@ test('a statement before a question stays as its preamble, but only the last few
 
 test('the same question asked again within 20 s is not answered twice; after that it is', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(600);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(600);
   assert.deepEqual(r.types(), ['speculate', 'reveal', 'suppress']);
   assert.equal(r.seen[2].reason, 'duplicate');
   r.tick(20000);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(600);
   assert.deepEqual(r.types().slice(3), ['speculate', 'reveal']);
 });
@@ -136,7 +136,7 @@ test('"can you repeat that" asks for the last answer again', (t) => {
 
 test('answer now: shows a prepared answer at once, or prepares one from what was last said, even a duplicate or in manual mode', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(130);
   r.eng.answerNow();
   assert.deepEqual(r.types(), ['speculate', 'reveal']);
@@ -154,11 +154,11 @@ test('answer now: shows a prepared answer at once, or prepares one from what was
 
 test('another angle: the last question again with a new variation, shown at once', (t) => {
   const r = rig(t);
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   r.tick(600);
   r.eng.regenerate();
   assert.deepEqual(r.types(), ['speculate', 'reveal', 'speculate', 'reveal']);
-  assert.equal(r.seen[2].question, 'What is your notice period?');
+  assert.equal(r.seen[2].question, 'When can the next release go out?');
   assert.equal(r.seen[2].variation, 1);
   r.eng.regenerate();
   assert.equal(r.seen[4].variation, 2);
@@ -166,10 +166,10 @@ test('another angle: the last question again with a new variation, shown at once
 
 test('what the user says is kept (recent lines), and dismiss cancels a pending answer', (t) => {
   const r = rig(t);
-  r.me('I worked at Acme for five years.');
-  r.me('Before that I was at Initech.');
-  assert.deepEqual(r.eng.meSaid(), ['I worked at Acme for five years.', 'Before that I was at Initech.']);
-  r.them('Why did you leave Acme?');
+  r.me('We moved billing to the new cluster last week.');
+  r.me('Before that it ran on the old servers.');
+  assert.deepEqual(r.eng.meSaid(), ['We moved billing to the new cluster last week.', 'Before that it ran on the old servers.']);
+  r.them('Why did you move billing first?');
   r.tick(130);
   r.eng.dismiss();
   r.tick(1000);
@@ -180,13 +180,13 @@ test('what the user says is kept (recent lines), and dismiss cancels a pending a
 test('state tells the UI what is going on', (t) => {
   const r = rig(t);
   assert.equal(r.eng.state().phase, 'idle');
-  r.them('What is your notice period?');
+  r.them('When can the next release go out?');
   assert.equal(r.eng.state().phase, 'waiting');
   r.tick(130);
   assert.equal(r.eng.state().phase, 'preparing');
   r.tick(400);
   assert.equal(r.eng.state().phase, 'shown');
-  assert.equal(r.eng.state().question, 'What is your notice period?');
+  assert.equal(r.eng.state().question, 'When can the next release go out?');
   r.eng.reset();
   assert.equal(r.eng.state().phase, 'idle');
 });

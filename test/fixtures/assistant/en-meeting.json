@@ -1,4 +1,4 @@
-{ "name": "en-meeting", "mode": "meeting", "lines": [
+{ "name": "en-meeting", "mode": "bullets", "lines": [
   { "t": 0, "dur": 3000, "s": "them", "text": "Let's go through the release plan for next week." },
   { "t": 3500, "dur": 2500, "s": "them", "text": "The API freeze is on Wednesday." },
   { "t": 6500, "dur": 3000, "s": "them", "text": "Do we have the load test results from Monday?", "q": true },

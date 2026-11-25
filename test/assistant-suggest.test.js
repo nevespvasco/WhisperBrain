@@ -8,23 +8,23 @@ const { assistantMessages } = require('../src/llm/prompts');
 const { LlmClient } = require('../src/llm/client');
 const { startFakeLlm } = require('./fake-llm');
 
-const resume = { title: 'CV Ana', kind: 'resume', text: 'Ana Silva. Senior backend engineer.\n\nAcme (2019-2024): led the billing migration to Kubernetes, cut deploys from 60 to 10 minutes.\n\nInitech (2016-2019): Java, PostgreSQL, on-call lead.\n\nHobbies: climbing, chess.' };
+const project = { title: 'Acme platform', kind: 'project', text: 'Acme platform project. Lead: Ana Silva.\n\nPhase 1 (2025): the billing migration to Kubernetes cut deploys from 60 to 10 minutes.\n\nPhase 2 (2026): reporting jobs, Java and PostgreSQL, on-call rota.\n\nTeam day: climbing, chess.' };
 
 test('context: the question, the briefing excerpt that matters, what was just said, earlier answers and the user\'s own facts', () => {
   const c = buildContext({
     question: 'How did the Kubernetes migration go?',
-    briefings: [resume],
+    briefings: [project],
     tail: [{ speaker: 'them', text: 'Thanks for joining.' }, { speaker: 'me', text: 'Happy to be here.' }],
-    history: [{ question: 'Tell me about yourself', answer: 'I am a backend engineer.' }],
-    meSaid: ['I spent five years at Acme.', 'sounds good'],
+    history: [{ question: 'Tell me about the project', answer: 'It is on track.' }],
+    meSaid: ['We moved four services to Kubernetes in March.', 'sounds good'],
     glossary: [{ term: 'Kubernetes', definition: 'container orchestration' }, { term: 'Kafka', definition: 'event log' }],
     budget: 4000,
   });
   assert.match(c.text, /billing migration to Kubernetes/);
   assert.match(c.text, /Them: Thanks for joining\./);
   assert.match(c.text, /Me: Happy to be here\./);
-  assert.match(c.text, /Tell me about yourself/);
-  assert.match(c.text, /five years at Acme/, 'a fact the user said (number) is kept');
+  assert.match(c.text, /Tell me about the project/);
+  assert.match(c.text, /four services to Kubernetes in March/, 'a fact the user said (names, dates) is kept');
   assert.doesNotMatch(c.text, /sounds good/, 'small talk is not a fact');
   assert.match(c.text, /Kubernetes: container orchestration/, 'glossary terms that come up are explained');
   assert.doesNotMatch(c.text, /Kafka/, 'glossary terms that do not come up are left out');
@@ -35,7 +35,7 @@ test('context: when the budget is short, the user\'s facts go first, then older 
   const big = { title: 'notes', kind: 'notes', text: Array.from({ length: 80 }, (_, i) => `Paragraph ${i} about Kubernetes and billing systems with plenty of words in it.`).join('\n\n') };
   const tail = Array.from({ length: 12 }, (_, i) => ({ speaker: i % 2 ? 'me' : 'them', text: `Line ${i} of the conversation about the infrastructure plans for next quarter.` }));
   const history = [1, 2, 3].map((n) => ({ question: `Earlier question number ${n} about the platform?`, answer: `An earlier answer number ${n} with a few details about the platform work.` }));
-  const args = { question: 'Kubernetes?', briefings: [big], tail, history, meSaid: ['I have 3 years of Go.', 'I worked at Acme.', 'I live in Lisbon.'] };
+  const args = { question: 'Kubernetes?', briefings: [big], tail, history, meSaid: ['We have 3 services left.', 'Billing moved in March.', 'The team is in Lisbon.'] };
   const small = buildContext({ ...args, budget: 1500 });
   assert.ok(small.text.length <= 1500 + 200, `about the budget (${small.text.length})`);
   assert.deepEqual(small.sections, ['briefing', 'recent'], 'facts and earlier answers made room for the briefing');
@@ -72,8 +72,8 @@ test('splitter: numbered sentences as they stream; decimals, abbreviations and b
   assert.equal(t.open().text, 'Hello', 'a possible [GAP] is not shown half-written');
 });
 
-test('prompt: meeting mode asks for short bullets, interview mode for a speakable first-person answer; both are grounded and say [GAP]', () => {
-  const m = assistantMessages({ mode: 'meeting', question: 'When is the deadline?', context: 'ctx', language: 'pt-PT', words: 60 });
+test('prompt: bullets mode asks for short points, spoken mode for a first-person reply to say aloud; both are grounded and say [GAP]', () => {
+  const m = assistantMessages({ mode: 'bullets', question: 'When is the deadline?', context: 'ctx', language: 'pt-PT', words: 60 });
   assert.equal(m[0].role, 'system');
   assert.match(m[0].content, /bullet/i);
   assert.match(m[0].content, /\[GAP\]/);
@@ -81,7 +81,7 @@ test('prompt: meeting mode asks for short bullets, interview mode for a speakabl
   assert.match(m[0].content, /untrusted/i);
   assert.match(m[1].content, /<context>\nctx\n<\/context>/);
   assert.match(m[1].content, /When is the deadline\?/);
-  const i = assistantMessages({ mode: 'interview', question: 'Tell me about yourself', context: '', words: 100, variation: 2 });
+  const i = assistantMessages({ mode: 'spoken', question: 'Tell me about the migration plan', context: '', words: 100, variation: 2 });
   assert.match(i[0].content, /first person/i);
   assert.match(i[0].content, /100 words/);
   assert.match(i[0].content, /language of the question/i);
@@ -89,16 +89,16 @@ test('prompt: meeting mode asks for short bullets, interview mode for a speakabl
 });
 
 test('script: streams sentences from the AI, flags [GAP] lines, returns the clean text', async (t) => {
-  const fake = await startFakeLlm(() => 'I led the billing migration. [GAP] I would learn Rust quickly.');
+  const fake = await startFakeLlm(() => 'I led the billing migration. [GAP] Reporting could move in May.');
   t.after(() => fake.close());
   const llm = new LlmClient(() => ({ baseUrl: fake.url, model: 'fake-model', temperature: 0.2 }));
   const events = [];
   const r = await produceScript({ llm, messages: [{ role: 'user', content: 'x' }], onEvent: (e) => events.push(e) });
   const closed = events.filter((e) => e.type === 'sentence' && e.closed);
-  assert.deepEqual(closed.map((e) => e.text), ['I led the billing migration.', 'I would learn Rust quickly.']);
+  assert.deepEqual(closed.map((e) => e.text), ['I led the billing migration.', 'Reporting could move in May.']);
   assert.deepEqual(events.filter((e) => e.type === 'flag').map((e) => [e.index, e.kind]), [[1, 'gap']]);
   assert.ok(events.some((e) => e.type === 'sentence' && !e.closed), 'the sentence being written is shown as it grows');
-  assert.equal(r.text, 'I led the billing migration. I would learn Rust quickly.');
+  assert.equal(r.text, 'I led the billing migration. Reporting could move in May.');
   assert.equal(r.sentences.length, 2);
   assert.equal(fake.requests[0].max_tokens <= 600, true, 'a suggestion is short: the reply is capped');
 });

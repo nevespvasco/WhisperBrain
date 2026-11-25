@@ -1,0 +1,18 @@
+{ "name": "en-spoken", "mode": "spoken", "lines": [
+  { "t": 0, "dur": 2000, "s": "them", "text": "Hi, thanks for joining us today." },
+  { "t": 2500, "dur": 1500, "s": "me", "text": "Thanks for having me." },
+  { "t": 4500, "dur": 3000, "s": "them", "text": "So, to start, tell me a bit about where the migration stands.", "q": true },
+  { "t": 8500, "dur": 9000, "s": "me", "text": "We have moved four of the six services to the new cluster, and billing goes next week." },
+  { "t": 18000, "dur": 600, "s": "them", "text": "mm-hmm" },
+  { "t": 19000, "dur": 600, "s": "them", "text": "Okay." },
+  { "t": 20000, "dur": 3500, "s": "them", "text": "What was the hardest problem during the cut-over?", "q": true },
+  { "t": 24500, "dur": 8000, "s": "them", "text": "We have moved four of the six services to the new cluster and billing goes next week", "echo": true },
+  { "t": 33000, "dur": 2500, "s": "them", "text": "And how did you, um" },
+  { "t": 37000, "dur": 2500, "s": "them", "text": "make sure it would not happen again?", "q": true, "joins": true },
+  { "t": 44000, "dur": 2000, "s": "them", "text": "Right, right." },
+  { "t": 47000, "dur": 3000, "s": "them", "text": "Our reporting jobs still run on the old servers, mostly at night." },
+  { "t": 51000, "dur": 2500, "s": "them", "text": "Walk me through how you would move the reporting jobs.", "q": true },
+  { "t": 60000, "dur": 2000, "s": "them", "text": "Sorry, could you say that again?", "repeat": true },
+  { "t": 66000, "dur": 2500, "s": "them", "text": "When can the next release go out?", "q": true },
+  { "t": 70000, "dur": 1500, "s": "them", "text": "Great, that is all from my side." }
+] }

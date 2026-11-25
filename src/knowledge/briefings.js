@@ -1,5 +1,5 @@
 'use strict';
-// Briefings: the user's own material (resume, job description, company, project, agenda, notes) that the meeting
+// Briefings: the user's own material (project notes, an agenda, client or company notes) that the meeting
 // assistant grounds its suggestions on. Each keeps a short list of terms, extracted offline, that also bias recognition.
 const { newId } = require('../core/ids');
 const { tx } = require('../core/db');
@@ -12,7 +12,7 @@ const kp = require('./keyphrases');
 const MAX_TERMS = 40;
 const MAX_TERM_CHARS = 40;
 const MAX_TEXT = 200000; // characters; longer material is cut
-const KINDS = ['resume', 'job', 'company', 'project', 'agenda', 'notes'];
+const KINDS = ['project', 'agenda', 'client', 'company', 'notes'];
 
 const invalid = (msg) => Object.assign(new Error(msg), { status: 400 });
 const notFound = (msg) => Object.assign(new Error(msg), { status: 404 });
@@ -41,20 +41,6 @@ function termsOf(text) {
     .filter(([, form]) => form).sort((a, b) => b[2] - a[2]);
   for (const [key, form] of named) add(form, key);
   return out;
-}
-
-// A CV by its name ("Vasco_CV_2026", "my-resume", "curriculum") or its text: "curriculum vitae" near the top, a line that
-// is just "CV" / "Résumé" / "Currículo", or both an experience and an education section. English and Portuguese.
-// (A job ad saying "send your CV" is not one.)
-const RESUME_WORD = /(?:^|[^\p{L}])(?:cv|r[eé]sum[eé]|curr[ií]cul(?:um|o)(?:\s+vitae)?)(?=$|[^\p{L}])/iu;
-const RESUME_LINE = /^(?:#{1,6}\s*)?(?:cv|r[eé]sum[eé]|curr[ií]cul(?:um|o)(?:\s+vitae)?)\s*:?\s*$/imu;
-const heading = (text, words) => new RegExp(`^(?:#{1,6}\\s*)?(?:${words})\\s*:?\\s*$`, 'imu').test(text);
-function looksLikeResume(title, text) {
-  if (RESUME_WORD.test(title.replace(/[_.-]+/g, ' '))) return true;
-  const head = text.slice(0, 600);
-  if (/curr[ií]cul(?:um|o) vitae/i.test(head) || RESUME_LINE.test(head)) return true;
-  return heading(text, '(?:work |professional )?experience|experiência(?: profissional)?')
-    && heading(text, 'education|educação|formação(?: académica| acadêmica)?');
 }
 
 const HTML_EXT = new Set(['html', 'htm', 'xhtml']);
@@ -131,7 +117,7 @@ class Briefings {
     try { text = await textOf(file, buf); } catch (e) { throw e.code === 'EIMPORT' ? invalid(e.message) : e; }
     if (!text) throw invalid(`${file || 'The file'} has no text in it${/\.pdf$/i.test(file) ? ' (a scanned PDF needs OCR first)' : ''}.`);
     const title = file.replace(/\.[^.]+$/, '') || file;
-    return this.create({ title, kind: looksLikeResume(title, text) ? 'resume' : 'notes', text });
+    return this.create({ title, kind: 'notes', text });
   }
 
   // Its links to notes go with it (ON DELETE CASCADE).

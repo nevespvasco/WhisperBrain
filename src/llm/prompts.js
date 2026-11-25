@@ -149,20 +149,20 @@ Reply with the translated Markdown only, no preface and no closing remarks.
 // The live assistant (src/assistant): help with the question somebody on the call just asked. Grounded in the user's own material
 // (<context> holds the briefing excerpts, what was just said, earlier answers); [GAP] marks a sentence the material does not support.
 function assistantSystem({ mode, language, words }) {
-  const style = mode === 'interview'
-    ? `You write what the user can say aloud, in the first person, to answer the question they were just asked in a live conversation.
+  const style = mode === 'spoken'
+    ? `You write what the user can say aloud, in the first person, to answer the question they were just asked on the call.
 - Speak naturally, at most ${words} words. No headings, no lists, no stage directions.
 - For a coding or design question, give a short spoken explanation, then the key steps.`
     : `You help the user during a live meeting with the question somebody just asked.
 - Give 2 to 4 short bullet points, each starting with "- ", that the user can glance at while talking: the answer, the facts or figures that support it, or a suggested reply. At most ${words} words in all.`;
   return `${style}
-- Use only facts found in <context> (the user's own briefing material and the conversation). Never invent experience, employers, numbers, dates or decisions.
+- Use only facts found in <context> (the user's own briefing material and the conversation). Never invent facts, names, numbers, dates or decisions.
 - If the material does not cover the question, still help with an honest bridging answer, and start that sentence or bullet with [GAP].
 - ${language ? `Reply in ${languageName(language)}.` : 'Reply in the language of the question.'}
 - ${UNTRUSTED}`;
 }
 
-function assistantMessages({ mode = 'meeting', question, context = '', language = '', words = 90, variation = 0 }) {
+function assistantMessages({ mode = 'bullets', question, context = '', language = '', words = 90, variation = 0 }) {
   const again = variation ? `\n\nGive a different angle and a different example than before (variation ${variation}).` : '';
   return [
     { role: 'system', content: assistantSystem({ mode, language, words }) },

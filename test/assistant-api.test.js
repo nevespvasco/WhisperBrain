@@ -33,8 +33,10 @@ test('the assistant settings are part of the settings API, off by default', asyn
   const { json } = await boot(t);
   const s = await json('GET', '/api/settings');
   assert.equal(s.assistant.enabled, false);
-  const after = await json('PUT', '/api/settings', { assistant: { enabled: true, mode: 'interview' } });
-  assert.equal(after.assistant.mode, 'interview');
+  assert.equal(s.assistant.mode, 'bullets');
+  const after = await json('PUT', '/api/settings', { assistant: { enabled: true, mode: 'spoken' } });
+  assert.equal(after.assistant.mode, 'spoken');
+  assert.equal((await json('PUT', '/api/settings', { assistant: { mode: 'interview' } })).assistant.mode, 'spoken', 'an older client: the old name still works');
   await assert.rejects(json('PUT', '/api/settings', { assistant: { mode: 'stealth' } }), { status: 400 });
 });
 

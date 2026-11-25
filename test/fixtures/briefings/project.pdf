@@ -10,15 +10,15 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
 endobj
 4 0 obj
-<< /Length 201 >>
+<< /Length 205 >>
 stream
 BT
 /F1 12 Tf
 72 720 Td
 14 TL
-(Vasco Neves - Curriculum Vitae) Tj
-T* (Backend engineer in Lisboa, café regular.) Tj
-T* (Experience) Tj
+(Payments gateway - project notes) Tj
+T* (Kickoff in Lisboa, at the café by the office.) Tj
+T* (Platform) Tj
 T* (Kubernetes operators written in Go. Kubernetes upgrades.) Tj
 ET
 endstream
@@ -27,7 +27,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
 endobj
 6 0 obj
-<< /Length 197 >>
+<< /Length 201 >>
 stream
 BT
 /F1 12 Tf
@@ -35,8 +35,8 @@ BT
 14 TL
 (Built the payments gateway with PostgreSQL and Kafka.) Tj
 T* (Kafka streams for the payments gateway.) Tj
-T* (Education) Tj
-T* (IST Lisbon, MSc Computer Science) Tj
+T* (Next steps) Tj
+T* (Load tests before the March release) Tj
 ET
 endstream
 endobj
@@ -50,11 +50,11 @@ xref
 0000000064 00000 n 
 0000000127 00000 n 
 0000000224 00000 n 
-0000000476 00000 n 
-0000000602 00000 n 
-0000000850 00000 n 
+0000000480 00000 n 
+0000000606 00000 n 
+0000000858 00000 n 
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-976
+984
 %%EOF

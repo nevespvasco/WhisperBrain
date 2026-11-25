@@ -224,7 +224,7 @@ have not been measured yet; fill this table from a few recordings per platform:
 
 ## Meeting assistant (2026-11-25)
 
-`node eval/assistant-replay.js` replays the timed dialogs in `test/fixtures/assistant/` (en/pt-PT, meeting/interview: 18 questions, fillers, backchannels, cut-off sentences, a repeat request, duplicates, the user's answer heard back on the call channel) through `src/assistant/turns.js` on a simulated clock. A line's final text arrives 700 ms after the speaker stops, as in the app (VAD 0.6 s + decoding).
+`node eval/assistant-replay.js` replays the timed dialogs in `test/fixtures/assistant/` (en/pt-PT, a team meeting in the bullet-points style and a client project review in the spoken-reply style: 18 questions, fillers, backchannels, cut-off sentences, a repeat request, duplicates, the user's answer heard back on the call channel) through `src/assistant/turns.js` on a simulated clock. A line's final text arrives 700 ms after the speaker stops, as in the app (VAD 0.6 s + decoding).
 
 | | precision | recall | F1 | median speech end → suggestion shown |
 |---|---|---|---|---|

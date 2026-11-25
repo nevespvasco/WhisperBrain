@@ -236,7 +236,7 @@ test('detector: appsFor gives the applications behind the calls the person chose
 
 test('detector: the calendar event on the detected platform wins over the closest one', async () => {
   const t = 1_800_000_000_000;
-  const near = { uid: 'near', summary: 'Interview', start: t, url: 'https://meet.google.com/aaa-bbbb-ccc' };
+  const near = { uid: 'near', summary: 'Design review', start: t, url: 'https://meet.google.com/aaa-bbbb-ccc' };
   const zoom = { uid: 'z', summary: 'Customer call', start: t - 600000, url: 'https://acme.zoom.us/j/1' };
   const a = detRig({ apps: [{ name: 'Zoom', appId: 'zoom', weak: false }], cands: [near, zoom] });
   await a.ticks(2);

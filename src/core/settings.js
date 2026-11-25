@@ -44,7 +44,7 @@ const DEFAULTS = {
   // The live meeting assistant (src/assistant): suggestions for questions asked on the call, grounded in the user's briefings.
   assistant: {
     enabled: false,             // off until switched on (here for every meeting, or per meeting from the recording)
-    mode: 'meeting',            // meeting (short bullet points) | interview (a first-person answer to say aloud)
+    mode: 'bullets',            // bullets (short points to glance at) | spoken (a first-person reply to say aloud)
     trigger: 'auto',            // auto (a question from the other side prepares help by itself) | manual (only the "answer now" shortcut or button)
     revealMs: 1500,             // how long the other side must stay quiet before a prepared suggestion is shown (a question with "?" is shown sooner)
     words: 90,                  // length of a suggestion
@@ -134,19 +134,23 @@ async function mapSecretsAsync(key, value, f) {
   return out;
 }
 
+// assistant.mode used to be 'meeting' | 'interview': a value an older version stored (or an older client sends) still reads
+const LEGACY_ASSISTANT_MODES = { meeting: 'bullets', interview: 'spoken' };
+
 function validate(key, value) {
   if (!(key in DEFAULTS)) throw new Error(`unknown setting: ${key}`);
   const def = DEFAULTS[key];
   if (OBJECT_KEYS.has(key)) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${key} must be an object`);
     const merged = { ...def, ...value };
+    if (key === 'assistant' && LEGACY_ASSISTANT_MODES[merged.mode]) merged.mode = LEGACY_ASSISTANT_MODES[merged.mode];   // a value stored by an older version
     for (const k of Object.keys(merged)) if (!(k in def)) delete merged[k];
     for (const k of Object.keys(def)) {
       if (typeof merged[k] !== typeof def[k]) throw new Error(`${key}.${k} must be a ${typeof def[k]}`);
     }
     if (key === 'meet' && !(Number.isInteger(merged.port) && merged.port >= 1024 && merged.port <= 65000)) throw new Error('meet.port must be a port from 1024 to 65000');
     if (key === 'assistant') {
-      if (!['meeting', 'interview'].includes(merged.mode)) throw new Error('assistant.mode must be meeting or interview');
+      if (!['bullets', 'spoken'].includes(merged.mode)) throw new Error('assistant.mode must be bullets or spoken');
       if (!['auto', 'manual'].includes(merged.trigger)) throw new Error('assistant.trigger must be auto or manual');
       if (!(Number.isInteger(merged.revealMs) && merged.revealMs >= 0 && merged.revealMs <= 10000)) throw new Error('assistant.revealMs must be 0 to 10000 ms');
       if (!(Number.isInteger(merged.words) && merged.words >= 20 && merged.words <= 300)) throw new Error('assistant.words must be 20 to 300');
@@ -380,4 +384,4 @@ class Settings {
   }
 }
 
-module.exports = { Settings, validateSetting: validate, DEFAULTS, MASK, defaultAsrThreads };
+module.exports = { Settings, validateSetting: validate, DEFAULTS, MASK, defaultAsrThreads, LEGACY_ASSISTANT_MODES };

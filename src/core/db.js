@@ -303,7 +303,7 @@ const MIGRATIONS = [
     PRIMARY KEY (note_id, lang, field)
   );
   `,
-  // v13: meeting assistant. Briefings are the user's own material (resume, job description, company, project, agenda, notes)
+  // v13: meeting assistant. Briefings are the user's own material (project notes, an agenda, client or company notes)
   // that suggestions are grounded on; terms is a JSON array of offline keyphrases (also ASR hotwords). note_briefings attaches
   // them to a meeting. assistant_events is what the assistant said during a meeting. Links and events go with their note.
   `
@@ -311,6 +311,10 @@ const MIGRATIONS = [
   CREATE TABLE note_briefings (note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, briefing_id TEXT NOT NULL REFERENCES briefings(id) ON DELETE CASCADE, PRIMARY KEY (note_id, briefing_id));
   CREATE TABLE assistant_events (id INTEGER PRIMARY KEY AUTOINCREMENT, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, kind TEXT NOT NULL, question TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', meta TEXT, created_at INTEGER NOT NULL);
   CREATE INDEX assistant_events_note ON assistant_events(note_id, created_at);
+  `,
+  // v14: the briefing kinds 'resume' and 'job' are gone (the assistant is for meetings); such briefings become plain notes.
+  `
+  UPDATE briefings SET kind = 'notes' WHERE kind IN ('resume', 'job');
   `,
 ];
 

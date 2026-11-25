@@ -1,5 +1,5 @@
 'use strict';
-// Text of a PDF, for briefings (a resume, a job description). Text only: no images, no OCR, at most MAX_PAGES pages.
+// Text of a PDF, for briefings (project notes, an agenda). Text only: no images, no OCR, at most MAX_PAGES pages.
 // unpdf (MIT) ships a dependency-free build of Mozilla's pdf.js; it is an ES module, so it is loaded on first use.
 const { userError } = require('./parsers');
 

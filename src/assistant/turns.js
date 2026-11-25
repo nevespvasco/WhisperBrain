@@ -20,9 +20,9 @@ const ECHO = 0.6;
 const endsWithQuestionMark = (s) => /[?？؟]\s*$/.test(s);
 
 class TurnEngine extends EventEmitter {
-  // mode: 'meeting' (questions trigger) | 'interview' (questions and "tell me about…" prompts trigger)
+  // mode: 'bullets' (questions trigger) | 'spoken' (questions and "tell me about…" / "walk me through…" prompts trigger)
   // trigger: 'auto' | 'manual' (only answerNow / regenerate)
-  constructor({ mode = 'meeting', trigger = 'auto', revealMs = 1500, quickRevealMs = 400, dedupMs = 20000, tiers = TIERS } = {}) {
+  constructor({ mode = 'bullets', trigger = 'auto', revealMs = 1500, quickRevealMs = 400, dedupMs = 20000, tiers = TIERS } = {}) {
     super();
     Object.assign(this, { mode, trigger, revealMs, quickRevealMs, dedupMs, tiers: { ...TIERS, ...tiers } });
     this.seq = 0;
@@ -92,7 +92,7 @@ class TurnEngine extends EventEmitter {
     const question = this.lines.join(' ');
     if (isRepeatRequest(last)) { this.lines = []; this.phase = 'idle'; this.emit('repeat', { question: this.lastQuestion }); return; }
     const kind = questionKind(last);
-    const wanted = this.trigger === 'auto' && (kind === 'question' || (kind === 'prompt' && this.mode === 'interview'));
+    const wanted = this.trigger === 'auto' && (kind === 'question' || (kind === 'prompt' && this.mode === 'spoken'));
     if (!wanted) { this.phase = 'idle'; return; }
     const now = Date.now();
     this.asked = this.asked.filter((a) => now - a.at < this.dedupMs);

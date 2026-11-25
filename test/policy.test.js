@@ -40,6 +40,17 @@ test('loadPolicy: no file is no policy; a broken file is reported and locks noth
   odd.done();
 });
 
+test('a policy that locks the assistant style by its old name ("interview") locks the new one ("spoken")', () => {
+  const p = policyFile({ lock: { 'assistant.mode': 'interview' } });
+  const pol = loadPolicy({ files: [p.file] });
+  assert.deepEqual(pol.locked, { 'assistant.mode': 'spoken' });
+  const s = new Settings(open(':memory:'), null, null, pol);
+  assert.equal(s.get('assistant').mode, 'spoken');
+  s.update({ assistant: { words: 50 } });                                         // the rest of the group can still change
+  assert.throws(() => s.update({ assistant: { mode: 'bullets' } }), /mode is managed by your organisation/);
+  p.done();
+});
+
 test('a locked setting has the policy\'s value whatever was stored, and refuses to be changed', () => {
   const p = policyFile({ lock: { 'meet.learnVoices': false, voiceprints: false, retentionDays: 90 } });
   const db = open(':memory:');

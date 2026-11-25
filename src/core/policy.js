@@ -43,7 +43,7 @@ function loadPolicy({ files = policyFiles(), read = (f) => fs.readFileSync(f, 'u
       if (d === undefined) { out.problems.push(`${file}: "${key}" is not a setting`); continue; }
       if (typeof d !== typeof value || value === null || Array.isArray(d) !== Array.isArray(value) || (typeof d === 'object' && !Array.isArray(d))) { out.problems.push(`${file}: "${key}" must be a ${Array.isArray(d) ? 'list' : typeof d === 'object' ? 'single value of a setting, not a whole group' : typeof d}`); continue; }
       try { checkValue(key, value); } catch (e) { out.problems.push(`${file}: "${key}": ${e.message}`); continue; }   // the same rules as for a person's own change
-      out.locked[key] = value;
+      out.locked[key] = key === 'assistant.mode' ? require('./settings').LEGACY_ASSISTANT_MODES[value] || value : value;   // an older style name
     }
     if (json?.requireLocalLlm !== undefined && typeof json.requireLocalLlm !== 'boolean') out.problems.push(`${file}: "requireLocalLlm" must be true or false`);
     out.requireLocalLlm = json?.requireLocalLlm === true;
