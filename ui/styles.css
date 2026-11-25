@@ -379,7 +379,8 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .timeline-legend { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
 .segs { display: grid; gap: 2px; }
 .segs-wrap { position: relative; }
-.segs.boxed { height: clamp(260px, calc(100vh - 440px), 680px); overflow-y: auto; align-content: start; overscroll-behavior: contain; padding-right: 4px; }
+/* at the end of a box the wheel goes on to the page (the page only scrolls when the window is narrow and the cards are stacked below) */
+.segs.boxed { height: clamp(260px, calc(100vh - 440px), 680px); overflow-y: auto; align-content: start; overscroll-behavior: auto; padding-right: 4px; }
 .jump-latest { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 5; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 36px; min-width: 36px; padding: 0 10px; border-radius: 999px; border: 0; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; box-shadow: 0 6px 20px rgba(20, 14, 50, .35), 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent); animation: jump-in .16s ease-out; }
 .jump-latest[hidden] { display: none; }
 .jump-latest:hover { filter: brightness(1.08); }
@@ -428,7 +429,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 
 .chat { display: grid; gap: 12px; }
 .chat-wrap { position: relative; }
-.chat.boxed { height: clamp(280px, calc(100vh - 400px), 720px); overflow-y: auto; align-content: start; overscroll-behavior: contain; padding: 2px 6px 2px 2px; outline: none; }
+.chat.boxed { height: clamp(280px, calc(100vh - 400px), 720px); overflow-y: auto; align-content: start; overscroll-behavior: auto; padding: 2px 6px 2px 2px; outline: none; }
 .chat-empty { display: grid; justify-items: center; align-content: center; gap: 12px; text-align: center; min-height: 100%; padding: 20px; }
 .chat-empty .ic-wrap { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; background: var(--accent-softer); color: var(--accent); }
 .chat-empty .chips { justify-content: center; max-width: 620px; }

@@ -273,7 +273,7 @@ function transcriptTab(body) {
   // drawn again (a speaker renamed, the voices relabelled after Stop): stay where the reader was, unless following the newest line
   const prev = $('#segs');
   N.restoreTop = !prev ? null : N.follow ? 'end' : prev.scrollTop;
-  body.innerHTML = `<div class="tb">${preflightOn(N.note, N.segs) ? '' : recControls()}
+  const html = `<div class="tb">${preflightOn(N.note, N.segs) ? '' : recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
       ${trControls()}
       <span class="spacer"></span>
@@ -283,10 +283,24 @@ function transcriptTab(body) {
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
     ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : preflightOn(N.note, N.segs) ? preflightHtml(N.note) : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
+  if (prev && $('.segs-wrap', body)?.contains(prev)) { patchTranscript(body, html); } else body.innerHTML = html;
   if (N.trq) filterTranscript();
   if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); N.restoreTop = null; setTimeout(() => centreLine(el), 60); } N.seg = null; }
   wireLiveBox(N.restoreTop !== null);
   if (recHere() && N.restoreTop === null) requestAnimationFrame(() => N.fol?.end());
+}
+// Drawn again while the reader may be scrolling the box (a voice renamed during a recording): everything around the box is replaced
+// but the box itself stays the same element, so its scroll position, its wheel momentum and its listeners all survive. Replacing it
+// cancelled the scroll in progress and put it back where it had been, which read as "the transcript will not scroll".
+function patchTranscript(body, html) {
+  const tmp = document.createElement('div');
+  tmp.innerHTML = html;
+  const wrap = $('.segs-wrap', body), next = $('.segs-wrap', tmp);
+  const box = $('#segs', wrap), nbox = $('#segs', next);
+  while (body.firstChild && body.firstChild !== wrap) body.removeChild(body.firstChild);
+  while (tmp.firstChild && tmp.firstChild !== next) body.insertBefore(tmp.firstChild, wrap);
+  box.className = nbox.className;
+  if (box.innerHTML !== nbox.innerHTML) box.innerHTML = nbox.innerHTML;
 }
 // Scroll the transcript box (never the page) so a line sits in its middle
 function centreLine(el) { const box = $('#segs'); if (box) box.scrollTop = el.offsetTop - (box.clientHeight - el.offsetHeight) / 2; }
@@ -376,6 +390,7 @@ function fitLive() {
   const grid = $('.note-grid'), sideBySide = !!grid && getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length > 1;
   main.classList.toggle('fit', fit && sideBySide);   // stacked (narrow window): the side cards come below, so the page must scroll to reach them
   if (box) box.style.height = '';
+  const asideTop = aside ? aside.scrollTop : 0;   // measuring below without the cap would clamp the column back to its top
   if (aside) aside.style.removeProperty('--aside-max');
   if (!fit) return;
   if (sideBySide) main.scrollTop = 0;
@@ -385,8 +400,9 @@ function fitLive() {
   const below = box.id === 'chatlog' ? [...wrap.parentElement.children].filter((el) => el !== wrap && top(el) > top(wrap)).reduce((h, el) => h + el.offsetHeight + (parseFloat(getComputedStyle(el).marginTop) || 0), 0) : 0;
   box.style.height = `${Math.max(box.id === 'chatlog' ? 220 : 140, main.clientHeight - top(box) - below - (S.rec.active ? BAR_CLEARANCE : EDGE_CLEARANCE))}px`;
   if (aside && sideBySide) aside.style.setProperty('--aside-max', `${Math.max(200, main.clientHeight - top(aside) - 40)}px`);
+  if (aside && asideTop && aside.scrollTop !== asideTop) aside.scrollTop = asideTop;
   if (box.id !== 'segs') { box.follow?.update(); return; }
-  if (N.restoreTop != null) { box.scrollTop = N.restoreTop === 'end' ? box.scrollHeight : N.restoreTop; N.restoreTop = null; }
+  if (N.restoreTop != null) { const to = N.restoreTop === 'end' ? box.scrollHeight : N.restoreTop; if (Math.abs(box.scrollTop - to) > 1) box.scrollTop = to; N.restoreTop = null; }
   N.fol?.update();
 }
 // restoring: the box was drawn again where the reader had scrolled to, so whether it follows the newest line is kept as it was
@@ -394,7 +410,7 @@ function wireLiveBox(restoring = false) {
   const box = $('#segs');
   N.fol = null;
   if (!box) return;
-  N.fol = follow(box, $('#jump-latest'), { onChange: (v) => { N.follow = v; } });
+  N.fol = box._fol || (box._fol = follow(box, $('#jump-latest'), { onChange: (v) => { N.follow = v; } }));   // a kept box keeps its follower
   N.fol.set(restoring ? !!N.follow : box.classList.contains('live'));
   N.follow = N.fol.following;
 }
@@ -462,6 +478,7 @@ const linkedPanel = () => `<section class="panel linked"><div class="panel-head"
 function renderAside() {
   const box = $('#aside');
   if (!box) return;
+  const keepTop = box.scrollTop;   // redrawn while the reader is part-way down the column: stay there
   const sp = N.analytics.speakers;
   const attendees = N.note.attendees || [];
   // How many other people are on the call: the speaker pass at Stop splits the call audio into exactly that many voices.
@@ -485,6 +502,7 @@ function renderAside() {
     ${linkedPanel()}
     ${N.related.length ? `<section class="panel"><div class="panel-head"><h3>${icon('layers')} ${t('Related meetings')}</h3></div><div class="list">${N.related.map((r) => meetingRow(r, { snippet: esc(r.reasons.join(' · ')) })).join('')}</div></section>` : ''}`;
   box.prepend(assistantSlot(N.id));   // the same node every time: a suggestion being written survives the redraw
+  if (box.scrollTop !== keepTop) box.scrollTop = keepTop;
   fitLive();
 }
 
