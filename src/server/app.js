@@ -163,11 +163,22 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings, translator }, id, opts),
     // What this computer still needs before recording works as it should (src/platform/setup.js); `permissions` comes from the host app
     async setup() {
+      const probeLlm = async () => {
+        const cfg = settings.get('llm');
+        const out = { baseUrl: cfg.baseUrl, model: cfg.model, reachable: false, models: [] };
+        if (!cfg.baseUrl) return out;
+        let timer;
+        try {
+          out.models = await Promise.race([llm.listModels(), new Promise((_, no) => { timer = setTimeout(() => no(new Error('timeout')), 2500); })]);
+          out.reachable = true;
+        } catch { /* nothing answers there */ } finally { clearTimeout(timer); }
+        return out;
+      };
       const [caps, perms] = await Promise.all([plat.capabilities(), Promise.resolve().then(() => permissions()).catch(() => ({}))]);
       return buildSetup({
         platform: plat.id, caps, perms, has: (cmd) => which(cmd, process.platform), osRelease: os.release(),
         models: { speech: !!models.resolve(settings.get('asrModel')), vad: models.vadInstalled(), speaker: models.speakerInstalled() && models.segmentationInstalled() },
-        llmConfigured: !!settings.get('llm').baseUrl,
+        llm: await probeLlm(),
       });
     },
     async state() {

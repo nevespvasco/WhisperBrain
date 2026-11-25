@@ -4,6 +4,7 @@
 // across the side column's redraws (note.js puts the same node back), so a suggestion being written is never lost.
 import { api, t, esc, icon, fail, done, switchEl, pickFrom } from '../lib.js';
 import { stream } from '../api.js';
+import { openSetup } from './setup.js';
 
 const panels = new Map();   // noteId -> panel state (one live panel per meeting page)
 
@@ -88,7 +89,7 @@ function cardHtml(c) {
     ${prose.length || (open && !bullets.length) ? `<p class="as-text">${prose.map(sentence).join(' ')} ${bullets.length ? '' : open}</p>` : ''}
     ${bullets.length ? `<ul class="as-list">${bullets.map(sentence).join('')}${open ? `<li class="as-s open">${esc(c.open)}</li>` : ''}</ul>` : ''}
     ${!c.done && !c.error && !lines.length && !c.open ? `<div class="xsmall muted">${t('Writing a suggestion…')}</div>` : ''}
-    ${c.error ? `<div class="xsmall danger">${esc(c.error)}</div>` : ''}
+    ${c.error ? `<div class="xsmall danger">${esc(c.error)}${/reach the LLM server|no models/i.test(c.error) ? ` <a href="#/settings/ai" data-setup-open>${t('Open Setup check')}</a>` : ''}</div>` : ''}
     ${c.done && c.text ? `<div class="row as-card-foot"><button class="btn xs ghost" data-as-copy="${c.key}">${icon('copy', 'sm')} ${t('Copy')}</button>${c.gaps ? `<span class="xsmall muted">${t('Underlined: not in your briefings')}</span>` : ''}</div>` : ''}
   </div>`;
 }
@@ -137,6 +138,7 @@ function drawHistory(p) {
 }
 
 async function onClick(p, e) {
+  if (e.target.closest('[data-setup-open]')) { e.preventDefault(); openSetup(); return; }
   const b = e.target.closest('button');
   if (!b) return;
   try {

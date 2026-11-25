@@ -8,12 +8,13 @@ const { createApp } = require('../src/server/app');
 const { createServer } = require('../src/server/http');
 const { tmpDir, ROOT } = require('./helpers');
 
+const UP = { baseUrl: 'http://127.0.0.1:11434/v1', model: '', reachable: true, models: ['llama3.2'] };
 const everything = { speech: true, vad: true, speaker: true };
 const hasOnly = (...cmds) => async (c) => cmds.includes(c);
 const byId = (r, id) => r.items.find((i) => i.id === id);
 
 test('linux without PipeWire: blocked, and the install commands are listed', async () => {
-  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: everything, llmConfigured: true });
+  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: everything, llm: UP });
   assert.equal(r.ready, false);
   assert.equal(byId(r, 'pipewire').status, 'missing');
   assert.equal(byId(r, 'pipewire').level, 'required');
@@ -22,14 +23,14 @@ test('linux without PipeWire: blocked, and the install commands are listed', asy
 });
 
 test('linux with everything: ready, nothing needs attention', async () => {
-  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11', paste: true, echoCancel: { available: true } }, has: hasOnly('pw-record', 'pw-dump', 'ffmpeg', 'xclip', 'xprop', 'wmctrl'), models: everything, llmConfigured: true });
+  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11', paste: true, echoCancel: { available: true } }, has: hasOnly('pw-record', 'pw-dump', 'ffmpeg', 'xclip', 'xprop', 'wmctrl'), models: everything, llm: UP });
   assert.equal(r.ready, true);
   assert.equal(r.attention, 0);
   assert.ok(r.items.every((i) => i.status === 'ok'));
 });
 
 test('linux on Wayland asks for wl-clipboard and wtype, not xclip', async () => {
-  const r = await buildSetup({ platform: 'linux', caps: { session: 'wayland' }, has: hasOnly('pw-record', 'pw-dump'), models: everything, llmConfigured: true });
+  const r = await buildSetup({ platform: 'linux', caps: { session: 'wayland' }, has: hasOnly('pw-record', 'pw-dump'), models: everything, llm: UP });
   assert.equal(byId(r, 'paste').status, 'missing');
   assert.ok(byId(r, 'paste').fix.commands.every(([, c]) => /wl-clipboard/.test(c)));
   assert.equal(byId(r, 'windows'), undefined);
@@ -37,14 +38,14 @@ test('linux on Wayland asks for wl-clipboard and wtype, not xclip', async () => 
 
 test('missing speech model blocks every system', async () => {
   for (const platform of ['linux', 'darwin', 'win32']) {
-    const r = await buildSetup({ platform, caps: { session: 'x11' }, has: hasOnly('pw-record', 'pw-dump'), perms: { microphone: 'granted', screen: 'granted' }, models: { speech: false, vad: true, speaker: true }, llmConfigured: true });
+    const r = await buildSetup({ platform, caps: { session: 'x11' }, has: hasOnly('pw-record', 'pw-dump'), perms: { microphone: 'granted', screen: 'granted' }, models: { speech: false, vad: true, speaker: true }, llm: UP });
     assert.equal(r.ready, false, platform);
     assert.equal(byId(r, 'speech-model').fix.settings, 'audio');
   }
 });
 
 test('macOS lists the permissions with what the system reported, and checks the version', async () => {
-  const r = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'denied', screen: 'not-determined', accessibility: false }, models: everything, llmConfigured: true, osRelease: '21.6.0' });
+  const r = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'denied', screen: 'not-determined', accessibility: false }, models: everything, llm: UP, osRelease: '21.6.0' });
   assert.equal(byId(r, 'macos-version').status, 'missing');
   assert.equal(byId(r, 'permission-mic').status, 'missing');
   assert.match(byId(r, 'permission-mic').fix.text, /Privacy & Security → Microphone/);
@@ -52,25 +53,25 @@ test('macOS lists the permissions with what the system reported, and checks the 
   assert.equal(byId(r, 'permission-accessibility').status, 'missing');
   assert.equal(byId(r, 'pipewire'), undefined);
   assert.ok(byId(r, 'ffmpeg').fix.commands[0][1].startsWith('brew '));
-  const ok = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'granted', screen: 'granted', accessibility: true }, models: everything, llmConfigured: true, osRelease: '24.1.0' });
+  const ok = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'granted', screen: 'granted', accessibility: true }, models: everything, llm: UP, osRelease: '24.1.0' });
   assert.equal(ok.ready, true);
 });
 
 test('a permission macOS has not asked about yet does not block', async () => {
-  const r = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'not-determined' }, models: everything, llmConfigured: true, osRelease: '24.1.0' });
+  const r = await buildSetup({ platform: 'darwin', caps: {}, perms: { microphone: 'not-determined' }, models: everything, llm: UP, osRelease: '24.1.0' });
   assert.equal(byId(r, 'permission-mic').status, 'unknown');
   assert.equal(r.ready, true);
 });
 
 test('Windows needs the microphone switch and offers winget for ffmpeg', async () => {
-  const r = await buildSetup({ platform: 'win32', caps: {}, perms: { microphone: 'denied' }, models: everything, llmConfigured: true });
+  const r = await buildSetup({ platform: 'win32', caps: {}, perms: { microphone: 'denied' }, models: everything, llm: UP });
   assert.equal(r.ready, false);
   assert.match(byId(r, 'permission-mic').fix.text, /Privacy & security/);
   assert.ok(byId(r, 'ffmpeg').fix.commands[0][1].startsWith('winget '));
 });
 
 test('items come ordered: required first, optional last', async () => {
-  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: { speech: false, vad: false, speaker: false }, llmConfigured: false });
+  const r = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: { speech: false, vad: false, speaker: false }, llm: { baseUrl: '' } });
   const rank = { required: 0, recommended: 1, optional: 2 };
   const ranks = r.items.map((i) => rank[i.level]);
   assert.deepEqual(ranks, [...ranks].sort());
@@ -89,4 +90,17 @@ test('GET /api/setup answers, with the host permissions passed through', async (
   assert.equal(j.platform, 'darwin');
   assert.equal(j.items.find((i) => i.id === 'permission-mic').status, 'missing');
   assert.equal(j.ready, false);
+});
+
+test('AI server: the default address is not "ready" until something answers there and has a model', async () => {
+  const down = await buildSetup({ platform: 'darwin', caps: {}, perms: {}, models: everything, llm: { baseUrl: 'http://127.0.0.1:11434/v1', model: '', reachable: false, models: [] }, osRelease: '24.0.0' });
+  const ai = byId(down, 'ai');
+  assert.equal(ai.status, 'missing');
+  assert.match(ai.fix.text, /Nothing answers at http:\/\/127\.0\.0\.1:11434/);
+  assert.ok(ai.fix.commands.some(([, c]) => /brew install ollama/.test(c)) && ai.fix.commands.some(([, c]) => /ollama pull/.test(c)));
+  assert.equal(ai.fix.settings, 'ai');
+  const empty = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: everything, llm: { baseUrl: 'http://127.0.0.1:11434/v1', reachable: true, models: [] } });
+  assert.match(byId(empty, 'ai').fix.text, /no models/);
+  const up = await buildSetup({ platform: 'linux', caps: { session: 'x11' }, has: hasOnly(), models: everything, llm: UP });
+  assert.equal(byId(up, 'ai').status, 'ok');
 });

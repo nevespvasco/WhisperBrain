@@ -1176,4 +1176,8 @@ export const PT = {
   'Microphone access': 'Acesso ao microfone',
   'To record your own voice. Windows has to allow desktop apps to use the microphone.': 'Para gravar a sua voz. O Windows tem de permitir que as apps de ambiente de trabalho usem o microfone.',
   'Settings → Privacy & security → Microphone → allow apps (and desktop apps) to access your microphone.': 'Definições → Privacidade e segurança → Microfone → permita que as apps (e as apps de ambiente de trabalho) acedam ao microfone.',
+  'Open Setup check': 'Abrir a verificação da configuração',
+  'Writes the summary, key points and action items, answers questions, and powers the live assistant. Any OpenAI-compatible server, local or hosted.': 'Escreve o resumo, os pontos-chave e as ações, responde a perguntas e alimenta o assistente em direto. Qualquer servidor compatível com OpenAI, local ou alojado.',
+  'The server answers but has no models.': 'O servidor responde mas não tem modelos.',
+  'Add an AI server (for example Ollama, LM Studio or an API key).': 'Adicione um servidor de IA (por exemplo Ollama, LM Studio ou uma chave de API).',
 };

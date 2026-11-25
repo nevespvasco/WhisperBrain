@@ -24,7 +24,31 @@ const FFMPEG = {
 const item = (id, level, status, title, why, fix = {}) => ({ id, level, status, title, why, fix });
 const perm = (state) => (state === 'granted' ? 'ok' : state === 'denied' || state === 'restricted' ? 'missing' : 'unknown');
 
-async function buildSetup({ platform, caps = {}, has = () => Promise.resolve(false), perms = {}, models = {}, llmConfigured = false, osRelease = '' }) {
+const OLLAMA = {
+  linux: [['Install Ollama', 'curl -fsSL https://ollama.com/install.sh | sh']],
+  darwin: [['Install Ollama', 'brew install ollama   (or download it from ollama.com)'], ['Start it', 'ollama serve']],
+  win32: [['Install Ollama', 'winget install Ollama.Ollama']],
+};
+const PULL = ['Download a model', 'ollama pull llama3.2'];
+
+// The AI server is only "ready" when something answers at its address and it has a model to use: the default address
+// (a local Ollama) is filled in whether or not Ollama is installed.
+function aiItem(platform, { baseUrl = '', model = '', reachable = false, models = [] } = {}) {
+  const why = 'Writes the summary, key points and action items, answers questions, and powers the live assistant. Any OpenAI-compatible server, local or hosted.';
+  if (!baseUrl) return item('ai', 'recommended', 'missing', 'AI server', why, { text: 'Add an AI server (for example Ollama, LM Studio or an API key).', settings: 'ai' });
+  if (!reachable) {
+    return item('ai', 'recommended', 'missing', 'AI server', why, {
+      text: `Nothing answers at ${baseUrl}. If you use Ollama, install it, start it and download a model, or point Settings → AI at another server.`,
+      commands: [...(OLLAMA[platform] || []), PULL], settings: 'ai',
+    });
+  }
+  if (!model && !models.length) {
+    return item('ai', 'recommended', 'missing', 'AI server', why, { text: 'The server answers but has no models.', commands: [PULL], settings: 'ai' });
+  }
+  return item('ai', 'recommended', 'ok', 'AI server', why);
+}
+
+async function buildSetup({ platform, caps = {}, has = () => Promise.resolve(false), perms = {}, models = {}, llm = {}, osRelease = '' }) {
   const items = [];
   const session = caps.session;
 
@@ -36,9 +60,7 @@ async function buildSetup({ platform, caps = {}, has = () => Promise.resolve(fal
   items.push(item('speaker-model', 'recommended', models.speaker ? 'ok' : 'missing', 'Voice models',
     'Tell the people on a call apart, so the transcript says who spoke.',
     models.speaker ? {} : { text: 'Download the voice models.', settings: 'audio' }));
-  items.push(item('ai', 'recommended', llmConfigured ? 'ok' : 'missing', 'AI server',
-    'Writes the summary, key points and action items, and answers questions. Any OpenAI-compatible server, local or hosted.',
-    llmConfigured ? {} : { text: 'Add an AI server (for example Ollama, LM Studio or an API key).', settings: 'ai' }));
+  items.push(aiItem(platform, llm));
   const ffmpeg = await has('ffmpeg');
   items.push(item('ffmpeg', 'optional', ffmpeg ? 'ok' : 'missing', 'ffmpeg',
     'Lets you import audio and video files other than WAV (mp3, m4a, mp4…). Recording does not need it.',
