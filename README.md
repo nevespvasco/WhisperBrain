@@ -86,7 +86,16 @@ npm install
 npm start
 ```
 
-On first launch:
+On first launch WhisperBrain opens a **Set up WhisperBrain** check that lists what this computer is missing, with the command or the setting that fixes each item (Settings → Setup check opens it again). What it looks for:
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| **Needed to record** | PipeWire (`pw-record`, `pw-dump`) | macOS 13+, Microphone permission | Microphone access for desktop apps |
+| **Recommended** | | Screen & System Audio Recording permission | |
+| **Optional** | `xclip` or `wl-clipboard` + `wtype` (dictation paste), `x11-utils` + `wmctrl` (window titles) | Accessibility permission (paste, names from the meeting window) | |
+| **All systems** | a speech model (downloaded in the app), `ffmpeg` to import files other than WAV | | |
+
+Then:
 
 1. **Settings → Audio & transcription**: download a speech model. The 26 MB voice model for speaker recognition comes with it.
 2. **Settings → AI**: point it at an LLM server. With [Ollama](https://ollama.com) the defaults work: run `ollama pull llama3.2`, then pick that model.

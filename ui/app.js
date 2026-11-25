@@ -18,6 +18,7 @@ import * as people from './views/people.js';
 import * as chat from './views/chat.js';
 import * as integrations from './views/integrations.js';
 import * as settings from './views/settings.js';
+import { setupOnFirstRun } from './views/setup.js';
 
 const appEl = $('#app'), sidebar = $('#sidebar'), main = $('#main'), topbar = $('#topbar');
 
@@ -306,6 +307,7 @@ async function boot() {
     renderTopbar();
     connectEvents();
     route();
+    setupOnFirstRun();   // the first launch only, and only if something needs attention
   } catch (e) {
     main.innerHTML = `<div class="page"><div class="banner warn mt">${icon('alert')}<div class="grow">${esc(e.message)} — ${e instanceof ApiError && e.status === 401 ? 'open the app from its launcher or the printed login URL.' : 'is the server running?'}</div></div></div>`;
   }

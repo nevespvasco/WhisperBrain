@@ -48,10 +48,21 @@ async function captureMeetingWindow() {
   return win ? { jpeg: win.thumbnail.toJPEG(70), title: win.name } : null;
 }
 
+// What the operating system has allowed so far (macOS and Windows ask per app); Linux has no such prompts.
+function osPermissions() {
+  if (process.platform !== 'darwin' && process.platform !== 'win32') return {};
+  const status = (kind) => { try { return systemPreferences.getMediaAccessStatus(kind); } catch { return 'unknown'; } };
+  return {
+    microphone: status('microphone'),
+    screen: process.platform === 'darwin' ? status('screen') : undefined,
+    accessibility: process.platform === 'darwin' ? systemPreferences.isTrustedAccessibilityClient(false) : undefined,
+  };
+}
+
 async function start() {
   const dataDir = app.getPath('userData');
   // API keys and tokens rest sealed by the OS keystore (safeStorage); on Linux without a real one the person is asked, see Settings.
-  core = createApp({ dataDir, secretBox: electronSecretBox(safeStorage), clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf, captureWindow: captureMeetingWindow });
+  core = createApp({ dataDir, secretBox: electronSecretBox(safeStorage), permissions: osPermissions, clipboard: hostClipboard, version: app.getVersion(), detect: true, openExternal: (u) => shell.openExternal(u), renderPdf, captureWindow: captureMeetingWindow });
   await core.ready;
   server = createServer(core, { uiDir: path.join(ROOT, 'ui') });
   const { port, token, url } = await server.listen(0);

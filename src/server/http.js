@@ -94,6 +94,7 @@ function createRoutes(app) {
   const noteOr404 = (id) => { const n = app.notes.get(id); if (!n) throw new HttpError(404, 'note not found'); return n; };
 
   add('GET', '/api/state', async () => app.state());
+  add('GET', '/api/setup', async () => app.setup());
   add('GET', '/api/settings', async () => app.settings.publicView());
   add('PUT', '/api/settings', async ({ body }) => { try { return app.settings.update(body); } catch (e) { throw new HttpError(400, e.message); } });
 

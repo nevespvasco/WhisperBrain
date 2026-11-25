@@ -3,6 +3,7 @@
 // used by the Electron main process, the headless CLI and the tests.
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const db = require('../core/db');
 const { Bus } = require('../core/events');
 const { Notes } = require('../core/notes');
@@ -36,10 +37,11 @@ const { AssistantService } = require('../assistant/service');
 
 const NAMES_TIMEOUT_MS = 90000;   // names from the conversation must not hold the notes back if the AI hangs
 const { loadPolicy } = require('../core/policy');
+const { buildSetup, which } = require('../platform/setup');
 const { TranscriptService } = require('../transcripts/service');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy() } = {}) {
+function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy(), permissions = () => ({}) } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
@@ -159,6 +161,15 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings, translator }, id, opts),
+    // What this computer still needs before recording works as it should (src/platform/setup.js); `permissions` comes from the host app
+    async setup() {
+      const [caps, perms] = await Promise.all([plat.capabilities(), Promise.resolve().then(() => permissions()).catch(() => ({}))]);
+      return buildSetup({
+        platform: plat.id, caps, perms, has: (cmd) => which(cmd, process.platform), osRelease: os.release(),
+        models: { speech: !!models.resolve(settings.get('asrModel')), vad: models.vadInstalled(), speaker: models.speakerInstalled() && models.segmentationInstalled() },
+        llmConfigured: !!settings.get('llm').baseUrl,
+      });
+    },
     async state() {
       const caps = await plat.capabilities();
       const model = models.resolve(settings.get('asrModel'));

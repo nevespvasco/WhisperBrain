@@ -14,6 +14,7 @@ function defaultAsrThreads(cpus = os.availableParallelism()) {
 
 const DEFAULTS = {
   language: 'en',               // UI language: en | pt
+  setupSeen: false,             // the first-run "is this computer ready?" check has been shown (Settings → Setup check opens it again)
   theme: 'system',              // system | light | dark
   asrModel: 'auto',             // model id, or 'auto' = best installed
   asrLanguage: 'auto',          // hint for multilingual models

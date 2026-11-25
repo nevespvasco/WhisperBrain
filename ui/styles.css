@@ -837,3 +837,15 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 .pf-go { height: 42px; padding: 0 28px; font-size: 15px; margin-top: 4px; }
 .pf-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
 .pf-warn { color: var(--warn, #b7791f); }
+
+/* ---------- setup check (ui/views/setup.js) ---------- */
+.su-h { margin: 18px 0 8px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--faint); }
+.su-item { display: flex; gap: 12px; padding: 12px 14px; border-radius: 12px; background: var(--sunken); border: 1px solid var(--line); margin-bottom: 8px; }
+.su-item.missing { border-color: var(--warn); }
+.su-ic { flex: none; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--ok-soft); color: var(--ok); }
+.su-item.missing .su-ic { background: var(--warn-soft); color: var(--warn); }
+.su-item.unknown .su-ic { background: var(--sunken); color: var(--muted); }
+.su-fix { margin-top: 6px; }
+.su-cmd { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
+.su-cmd .xsmall { flex: none; width: 108px; }
+.su-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 5px 8px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); font-size: 12px; }

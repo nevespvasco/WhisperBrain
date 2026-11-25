@@ -4,6 +4,7 @@ import { S, $, api, t, esc, icon, fail, done, go, modal, promptDialog, confirmDi
 import { listMicrophones } from '../capture.js';
 import { openExport } from './transfer.js';
 import * as meetPanel from './meet-panel.js';
+import { openSetup } from './setup.js';
 
 const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['translation', 'Translation', 'globe'], ['assistant', 'Assistant', 'wand'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
 let modelListener = null; // the Audio section's download listener (see bind)
@@ -69,7 +70,7 @@ const secretsBanner = () => {
 
 export async function render(main, { parts }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
-  const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div></div>
+  const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div><button class="btn sm" data-setup-check>${icon('check', 'sm')} ${t('Setup check')}</button></div>
     ${policyBanner()}${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
     <div id="secbody" class="set-section" data-sec="${sec}">${inner}</div></div></div>`;
   // Re-rendering the section already on screen (removing a model, a download finishing…) must not jump the page:
@@ -82,6 +83,7 @@ export async function render(main, { parts }) {
   else $('#secbody', main).innerHTML = html;
   if (again) main.scrollTop = y;
   bind(main, sec, $('#secbody', main));
+  $('[data-setup-check]', main)?.addEventListener('click', () => openSetup());
 }
 
 const enhanceSelect = (id, v) => `<select id="${id}">${[['auto', t('Automatic')], ['on', t('On')], ['off', t('Off')]].map(([k, l]) => `<option value="${k}" ${v === k ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
