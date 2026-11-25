@@ -21,7 +21,7 @@ jobs:
 
   # The meeting assistant is plain JavaScript and must behave the same on a Mac: its tests run there too (no audio, no AI server needed).
   test-macos:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,7 +37,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, run: npm run build:ax && npm run build:tap }
+          - { os: macos-15, run: npm run build:ax && npm run build:tap }
           - { os: windows-latest, run: 'powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/whisperbrain-uia.ps1 -Mode selftest' }
     runs-on: ${{ matrix.os }}
     steps:
@@ -70,8 +70,8 @@ jobs:
       matrix:
         include:
           - { os: ubuntu-24.04, script: dist:linux, artifact: linux }
-          - { os: macos-14, script: dist:mac, artifact: macos-arm64 }
-          - { os: macos-13, script: dist:mac, artifact: macos-x64 }
+          - { os: macos-15, script: dist:mac, artifact: macos-arm64 }
+          - { os: macos-15-intel, script: dist:mac, artifact: macos-x64 }
           - { os: windows-latest, script: dist:win, artifact: windows }
     runs-on: ${{ matrix.os }}
     steps:
