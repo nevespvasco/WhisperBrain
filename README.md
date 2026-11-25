@@ -77,6 +77,8 @@ Google Calendar, Notion, Obsidian, Linear, signed webhooks, and import or export
 
 ## Quick start
 
+**Ready-made installers** (Linux `.AppImage` and `.deb`, macOS `.dmg`, Windows `.exe`) are on the [Releases page](https://github.com/nevespvasco/WhisperBrain/releases/latest), with `SHA256SUMS.txt`. They are unsigned, so macOS and Windows warn on first start; each release lists how to get past that. Or run it from source:
+
 > Requires **Node.js 24 or newer**. Linux, macOS and Windows are supported; see [platform support](#platform-support).
 
 ```bash
@@ -129,7 +131,7 @@ npm run dist:mac     # .dmg + .zip       (on macOS)
 npm run dist:win     # NSIS + portable   (on Windows)
 ```
 
-Each OS must build its own installer, because npm only installs the sherpa-onnx native package for the current platform. [`.github/workflows/build.yml`](.github/workflows/build.yml) builds all three in CI. Builds are unsigned until signing secrets are added; see [docs/packaging.md](docs/packaging.md).
+Each OS must build its own installer, because npm only installs the sherpa-onnx native package for the current platform. [`.github/workflows/build.yml`](.github/workflows/build.yml) builds all three in CI, and [`.github/workflows/release.yml`](.github/workflows/release.yml) publishes them as a GitHub Release when a `v*` tag is pushed. Builds are unsigned until signing secrets are added; see [docs/packaging.md](docs/packaging.md).
 
 </details>
 
@@ -235,12 +237,12 @@ Only three things differ per OS; everything else is shared code.
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
 | [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |
-| [Testing](docs/testing.md) | What the 400+ tests cover |
+| [Testing](docs/testing.md) | What the 700+ tests cover |
 
 ## Development
 
 ```bash
-npm test                        # 400+ tests, using real models and devices when present
+npm test                        # 700+ tests, using real models and devices when present
 node scripts/fetch-models.js    # fetch the test models into ./.models
 ```
 
