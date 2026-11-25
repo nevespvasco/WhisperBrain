@@ -31,6 +31,7 @@ let floatSaveTimer = null;
 let quitting = false;
 let registeredHotkey = null;
 let assistantKeys = [];      // accelerators registered for the meeting assistant
+let assistantKeysFailed = ''; // what was last reported as unavailable (settings change often: say it once)
 let origin = '';
 
 // The OS clipboard as the platform adapters expect it (sync read/write of text).
@@ -256,7 +257,9 @@ function registerAssistantKeys() {
       else failed.push(`${accelerator} (taken)`);
     } catch { failed.push(`${accelerator} (invalid)`); }
   }
-  if (failed.length) notify('Assistant shortcuts', `Not available: ${failed.join(', ')}. Change them in Settings → Assistant.`);
+  const report = failed.join(', ');
+  if (report && report !== assistantKeysFailed) notify('Assistant shortcuts', `Not available: ${report}. Change them in Settings → Assistant.`);
+  assistantKeysFailed = report;
 }
 
 function updatePill(state) {
@@ -366,7 +369,10 @@ function wireFloat() {
   ipcMain.on('widget:focusable', (e, on) => {
     if (!mine(e)) return;
     float.setFocusable(!!on);
-    if (on) float.focus(); else float.blur();
+    if (!on) { float.blur(); return; }
+    float.focus();
+    // a desktop that never focuses a window like this one (several Wayland compositors): type the question in the main window
+    setTimeout(() => { const id = recordingNote(); if (id && float && !float.isDestroyed() && !float.isFocused()) { float.setFocusable(false); openAskInApp(id); } }, 400);
   });
   ipcMain.on('widget:drag-end', (e) => { if (!mine(e)) return; floatDrag = null; rememberFloat(); });
   ipcMain.on('widget:open', (e, noteId) => {
