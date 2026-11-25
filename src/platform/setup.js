@@ -26,7 +26,7 @@ const perm = (state) => (state === 'granted' ? 'ok' : state === 'denied' || stat
 
 const OLLAMA = {
   linux: [['Install Ollama', 'curl -fsSL https://ollama.com/install.sh | sh']],
-  darwin: [['Install Ollama', 'brew install ollama   (or download it from ollama.com)'], ['Start it', 'ollama serve']],
+  darwin: [['Install Ollama', 'brew install ollama'], ['Start it', 'brew services start ollama']],
   win32: [['Install Ollama', 'winget install Ollama.Ollama']],
 };
 const PULL = ['Download a model', 'ollama pull llama3.2'];

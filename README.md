@@ -91,14 +91,23 @@ On first launch WhisperBrain opens a **Set up WhisperBrain** check that lists wh
 | | Linux | macOS | Windows |
 |---|---|---|---|
 | **Needed to record** | PipeWire (`pw-record`, `pw-dump`) | macOS 13+, Microphone permission | Microphone access for desktop apps |
-| **Recommended** | | Screen & System Audio Recording permission | |
+| **Recommended** | | Screen & System Audio Recording permission (switch WhisperBrain on under "System Audio Recording Only") | |
 | **Optional** | `xclip` or `wl-clipboard` + `wtype` (dictation paste), `x11-utils` + `wmctrl` (window titles) | Accessibility permission (paste, names from the meeting window) | |
-| **All systems** | a speech model (downloaded in the app), `ffmpeg` to import files other than WAV | | |
+| **All systems** | a speech model (downloaded in the app), an AI server such as Ollama (below), `ffmpeg` to import files other than WAV | | |
 
 Then:
 
 1. **Settings → Audio & transcription**: download a speech model. The 26 MB voice model for speaker recognition comes with it.
-2. **Settings → AI**: point it at an LLM server. With [Ollama](https://ollama.com) the defaults work: run `ollama pull llama3.2`, then pick that model.
+2. **An AI server.** The summary, the chat and the live assistant need one, and WhisperBrain does not ship one. WhisperBrain looks for [Ollama](https://ollama.com) on `127.0.0.1:11434`, so with it the defaults work. Install it, start it and download a model once:
+
+   | | Install and start | Then, on every system |
+   |---|---|---|
+   | **Linux** | `curl -fsSL https://ollama.com/install.sh \| sh` (it starts as a service) | `ollama pull llama3.2` |
+   | **macOS** | `brew install ollama` then `brew services start ollama` (or download the app from ollama.com) | `ollama pull llama3.2` |
+   | **Windows** | `winget install Ollama.Ollama` (it runs from the tray) | `ollama pull llama3.2` |
+
+   Then open **Settings → AI** and press test. Any other OpenAI-compatible server (LM Studio, a hosted API) works too: put its address and key there. The live assistant only talks to a server on this computer unless you allow another one (Settings → Assistant).
+3. Check **Settings → Setup check** whenever something does not work: it tests each item above and shows the fix.
 
 <details>
 <summary><b>Run headless, in a browser</b></summary>
