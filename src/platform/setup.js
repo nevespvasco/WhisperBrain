@@ -87,7 +87,7 @@ async function buildSetup({ platform, caps = {}, has = () => Promise.resolve(fal
       perm(perms.microphone) === 'ok' ? {} : { text: 'System Settings → Privacy & Security → Microphone → switch WhisperBrain on.' }));
     items.push(item('permission-system', 'recommended', perm(perms.screen), 'Screen & System Audio Recording permission',
       'To record the other side of the call. macOS asks the first time you record system audio.',
-      perm(perms.screen) === 'ok' ? {} : { text: 'System Settings → Privacy & Security → Screen & System Audio Recording → switch WhisperBrain on, then reopen the app.' }));
+      perm(perms.screen) === 'ok' ? {} : { text: 'System Settings → Privacy & Security → Screen & System Audio Recording → under "System Audio Recording Only" switch WhisperBrain on (press + to add it), then reopen the app.' }));
     items.push(item('permission-accessibility', 'optional', perms.accessibility === true ? 'ok' : perms.accessibility === false ? 'missing' : 'unknown', 'Accessibility permission',
       'For dictation auto-paste and for reading participant names from a meeting window.',
       perms.accessibility === true ? {} : { text: 'System Settings → Privacy & Security → Accessibility → switch WhisperBrain on.' }));

@@ -1169,7 +1169,7 @@ export const PT = {
   'System Settings → Privacy & Security → Microphone → switch WhisperBrain on.': 'Definições do Sistema → Privacidade e Segurança → Microfone → ative a WhisperBrain.',
   'Screen & System Audio Recording permission': 'Permissão de Gravação de Ecrã e Áudio do Sistema',
   'To record the other side of the call. macOS asks the first time you record system audio.': 'Para gravar o outro lado da chamada. O macOS pergunta na primeira vez que grava áudio do sistema.',
-  'System Settings → Privacy & Security → Screen & System Audio Recording → switch WhisperBrain on, then reopen the app.': 'Definições do Sistema → Privacidade e Segurança → Gravação de Ecrã e Áudio do Sistema → ative a WhisperBrain e volte a abrir a app.',
+  'System Settings → Privacy & Security → Screen & System Audio Recording → under "System Audio Recording Only" switch WhisperBrain on (press + to add it), then reopen the app.': 'Definições do Sistema → Privacidade e Segurança → Gravação de Ecrã e Áudio do Sistema → em "Apenas gravação de áudio do sistema" ative a WhisperBrain (carregue em + para a adicionar) e volte a abrir a app.',
   'Accessibility permission': 'Permissão de Acessibilidade',
   'For dictation auto-paste and for reading participant names from a meeting window.': 'Para o colar automático do ditado e para ler os nomes dos participantes numa janela de reunião.',
   'System Settings → Privacy & Security → Accessibility → switch WhisperBrain on.': 'Definições do Sistema → Privacidade e Segurança → Acessibilidade → ative a WhisperBrain.',

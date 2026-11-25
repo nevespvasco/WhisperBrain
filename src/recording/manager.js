@@ -17,6 +17,8 @@ const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
 const CARRY_MS = 3000;        // a short utterance without a usable embedding inherits the previous speaker within this gap
+const SYSTEM_HEARD = 0.0005;     // above this level (rms, 0..1) the computer's audio is known to reach us
+const SYSTEM_SILENT_MS = 30000;  // macOS: no sound at all this long on the system channel = probably a missing permission
 const DRAFT_ECHO_ACTIVE_DB = -50; // the system channel counts as speaking above this level (same as the echo check's)
 const DRAFT_ECHO_WAIT_MS = 700;   // a mic draft needs this much audio before the loudness comparison can call it an echo
 
@@ -297,13 +299,29 @@ class RecordingManager {
     this.engine.feed(ch, buf);
     spool?.write(buf); // after the engine: capturing and transcribing always come first
     const lk = ch === 'mic' ? 'mic' : 'system'; // a person on Discord counts towards the "them" level
-    a.level[lk] = Math.max(a.level[lk], rms(buf));
+    const level = rms(buf);
+    a.level[lk] = Math.max(a.level[lk], level);
+    if (lk === 'system') this.watchSystemSilence(a, level);
     const now = Date.now();
     if (now - a.lastLevel >= 120) {
       a.lastLevel = now;
       this.bus.publish('recording.level', { noteId: a.noteId, mic: a.level.mic, system: a.level.system, elapsedMs: this.elapsed(a) });
       a.level = { mic: 0, system: 0 };
     }
+  }
+
+  // macOS hands a tap that has no permission nothing but silence, without an error: the recording looks healthy and only the
+  // microphone is transcribed. If the computer's own audio has not made a sound for a while, say what to check, once.
+  watchSystemSilence(a, level) {
+    if (a.sysWarned || this.platform.id !== 'darwin') return;
+    const now = Date.now();
+    a.sysSince ??= now;
+    if (level > SYSTEM_HEARD) { a.sysWarned = true; return; }   // it works
+    if (now - a.sysSince < SYSTEM_SILENT_MS) return;
+    a.sysWarned = true;
+    const message = 'Nothing has played on this computer for 30 seconds, so the other people on the call are not being transcribed. If they are talking, macOS is blocking the capture: System Settings → Privacy & Security → Screen & System Audio Recording → under "System Audio Recording Only" switch WhisperBrain on (press + to add it if it is not listed), then quit and reopen WhisperBrain.';
+    a.warnings.push(`system: ${message}`);
+    this.bus.publish('recording.warning', { message });
   }
 
   // The final text of an utterance: whatever happens to it (saved, dropped as an echo), its draft line is over.
