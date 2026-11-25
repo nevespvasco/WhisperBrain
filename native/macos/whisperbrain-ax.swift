@@ -128,7 +128,7 @@ func status(_ state: String, _ app: String, _ window: String) {
     if key != lastKey { lastKey = key; out(["event": "status", "state": state, "app": app, "window": window]) }
 }
 
-var isTrusted = trusted(prompt: mode != "windows")
+var isTrusted = trusted(prompt: mode == "permission")   // only ever asked for on purpose: the watching helper restarts with every recording and must not nag
 out(["event": "permission", "trusted": isTrusted])
 if mode == "permission" { exit(isTrusted ? 0 : 1) }
 

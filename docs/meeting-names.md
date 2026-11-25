@@ -23,7 +23,7 @@ Sources are tried in no particular order and use the same messages (`src/meet/pr
 A small native helper per system prints the page of the browser window as a list of nodes, and one reader in Node (`src/meet/a11y.js`) turns that into people and who is speaking, using selectors kept in a data file (`src/meet/selectors/meet.json`).
 
 - **Linux (AT-SPI).** Chromium-based browsers only put the page in the accessibility tree when started with `--force-renderer-accessibility` (measured: no environment variable, bus setting or repeated reading does it). Settings has a switch per browser that adds the flag to *your own copy* of its launcher (`~/.local/share/applications`); removing it puts everything back. Restart the browser from that launcher once. A browser launched from a terminal is not affected.
-- **macOS (AX).** The helper asks the browser to build the page's tree (`AXManualAccessibility`, what screen readers do), so the browser needs no special start. It needs the **Accessibility** permission: System Settings → Privacy & Security → Accessibility. It also lists browser windows, which is how a Meet call is noticed on macOS (where the microphone cannot be watched).
+- **macOS (AX).** The helper asks the browser to build the page's tree (`AXManualAccessibility`, what screen readers do), so the browser needs no special start. It needs the **Accessibility** permission: System Settings → Privacy & Security → Accessibility. A recording never raises that prompt (the watching helper restarts with each one and would nag); if the list does not offer WhisperBrain, add `WhisperBrain.app/Contents/Resources/bin/whisperbrain-ax` with the + button. It also lists browser windows, which is how a Meet call is noticed on macOS (where the microphone cannot be watched).
 - **Windows (UI Automation).** Chromium builds the page's tree as soon as a UI Automation client asks, so nothing has to be switched on. The helper is a PowerShell script with C# inside, compiled when it starts by the .NET Framework that Windows already has.
 
 The helper runs only while a recording does.
@@ -55,7 +55,7 @@ If neither of the above is connected, and you switched it on, WhisperBrain takes
 Everything above was exercised on Linux with a mock Meet page and a real Chromium-based browser. These have **not** been run and need a person on the right system:
 
 - [ ] **A real Google Meet call**, any system: the extension reads the people and the highlight; the accessibility tree has names and the speaking state (the spike: capture with `npm run a11y:dump`); live captions are readable.
-- [ ] **macOS**: `npm run build:ax` builds; the Accessibility prompt appears on the first recording and, once allowed, snapshots flow without restarting the app; a Meet call is detected from the browser window; Arc/Brave/Edge/Chrome.
+- [ ] **macOS**: `npm run build:ax` builds; the Accessibility prompt is never raised by a recording (the watching helper restarts with each one); press the permission button or add the helper by hand and, once allowed, snapshots flow without restarting the app; a Meet call is detected from the browser window; Arc/Brave/Edge/Chrome.
 - [ ] **Windows**: `powershell -File native/windows/whisperbrain-uia.ps1 -Mode selftest` compiles the C#; `-Mode dump` during a call shows the page's `Document` and its nodes; no console window appears from the app.
 - [ ] **Wayland**: the *look at the window* source asks for the screen-sharing prompt of the desktop portal.
 - [ ] **Firefox** is not supported by any source yet.
