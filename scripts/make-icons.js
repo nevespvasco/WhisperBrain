@@ -38,6 +38,24 @@ function render(size) {
   return px;
 }
 
+// macOS menu-bar icon: black waveform on transparent, so the system tints it for light/dark bars (needs the *Template name).
+function renderTemplate(size) {
+  const px = Buffer.alloc(size * size * 4);
+  const bars = [[0.14, 0.34], [0.32, 0.62], [0.50, 0.90], [0.68, 0.62], [0.86, 0.34]].map(([cx, h]) => ({ cx: cx * size, half: h * size * 0.5, w: size * 0.12 }));
+  const N = 4;
+  const inBar = (x, y) => bars.some((b) => {
+    const dy = Math.abs(y - size / 2), dx = Math.abs(x - b.cx);
+    if (dy <= b.half - b.w / 2) return dx <= b.w / 2;
+    return dx * dx + (dy - (b.half - b.w / 2)) ** 2 <= (b.w / 2) ** 2;
+  });
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+    let c = 0;
+    for (let sy = 0; sy < N; sy++) for (let sx = 0; sx < N; sx++) if (inBar(x + (sx + 0.5) / N, y + (sy + 0.5) / N)) c++;
+    px[(y * size + x) * 4 + 3] = Math.round((c / (N * N)) * 255);
+  }
+  return px;
+}
+
 function png(size, rgba) {
   const crcTable = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
   const crc = (buf) => { let c = 0xffffffff; for (const b of buf) c = crcTable[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
@@ -52,5 +70,9 @@ const out = path.join(__dirname, '..', 'build');
 fs.mkdirSync(out, { recursive: true });
 fs.writeFileSync(path.join(out, 'icon.png'), png(512, render(512)));
 fs.mkdirSync(path.join(__dirname, '..', 'resources'), { recursive: true });
-fs.writeFileSync(path.join(__dirname, '..', 'resources', 'tray.png'), png(32, render(32)));
-console.log('wrote build/icon.png and resources/tray.png');
+// Panel icons are ~22 px on Linux/Windows and 16-18 pt on macOS: anything bigger is drawn oversized.
+fs.writeFileSync(path.join(__dirname, '..', 'resources', 'tray.png'), png(22, render(22)));
+fs.writeFileSync(path.join(__dirname, '..', 'resources', 'tray@2x.png'), png(44, render(44)));
+fs.writeFileSync(path.join(__dirname, '..', 'resources', 'trayTemplate.png'), png(18, renderTemplate(18)));
+fs.writeFileSync(path.join(__dirname, '..', 'resources', 'trayTemplate@2x.png'), png(36, renderTemplate(36)));
+console.log('wrote build/icon.png, resources/tray.png (+@2x) and resources/trayTemplate.png (+@2x)');

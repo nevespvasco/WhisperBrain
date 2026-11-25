@@ -149,7 +149,10 @@ function buildMenu() {
 
 function createTray() {
   try {
-    const img = nativeImage.createFromPath(resource('resources', 'tray.png'));
+    // macOS wants a small black "template" image it tints itself (18 pt); a coloured 32 px icon looks huge in the menu bar.
+    const mac = process.platform === 'darwin';
+    const img = nativeImage.createFromPath(resource('resources', mac ? 'trayTemplate.png' : 'tray.png'));
+    if (mac) img.setTemplateImage(true);
     tray = new Tray(img);
     tray.setToolTip('WhisperBrain');
     const refresh = () => {
