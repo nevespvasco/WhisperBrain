@@ -60,8 +60,12 @@ a:hover { text-decoration: underline; }
 .sidebar { background: var(--surface); backdrop-filter: blur(18px) saturate(1.2); border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; z-index: 30; }
 .mainwrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .main { flex: 1; overflow-y: auto; min-width: 0; outline: none; }
-.main.fit { overflow: hidden; }
-.main.fit .note-aside { overflow-y: auto; overscroll-behavior: contain; align-content: start; }
+/* the meeting page locks the page height and scrolls the transcript and the side column on their own, but only while the two sit
+   side by side (wider than the 1100px breakpoint below): stacked, the page itself must scroll, whatever state the script left */
+@media (min-width: 1101px) {
+  .main.fit { overflow: hidden; }
+  .main.fit .note-aside { overflow-y: auto; overscroll-behavior: contain; align-content: start; max-height: var(--aside-max, none); }
+}
 .scrim { display: none; }
 .skip { position: fixed; left: 12px; top: -60px; z-index: 300; padding: 9px 14px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); font-weight: 600; border: 0; cursor: pointer; transition: top .12s; }
 .skip:focus { top: 12px; }
@@ -816,3 +820,19 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 .as-ask input { flex: 1; min-width: 0; }
 .as-hist summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
 .as-hist[open] summary { margin-bottom: 4px; }
+
+/* ---- before you record: the few things that decide what is captured (ui/preflight.js) ---- */
+.preflight { display: grid; justify-items: center; gap: 10px; text-align: center; padding: 28px 18px 24px; margin: auto; max-width: 560px; }
+.preflight h3 { font-size: 17px; }
+.preflight p { margin: 0; max-width: 440px; }
+.pf-mark { display: grid; place-items: center; width: 52px; height: 52px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); }
+.pf-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 6px 0 4px; }
+.pf-chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--card); color: var(--text-2); font-size: 13px; cursor: pointer; white-space: nowrap; }
+.pf-chip:hover { border-color: var(--accent-line); background: var(--accent-softer); }
+.pf-chip .pf-k { color: var(--muted); }
+.pf-chip .pf-v { color: var(--text); font-weight: 600; }
+.pf-chip.off { border-style: dashed; }
+.pf-chip.off .pf-v { color: var(--muted); }
+.pf-go { height: 42px; padding: 0 28px; font-size: 15px; margin-top: 4px; }
+.pf-link { color: var(--accent); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.pf-warn { color: var(--warn, #b7791f); }

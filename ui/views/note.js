@@ -4,6 +4,7 @@ import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, mod
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
+import { preflightOn, preflightHtml, preflightAct, warmPreflight } from '../preflight.js';
 import { openExport } from './transfer.js';
 import { renderChat } from './chat.js';
 import { follow } from '../follow.js';
@@ -18,9 +19,10 @@ export async function render(main, { parts, params }) {
   offEvents?.();
   const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`), api('GET', `/api/notes/${id}/transcript`), api('GET', `/api/notes/${id}/speakers`), api('GET', `/api/chat?noteId=${id}`), api('GET', '/api/integrations').catch(() => null)]);
   if (ints) S.integrations = ints;
-  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
+  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length || (!ov.note.body.trim() && preflightOn(ov.note, segs)) ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
   await trInit();
+  if (preflightOn(N.note, N.segs)) await warmPreflight();   // the devices and languages its chips list
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
   renderTab(); renderAside();
@@ -271,7 +273,7 @@ function transcriptTab(body) {
   // drawn again (a speaker renamed, the voices relabelled after Stop): stay where the reader was, unless following the newest line
   const prev = $('#segs');
   N.restoreTop = !prev ? null : N.follow ? 'end' : prev.scrollTop;
-  body.innerHTML = `<div class="tb">${recControls()}
+  body.innerHTML = `<div class="tb">${preflightOn(N.note, N.segs) ? '' : recControls()}
       <div class="tr-search">${icon('search', 'sm')}<input type="search" id="tr-q" placeholder="${t('Find in transcript')}" value="${esc(N.trq)}"></div>
       ${trControls()}
       <span class="spacer"></span>
@@ -280,7 +282,7 @@ function transcriptTab(body) {
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
-    ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
+    ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : preflightOn(N.note, N.segs) ? preflightHtml(N.note) : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
   if (N.trq) filterTranscript();
   if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); N.restoreTop = null; setTimeout(() => centreLine(el), 60); } N.seg = null; }
   wireLiveBox(N.restoreTop !== null);
@@ -360,7 +362,12 @@ const BAR_CLEARANCE = 100;   // the floating recording bar (20px off the bottom,
 const EDGE_CLEARANCE = 30;   // no recording bar: the card's own padding and a little air
 let fitWired = false;
 function fitLive() {
-  if (!fitWired) { fitWired = true; window.addEventListener('resize', () => { if ($('#segs') || $('#chatlog')) fitLive(); }); }
+  if (!fitWired) {
+    fitWired = true;
+    const refit = () => { if ($('#segs') || $('#chatlog')) fitLive(); };
+    window.addEventListener('resize', refit);
+    matchMedia('(min-width: 1101px)').addEventListener('change', refit);   // side by side <-> stacked, however the window got there
+  }
   const main = $('#main'), aside = $('#aside');
   if (!main) return;
   const body = $('#tabbody'); // only on the meeting page (the Ask AI page has a #chatlog of its own, laid out by CSS)
@@ -369,7 +376,7 @@ function fitLive() {
   const grid = $('.note-grid'), sideBySide = !!grid && getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length > 1;
   main.classList.toggle('fit', fit && sideBySide);   // stacked (narrow window): the side cards come below, so the page must scroll to reach them
   if (box) box.style.height = '';
-  if (aside) aside.style.maxHeight = '';
+  if (aside) aside.style.removeProperty('--aside-max');
   if (!fit) return;
   if (sideBySide) main.scrollTop = 0;
   const top = (el) => el.getBoundingClientRect().top - main.getBoundingClientRect().top + main.scrollTop;
@@ -377,7 +384,7 @@ function fitLive() {
   const wrap = box.parentElement;
   const below = box.id === 'chatlog' ? [...wrap.parentElement.children].filter((el) => el !== wrap && top(el) > top(wrap)).reduce((h, el) => h + el.offsetHeight + (parseFloat(getComputedStyle(el).marginTop) || 0), 0) : 0;
   box.style.height = `${Math.max(box.id === 'chatlog' ? 220 : 140, main.clientHeight - top(box) - below - (S.rec.active ? BAR_CLEARANCE : EDGE_CLEARANCE))}px`;
-  if (aside && sideBySide) aside.style.maxHeight = `${Math.max(200, main.clientHeight - top(aside) - 40)}px`;
+  if (aside && sideBySide) aside.style.setProperty('--aside-max', `${Math.max(200, main.clientHeight - top(aside) - 40)}px`);
   if (box.id !== 'segs') { box.follow?.update(); return; }
   if (N.restoreTop != null) { box.scrollTop = N.restoreTop === 'end' ? box.scrollHeight : N.restoreTop; N.restoreTop = null; }
   N.fol?.update();
@@ -569,13 +576,14 @@ function bind(main) {
     try {
       if (a === 'back') history.length > 1 ? history.back() : go('#/meetings');
       else if (a === 'record') await startRecording(N.id);
+      else if (a.startsWith('pf-')) await preflightAct(a, btn, { note: N.note, repaint: renderTab, aside: renderAside });
       else if (a === 'stop') await stopRecording();
       else if (a === 'pause') await api('POST', `/api/recording/${S.rec.paused ? 'resume' : 'pause'}`);
       else if (a === 'mute') await api('POST', '/api/recording/mic-mute', { muted: !S.rec.micMuted });
       else if (a === 'share') openExport(N.id);
       else if (a === 'more') moreMenu(btn, main);
       else if (a === 'add-tag') addTag();
-      else if (a === 'external') { const next = N.card.external === true ? false : N.card.external === false ? null : true; await api('PATCH', `/api/notes/${N.id}`, { external: next }); N.card.external = next === null ? null : next; refreshHeader(main); }
+      else if (a === 'external') externalMenu(btn, main);
       else if (a === 'enhance') await enhance();
       else if (a === 'insights') await analyse(btn);
       else if (a === 'copy-summary') { await navigator.clipboard.writeText(N.note.summary); done(t('Copied')); }
@@ -598,6 +606,16 @@ function bind(main) {
   };
 }
 
+function externalMenu(btn, main) {
+  const set = async (v) => { await api('PATCH', `/api/notes/${N.id}`, { external: v }); N.card.external = v === null ? null : v; btn.blur(); refreshHeader(main); window.dispatchEvent(new Event('wb:refresh')); };
+  menu(btn, [
+    { header: t('Who was in this meeting?') },
+    { label: t('Internal'), icon: 'users', selected: N.card.external === false, run: () => set(false) },
+    { label: t('External'), icon: 'globe', selected: N.card.external === true, run: () => set(true) },
+    'sep',
+    { label: t('Not set'), selected: N.card.external == null, run: () => set(null) },
+  ]);
+}
 function moreMenu(btn, main) {
   const n = N.note;
   menu(btn, [
