@@ -6,7 +6,7 @@ const { Bus } = require('../src/core/events');
 const { Notes } = require('../src/core/notes');
 const { Speakers } = require('../src/speakers/store');
 const { Evidence } = require('../src/meet/evidence');
-const { buildTranscript, parseNames, nameFromTranscript, isLocalServer } = require('../src/speakers/transcript-names');
+const { buildTranscript, parseNames, nameFromTranscript, isLocalServer, LiveNames, LIVE_EVERY_LINES, LIVE_MIN_GAP_MS, LIVE_MAX_LINES } = require('../src/speakers/transcript-names');
 const { speakerNamesMessages } = require('../src/llm/prompts');
 
 // A short call: the user (m1) and two other voices (s1, s2) on the system audio.
@@ -169,4 +169,96 @@ test('rejectName: a guess turned down is cleared, and the same name is not offer
   assert.equal(speakers.rejectName(n.id, 's2', { evidence }), false, 'only a name from the conversation can be turned down this way');
   speakers.rename(n.id, 's2', 'Bruno');
   assert.equal(speakers.rejectName(n.id, 's2', { evidence }), false, 'a name the person typed is never cleared by it');
+});
+
+// ---- while the meeting is going ----
+function liveRig({ allowed = () => true, llmText } = {}) {
+  const r = rig();
+  let clock = 1_000_000;
+  const calls = [];
+  const llm = { complete: async (messages, opts) => { calls.push({ messages, opts }); return typeof llmText === 'function' ? llmText() : (llmText ?? reply([{ speaker: 'S1', name: 'Maria', evidence: 'L2' }])); } };
+  const live = new LiveNames({ notes: r.notes, speakers: r.speakers, evidence: r.evidence, llm, bus: r.bus, allowed, userName: () => 'Vasco', now: () => clock });
+  const warnings = [];
+  r.bus.subscribe((e) => { if (e.type === 'recording.warning') warnings.push(e.data.message); });
+  const lines = (n) => { let last = null; for (let i = 0; i < n; i++) last = live.hear(r.n.id, { text: 'another line of talk' }) || last; return last; };
+  return { ...r, live, calls, warnings, lines, tick: (ms) => { clock += ms; } };
+}
+
+test('LiveNames: a pass runs after the lines and the time, names the voice, and then waits again', async () => {
+  const t = liveRig();
+  t.live.start(t.n.id);
+  t.tick(LIVE_MIN_GAP_MS);
+  const pass = t.lines(LIVE_EVERY_LINES);
+  assert.ok(pass, 'a pass was started');
+  const out = await pass;
+  assert.deepEqual(out.named.map((x) => [x.speakerId, x.name]), [['s1', 'Maria']]);
+  assert.equal(t.speakers.forNote(t.n.id).find((s) => s.speakerId === 's1').nameSource, 'transcript:llm');
+  assert.equal(t.calls.length, 1);
+  assert.equal(t.calls[0].opts.maxTokens, 400);
+  assert.equal(t.lines(LIVE_EVERY_LINES), null, 'just ran: the next one waits for the time');
+  t.tick(LIVE_MIN_GAP_MS);
+  const next = t.live.hear(t.n.id, { text: 'x y z' });
+  assert.ok(next, 'the lines that came while it waited count: the next pass starts with the next line');
+  await next;
+  assert.equal(t.calls.length, 2);
+  t.tick(LIVE_MIN_GAP_MS);
+  assert.equal(t.live.hear(t.n.id, { text: 'x y z' }), null, 'time alone is not enough: it also waits for new lines');
+});
+
+test('LiveNames: sends only the newest lines, never overlaps two passes, and does nothing when it is not allowed or for another note', async () => {
+  let release;
+  const gate = new Promise((res) => { release = res; });
+  const t = liveRig({ llmText: async () => { await gate; return reply([]); } });
+  t.live.start(t.n.id);
+  t.tick(LIVE_MIN_GAP_MS);
+  const first = t.lines(LIVE_EVERY_LINES);
+  assert.ok(first);
+  t.tick(LIVE_MIN_GAP_MS);
+  assert.equal(t.lines(LIVE_EVERY_LINES), null, 'a pass is still waiting for the AI: no second one');
+  release();
+  await first;
+  const text = t.calls[0].messages[1].content;
+  assert.ok((text.match(/^\[L\d+ /gm) || []).length <= LIVE_MAX_LINES);
+
+  const off = liveRig({ allowed: () => false });
+  off.live.start(off.n.id);
+  off.tick(LIVE_MIN_GAP_MS);
+  assert.equal(off.lines(LIVE_EVERY_LINES), null, 'the setting says no (or the AI is not local): the transcript is not sent anywhere');
+  assert.equal(off.calls.length, 0);
+
+  const other = liveRig();
+  other.live.start('some-other-note');
+  other.tick(LIVE_MIN_GAP_MS);
+  assert.equal(other.lines(LIVE_EVERY_LINES), null);
+  other.live.stop();
+  assert.equal(other.live.hear('some-other-note', { text: 'late line' }), null, 'after Stop nothing runs');
+});
+
+test('LiveNames: a name the user typed during the meeting stays, and a failing AI is given up on after three tries with one warning', async () => {
+  const t = liveRig({ llmText: () => { throw new Error('connection refused'); } });
+  t.live.start(t.n.id);
+  for (let i = 0; i < 5; i++) { t.tick(LIVE_MIN_GAP_MS); const p = t.lines(LIVE_EVERY_LINES); if (p) await p; }
+  assert.equal(t.calls.length, 3, 'three failures and it stops asking until Stop');
+  assert.equal(t.warnings.length, 1);
+  assert.match(t.warnings[0], /connection refused/);
+
+  const typed = liveRig();
+  typed.live.start(typed.n.id);
+  typed.speakers.rename(typed.n.id, 's1', 'Marta');
+  typed.tick(LIVE_MIN_GAP_MS);
+  const out = await typed.lines(LIVE_EVERY_LINES);
+  assert.deepEqual(out.named, []);
+  assert.equal(typed.speakers.forNote(typed.n.id).find((s) => s.speakerId === 's1').name, 'Marta');
+});
+
+test('LiveNames.attach follows the recording through the bus: started, lines, stopped', async () => {
+  const t = liveRig();
+  const off = t.live.attach();
+  t.bus.publish('recording.started', { noteId: t.n.id });
+  assert.equal(t.live.run?.noteId, t.n.id);
+  t.bus.publish('transcript.segment', { noteId: t.n.id, segment: { text: 'hello there everyone' } });
+  assert.equal(t.live.run.fresh, 1);
+  t.bus.publish('recording.stopped', { noteId: t.n.id });
+  assert.equal(t.live.run, null);
+  off();
 });

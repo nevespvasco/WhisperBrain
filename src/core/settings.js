@@ -32,7 +32,7 @@ const DEFAULTS = {
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
   speakerCountHint: false,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only). Off: exactly right it takes AMI 18.1 -> 14.8 and libri-call 24.9 -> 17.9 WDER, one voice off it costs up to 6 points; see eval/README.md
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
-  speakerNamesFromTranscript: 'auto', // after a recording, an AI reads the transcript and names voices from what people say ("I'm Maria", "Thanks, George"): auto = only when the AI server runs on this computer, on = always, off = never. The names are guesses that say so, and never save a voice print
+  speakerNamesFromTranscript: 'auto', // while recording and after, an AI reads the transcript and names voices from what people say ("I'm Maria", "Thanks, George"): auto = only when the AI server runs on this computer, on = always, off = never. The names are guesses that say so, and never save a voice print
   translation: {
     enabled: false,             // translate meetings into other languages. Off by default; nothing is translated until it is on and a language is chosen
     targets: [],                // the languages offered (ISO codes in the order chosen, e.g. ['en', 'pt-PT']); the first is the one live translation uses

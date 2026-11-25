@@ -658,7 +658,7 @@ export const PT = {
   'Names found: {n}': 'Nomes encontrados: {n}',
   'Nobody could be named: the conversation does not say who they are.': 'Ninguém pôde ser nomeado: a conversa não diz quem são.',
   'Names from what people say': 'Nomes pelo que as pessoas dizem',
-  "After a recording your AI reads the transcript and names voices from things like \"I'm Maria\" or \"Thanks, George\". They are guesses that say so, you can keep or turn down each one, and no voice is saved from them.": 'Depois de uma gravação, a sua IA lê a transcrição e dá nomes às vozes a partir de frases como «Sou a Maria» ou «Obrigado, George». São palpites que o dizem, pode manter ou recusar cada um, e nenhuma voz é guardada a partir deles.',
+  "While you record, and again after, your AI reads the transcript and names voices from things like \"I'm Maria\" or \"Thanks, George\". They are guesses that say so, you can keep or turn down each one, and no voice is saved from them.": 'Durante a gravação, e outra vez no fim, a sua IA lê a transcrição e dá nomes às vozes a partir de frases como «Sou a Maria» ou «Obrigado, George». São palpites que o dizem, pode manter ou recusar cada um, e nenhuma voz é guardada a partir deles.',
   'Only when the AI runs on this computer': 'Só quando a IA corre neste computador',
   'Always (sends the transcript to your AI server)': 'Sempre (envia a transcrição ao seu servidor de IA)',
   'Never': 'Nunca',

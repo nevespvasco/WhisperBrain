@@ -1,7 +1,7 @@
 'use strict';
 // Names from what people say. Where nothing outside the audio says who a voice is (Zoom, Teams, a phone on speaker, an
-// imported recording) the conversation often does: "I'm Maria", "Thanks, George". After a recording the AI reads the
-// transcript, with the voices as tags, and says who is who; a name counts only when it quotes the line that shows it and the
+// imported recording) the conversation often does: "I'm Maria", "Thanks, George". After a recording (and every so often during
+// it: LiveNames) the AI reads the transcript, with the voices as tags, and says who is who; a name counts only when it quotes the line that shows it and the
 // voice it names talks right beside that line (two lines either side), so a name in an advert, a quote or a story about
 // somebody else is not given to the wrong voice. Ported from Cicada's SpeakerNameGuess (wquguru/cicada, SpeakerID.swift).
 //
@@ -80,14 +80,14 @@ function parseNames(reply, built, { skip = [] } = {}) {
 
 // Ask the AI for the names of a note's unnamed voices and give them to the voices. Best effort: no AI, an AI that fails, a meeting
 // with nobody to name: nothing happens (an `error` says why when it failed).
-// deps: { notes, speakers, evidence, llm ({ complete }), userName, signal }. -> { named: [{ speakerId, name, line, quote }], refuted, error? }
-async function nameFromTranscript({ notes, speakers, evidence, llm, userName = '', signal }, noteId) {
+// deps: { notes, speakers, evidence, llm ({ complete }), userName, signal, max (newest lines to send) }. -> { named: [{ speakerId, name, line, quote }], refuted, error? }
+async function nameFromTranscript({ notes, speakers, evidence, llm, userName = '', signal, max = MAX_LINES }, noteId) {
   const none = { named: [], refuted: [] };
   if (!llm) return none;
   const segs = notes.segments(noteId);
   if (!segs.length) return none;
   const list = speakers.forNote(noteId).map((s) => ({ speakerId: s.speakerId, name: s.name || s.voiceName || '' }));
-  const built = buildTranscript(segs, list, { userName });
+  const built = buildTranscript(segs, list, { userName, max });
   if (!built.eligible.size) return none;
   const skip = (evidence?.forNote(noteId, { kind: 'refuted' }) || []).map((r) => ({ speakerId: r.meta?.speakerId, name: r.name }));
   let reply;
@@ -114,4 +114,68 @@ function isLocalServer(url) {
   } catch { return false; }
 }
 
-module.exports = { buildTranscript, parseNames, nameFromTranscript, isLocalServer, SOURCE, CONFIDENCE, REACH };
+// While the meeting is still going: the same question, asked again every so often about the voices that have no name yet, so
+// "I'm Maria" at minute two puts a name on the screen at minute three. A pass costs one AI request, so it waits until there are
+// enough new lines and enough time since the last one; it asks only about the newest lines; it never holds up anything else (the
+// AI queue serves translation and the assistant first); and a pass that fails is not retried at once. The names are the same
+// guesses as after Stop: turned down or typed over by the user, never saved as a voice print. Stop runs the full pass again for
+// the voices still without a name.
+const LIVE_EVERY_LINES = 6;     // new lines since the last pass
+const LIVE_MIN_GAP_MS = 45000;  // and at least this long since it started
+const LIVE_MAX_LINES = 120;     // the newest lines sent: the cost of a pass does not grow with the meeting
+const LIVE_TIMEOUT_MS = 60000;
+const LIVE_MAX_FAILURES = 3;    // then this recording is left alone until Stop
+
+class LiveNames {
+  // deps: { notes, speakers, evidence, llm, bus, allowed (() -> whether the settings and the AI server permit it), userName (() -> the user's name), now }
+  constructor({ notes, speakers, evidence = null, llm, bus, allowed = () => true, userName = () => '', now = Date.now }) {
+    Object.assign(this, { notes, speakers, evidence, llm, bus, allowed, userName, now });
+    this.run = null;   // the recording being followed: { noteId, fresh, last, busy, failures, abort }
+  }
+
+  attach() {
+    return this.bus.subscribe((e) => {
+      if (e.type === 'recording.started') this.start(e.data.noteId);
+      else if (e.type === 'recording.stopped') this.stop(e.data.noteId);
+      else if (e.type === 'transcript.segment') this.hear(e.data.noteId, e.data.segment);
+    });
+  }
+
+  start(noteId) { this.stop(); this.run = { noteId, fresh: 0, last: this.now(), busy: false, failures: 0, abort: new AbortController() }; }
+
+  stop(noteId) {
+    if (!this.run || (noteId && this.run.noteId !== noteId)) return;
+    this.run.abort.abort();
+    this.run = null;
+  }
+
+  // A line was saved. -> a promise when a pass was started (for tests; the caller need not wait for it)
+  hear(noteId, segment) {
+    const r = this.run;
+    if (!r || r.noteId !== noteId || !segment?.text) return null;
+    r.fresh++;
+    if (r.busy || r.failures >= LIVE_MAX_FAILURES || r.fresh < LIVE_EVERY_LINES || this.now() - r.last < LIVE_MIN_GAP_MS) return null;
+    if (!this.allowed()) return null;
+    return this.pass(r);
+  }
+
+  async pass(r) {
+    r.busy = true;
+    r.fresh = 0;
+    r.last = this.now();
+    try {
+      const signal = AbortSignal.any([r.abort.signal, AbortSignal.timeout(LIVE_TIMEOUT_MS)]);
+      const out = await nameFromTranscript({ notes: this.notes, speakers: this.speakers, evidence: this.evidence, llm: this.llm, userName: this.userName(), signal, max: LIVE_MAX_LINES }, r.noteId);
+      if (out.error) throw new Error(out.error);
+      r.failures = 0;
+      return out;
+    } catch (err) {
+      if (r.abort.signal.aborted) return null;   // Stop came first: nothing to report
+      r.failures++;
+      if (r.failures === LIVE_MAX_FAILURES) this.bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` });
+      return null;
+    } finally { r.busy = false; }
+  }
+}
+
+module.exports = { buildTranscript, parseNames, nameFromTranscript, isLocalServer, LiveNames, SOURCE, CONFIDENCE, REACH, LIVE_EVERY_LINES, LIVE_MIN_GAP_MS, LIVE_MAX_LINES };

@@ -28,7 +28,7 @@ const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
-const { nameFromTranscript, isLocalServer } = require('../speakers/transcript-names');
+const { nameFromTranscript, isLocalServer, LiveNames } = require('../speakers/transcript-names');
 const { Translator } = require('../llm/translate');
 const { LlmScheduler } = require('../llm/scheduler');
 const { Briefings } = require('../knowledge/briefings');
@@ -74,6 +74,11 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
   const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge, semantic });
 
+  // May the AI read a transcript to name voices? (the setting, and for 'auto' an AI server on this computer)
+  const namesFromTranscriptAllowed = () => ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)));
+  // ...and the same while the meeting is still going, for the voices that have no name yet
+  new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: () => settings.get('speakerDetection') && namesFromTranscriptAllowed(), userName: () => settings.get('userName') }).attach();
+
   // When a recording ends: enhance automatically if asked, then fill the knowledge layer (topics, glossary,
   // action items). Without auto-enhance, offline topics are still extracted so search and topics work.
   bus.subscribe(async (e) => {
@@ -81,7 +86,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     const id = e.data.noteId;
     if (!notes.get(id)) return;
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
-    if (ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)))) {
+    if (namesFromTranscriptAllowed()) {
       try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, id); if (r.named.length) notes.reindex(id); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
     if (settings.get('autoSummarize')) {
