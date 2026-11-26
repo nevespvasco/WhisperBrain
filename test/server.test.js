@@ -128,6 +128,9 @@ test('recording without a model is refused with an actionable error', async (t) 
 });
 
 const real = { skip: models ? false : 'no ASR model installed', timeout: 120000 };
+// the two-voice test also needs the sample speech that ships inside the Parakeet model folder (CI's models have no test_wavs)
+const SAMPLE_EN = models ? path.join(models.dir, 'parakeet-tdt-0.6b-v3', 'test_wavs', 'en.wav') : null;
+const realWithSample = { ...real, skip: real.skip || (fs.existsSync(SAMPLE_EN) ? false : 'no sample speech (parakeet-tdt-0.6b-v3/test_wavs/en.wav)') };
 
 test('end to end: UI-pushed audio → live events → stored transcript → search', real, async (t) => {
   const s = await boot(t, { withModels: true });
@@ -166,7 +169,7 @@ test('import a WAV file into a note', real, async (t) => {
   await assert.rejects(s.json('POST', `/api/notes/${n.id}/import-audio`, Buffer.alloc(0)), (e) => e.status === 400);
 });
 
-test('import a two-voice WAV file with the owned speaker pipeline: speakers told apart, prints made, nothing biometric in the API', real, async (t) => {
+test('import a two-voice WAV file with the owned speaker pipeline: speakers told apart, prints made, nothing biometric in the API', realWithSample, async (t) => {
   const s = await boot(t, { withModels: true });
   s.app.settings.update({ speakerPipeline: 'owned', speakerDiarize: true, speakerRefine: false });
   const { wavToPcm16, pcm16ToWav } = require('../src/audio/pcm');
