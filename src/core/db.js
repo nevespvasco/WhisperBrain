@@ -449,6 +449,36 @@ const MIGRATIONS = [
     undone_at INTEGER
   );
   `,
+  // v18: the search index over everything (docs/adr/0001-brain-data-model.md, Phase 2). A chunk is a searchable piece of a meeting
+  // or of an item; chunks_fts is the word index over them (BM25); the vectors live in chunk_vec (sqlite-vec, made on demand when an
+  // embedding model is set). index_owner remembers the content hash each owner was last indexed at, so only what changed is done.
+  `
+  CREATE TABLE chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('note', 'item')),
+    owner_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    start_ms INTEGER,
+    end_ms INTEGER,
+    segment_id INTEGER,
+    embedded INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX chunks_owner ON chunks(owner_kind, owner_id, seq);
+  CREATE INDEX chunks_pending ON chunks(embedded) WHERE embedded = 0;
+  CREATE VIRTUAL TABLE chunks_fts USING fts5(text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');
+  CREATE TABLE index_owner (
+    owner_kind TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    chunks INTEGER NOT NULL DEFAULT 0,
+    indexed_at INTEGER NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id)
+  );
+  CREATE TABLE index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE fts_reset (id INTEGER PRIMARY KEY);   -- see src/core/fts.js
+  ALTER TABLE chat_messages ADD COLUMN sources TEXT;   -- what an answer cited, so the links survive a restart
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

@@ -53,6 +53,13 @@ module.exports = function brainRoutes(add, app, { HttpError }) {
   r('POST', '/api/entities/:id/merge', async ({ params, body }) => app.entities.merge(params.id, String(object(body).into || '')));
   r('POST', '/api/entities/:id/unmerge', async ({ params }) => app.entities.unmerge(params.id));
 
+  // ---- the search index: how much is searchable, and what a question finds (meetings and notes, by words and by meaning) ----
+  r('GET', '/api/index', async () => app.chunkIndex.stats());
+  r('GET', '/api/retrieve', async ({ query }) => {
+    const hits = await app.chunkIndex.search(String(query.q || ''), { limit: Math.max(1, Math.min(30, Number(query.limit) || 8)) });
+    return hits.map((h) => ({ ...h, text: h.text.slice(0, 1200) }));
+  });
+
   // ---- the AI-run ledger: what was asked of an AI server and whether it left this computer ----
   r('GET', '/api/ai-runs', async ({ query }) => ({ summary: app.aiRuns.summary(Number(query.days) || 30), runs: app.aiRuns.list(Math.max(1, Math.min(500, Number(query.limit) || 50))) }));
 };

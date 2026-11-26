@@ -4,6 +4,7 @@
 // hash says whether anything changed. What disappeared from the source is tombstoned (deleted_at), never silently kept as live.
 // A meeting is an item of kind 'meeting' pointing at its notes row; it holds no text of its own.
 const crypto = require('node:crypto');
+const { ftsRun } = require('../core/fts');
 
 const NATIVE = 'native';                                   // the recorder and the app's own meetings
 const MAX_TEXT = 400_000;                                  // derived text kept per item (pointer mode keeps the text for search, not the file)
@@ -75,7 +76,7 @@ class ItemStore {
     if (s.kind === NATIVE) throw Object.assign(new Error('The recorder source cannot be removed.'), { status: 409 });
     this.db.exec('BEGIN');
     try {
-      this.db.prepare('DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE source_id = ?)').run(id);
+      ftsRun(this.db, 'DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE source_id = ?)', id);
       this.db.prepare('DELETE FROM sources WHERE id = ?').run(id);
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
@@ -123,8 +124,8 @@ class ItemStore {
   setMeta(id, meta) { this.db.prepare('UPDATE items SET meta = ? WHERE id = ?').run(JSON.stringify(meta), id); }
 
   index(rowid, title, text) {
-    this.db.prepare('DELETE FROM items_fts WHERE rowid = ?').run(rowid);
-    this.db.prepare('INSERT INTO items_fts (rowid, title, text) VALUES (?, ?, ?)').run(rowid, title, text);
+    ftsRun(this.db, 'DELETE FROM items_fts WHERE rowid = ?', rowid);
+    ftsRun(this.db, 'INSERT INTO items_fts (rowid, title, text) VALUES (?, ?, ?)', rowid, title, text);
   }
 
   // The thing is gone from its source: keep a tombstone (so a restore is "revived", and nothing else is lost), drop it from search.
@@ -132,7 +133,7 @@ class ItemStore {
     const cur = this.db.prepare('SELECT rowid, * FROM items WHERE source_id = ? AND external_id = ? AND deleted_at IS NULL').get(sourceId, String(externalId));
     if (!cur) return false;
     this.db.prepare('UPDATE items SET deleted_at = ?, updated_at = ? WHERE id = ?').run(this.now(), this.now(), cur.id);
-    this.db.prepare('DELETE FROM items_fts WHERE rowid = ?').run(cur.rowid);
+    ftsRun(this.db, 'DELETE FROM items_fts WHERE rowid = ?', cur.rowid);
     return true;
   }
 

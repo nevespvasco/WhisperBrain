@@ -43,6 +43,9 @@ const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 const { JobQueue } = require('../jobs/queue');
 const { JobRunner } = require('../jobs/runner');
 const { AiRuns } = require('../audit/ai-runs');
+const { ChunkIndex } = require('../search/index');
+const { LlmEmbedder } = require('../search/embedder');
+const { mayReachAi } = require('../items/policy');
 const { ItemStore } = require('../items/store');
 const { SourceManager } = require('../connectors/manager');
 const { pdfToText } = require('../importers/pdf');
@@ -134,6 +137,29 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const items = new ItemStore(conn, { bus });
   const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), watch: detect });
   const tick = () => new Promise((r) => setImmediate(r));
+
+  // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
+  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel') });
+  const chunkIndex = new ChunkIndex({ db: conn, notes, items, embedder });
+  // what may be shown to the AI server in use: a private source only to a server on this computer
+  const mayShare = (kind, id) => {
+    if (kind !== 'item') return true;
+    const it = items.item(id);
+    return !!it && mayReachAi(items.source(it.sourceId), settings.get('llm'));
+  };
+  ai.index = chunkIndex; ai.mayShare = mayShare;
+  runner.register('index.sync', async () => {
+    let total = 0;
+    for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
+    let embedded = 0;
+    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: mayShare }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
+    return { indexed: total, embedded };
+  }, { lane: 'sources' });
+  const wantIndex = () => { try { runner.enqueue('index.sync', {}, { key: 'all', runAfter: 1500, maxAttempts: 2 }); } catch { /* closing */ } };
+  bus.subscribe((e) => {
+    if (['sources.changed', 'note.insights', 'note.updated', 'speakers.updated', 'recording.stopped', 'transcript.removed', 'import.done'].includes(e.type)) wantIndex();
+    if (e.type === 'settings' && (e.data.keys.includes('embeddingModel') || e.data.keys.includes('llm'))) wantIndex();
+  });
   runner.register('items.backfill', async () => { let n = 0, c; while ((c = items.backfillNotes(200))) { n += c; await tick(); } return { notes: n }; }, { lane: 'sources' });
   runner.register('entities.backfill', async ({ after = 0 }) => { let cur = after; for (;;) { const next = knowledge.entities.backfillBatch(cur, 100); if (next == null) break; cur = next; await tick(); } return {}; }, { lane: 'sources' });
   bus.subscribe((e) => {
@@ -186,6 +212,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     runner.enqueue('items.backfill', {}, { key: 'once', maxAttempts: 2 });       // meetings made before items existed
     runner.enqueue('entities.backfill', {}, { key: 'once', maxAttempts: 2 });    // people from speakers, attendees and voice prints
     sources.start();
+    wantIndex();
   }).catch(() => {});
   // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
   const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
@@ -201,7 +228,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, chunkIndex, mayShare, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
