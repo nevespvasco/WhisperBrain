@@ -84,6 +84,11 @@ export async function render(main, { parts }) {
   else $('#secbody', main).innerHTML = html;
   if (again) main.scrollTop = y;
   bind(main, sec, $('#secbody', main));
+  if (sec === 'account') api('GET', '/api/backup').then((b) => {
+    const badge = $('#bk-state', main), detail = $('#bk-detail', main); if (!badge || !detail) return;
+    badge.textContent = b.dir ? t('On') : t('Off');
+    detail.textContent = b.backups.length ? t('Last backup: {when}', { when: new Date(b.backups[0].at).toLocaleString() }) : (b.dir ? t('No backup yet.') : '');
+  }).catch(() => {});
   if (sec === 'ai') api('GET', '/api/index').then((ix) => {
     const badge = $('#ix-state', main), detail = $('#ix-detail', main); if (!badge || !detail) return;
     badge.textContent = ix.model ? (ix.vectors ? t('By meaning and words') : t('Words only')) : t('Words only');
@@ -119,6 +124,11 @@ const SECTION = {
         <div class="stats-row mt-s"><div class="card stat"><b>${acc.stats.notes}</b><span>${t('Meetings')}</span></div><div class="card stat"><b>${acc.stats.segments}</b><span>${t('Transcript lines')}</span></div><div class="card stat"><b>${acc.stats.topics}</b><span>${t('Topics')}</span></div><div class="card stat"><b>${acc.stats.voices}</b><span>${t('Saved voices')}</span></div></div>
         <div class="small mt-s">${t('Data')}: <code>${esc(acc.dataDir)}</code> · ${mb(acc.sizes.dataBytes)}<br>${t('Speech models')}: <code>${esc(acc.modelsDir)}</code> · ${mb(acc.sizes.modelBytes)} · v${esc(S.state?.version || '')}</div>
         <div class="row wrap mt-s"><button class="btn" data-act="exp-json">${icon('download', 'sm')} ${t('Full backup (JSON)')}</button><button class="btn" data-act="exp-md">${icon('download', 'sm')} ${t('All notes (Markdown)')}</button><button class="btn" data-act="exp-more">${icon('share', 'sm')} ${t('More export options…')}</button></div>
+      </section>
+      <section class="panel"><div class="panel-head"><h3>${t('Backups')}</h3><span class="badge" id="bk-state"></span></div>
+        <p class="hint" style="margin-top:0">${t('A copy of the whole database in a folder you choose, once a day while the app runs, keeping the last ten. It holds your meetings, notes read from folders, people and promises. It does not hold the original files of your folders and vaults, the speech models, or the key that opens saved API keys.')}</p>
+        ${field('bk-dir', t('Backup folder'), `<input id="bk-dir" value="${esc(s.backupDir || '')}" placeholder="/home/you/Backups/WhisperBrain" autocomplete="off" spellcheck="false">`, t('Leave empty for no automatic backups.'))}
+        <div class="row"><button class="btn" data-act="bk-now" ${s.backupDir ? '' : 'disabled'}>${icon('download', 'sm')} ${t('Back up now')}</button><span class="small muted" id="bk-detail"></span></div>
       </section>
       <section class="panel"><div class="panel-head"><h3>${t('Saved voices')}</h3><span class="badge">${voices.length}</span></div>
         <div class="hint mb">${t('People WhisperBrain recognises by voice. Name a speaker in a transcript and tick “remember” to add one.')}</div>
@@ -269,7 +279,7 @@ function bind(main, sec, body) {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
     'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
-    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }),
+    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }),
     'tr-enabled': (v) => ({ translation: { enabled: v } }), 'tr-live': (v) => ({ translation: { live: v } }), 'tr-view': (v) => ({ translation: { view: v } }), 'tr-notes': (v) => ({ translation: { notesLanguage: v } }),
     'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
     'as-enabled': (v) => ({ assistant: { enabled: v } }), 'as-mode': (v) => ({ assistant: { mode: v } }), 'as-trigger': (v) => ({ assistant: { trigger: v } }), 'as-reveal': (v) => ({ assistant: { revealMs: Number(v) } }),
@@ -302,6 +312,7 @@ function bind(main, sec, body) {
         await save({ assistant: { hotkeys } });
         body.querySelector('#as-keys-result').textContent = t('Saved');
       }
+      else if (b.dataset.act === 'bk-now') { const r = await api('POST', '/api/backup'); done(t('Backup saved: {name}', { name: r.name })); $('#bk-detail')?.replaceChildren(t('Last backup: {when}', { when: new Date().toLocaleString() })); }
       else if (b.dataset.act === 'exp-json') await download('/api/account/export');
       else if (b.dataset.act === 'exp-md') await download('/api/account/export?format=md');
       else if (b.dataset.act === 'exp-more') openExport([]);

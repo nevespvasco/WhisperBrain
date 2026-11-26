@@ -79,6 +79,10 @@ module.exports = function brainRoutes(add, app, { HttpError }) {
   r('POST', '/api/reminders/:id/:state', async ({ params }) => app.reminders.setState(params.id, params.state === 'dismiss' ? 'dismissed' : params.state));
   r('POST', '/api/brief', async ({ body }) => { const b = object(body); return app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] }); });
 
+  // ---- backups of the database ----
+  r('GET', '/api/backup', async () => ({ dir: app.settings.get('backupDir'), backups: app.listBackups().slice(0, 10).map((b) => ({ name: b.name, at: b.at, bytes: b.bytes })) }));
+  r('POST', '/api/backup', async () => { const out = app.backupNow(); return { name: require('node:path').basename(out.file), bytes: out.bytes, kept: out.kept }; });
+
   // ---- the search index: how much is searchable, and what a question finds (meetings and notes, by words and by meaning) ----
   r('GET', '/api/index', async () => app.chunkIndex.stats());
   r('GET', '/api/retrieve', async ({ query }) => {

@@ -51,6 +51,7 @@ const { extractAssertions } = require('../brain/extract');
 const { Reminders } = require('../brain/reminders');
 const { Briefs } = require('../brain/brief');
 const { Inbox } = require('../brain/inbox');
+const { backupTo, list: listBackups } = require('../core/backup');
 const { ItemStore } = require('../items/store');
 const { SourceManager } = require('../connectors/manager');
 const { pdfToText } = require('../importers/pdf');
@@ -240,13 +241,19 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     if (e.type === 'note.insights' && semantic.available && settings.get('semanticSearch')) semantic.indexNote(e.data.id).catch(() => {});
   });
   const retentionTimer = detect ? setInterval(sweep, 86400000) : null;
+  // a copy of the database every day, once a folder is chosen (and a first one when the app starts, if the last is older than a day)
+  const backupNow = () => backupTo(conn, settings.get('backupDir'));
+  const backupIfDue = () => { const dir = settings.get('backupDir'); if (!dir) return; try { const last = listBackups(dir)[0]; if (!last || Date.now() - last.at > 86400000) { backupNow(); bus.publish('backup.done', {}); } } catch (e) { bus.publish('backup.failed', { message: e.message }); } };
+  const backupTimer = detect ? setInterval(backupIfDue, 3600000) : null;
+  backupTimer?.unref();
+  if (detect) ready.then(() => setTimeout(backupIfDue, 20000).unref()).catch(() => {});
   retentionTimer?.unref();
   if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }).catch(() => {});
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -294,6 +301,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
       self.pendingGoogleAuth?.cancel?.();
       sources.stop();
       reminders.stop();
+      clearInterval(backupTimer);
       runner.stop();   // takes no new job; one cut short by the closing database runs again at the next start
       detector.stop();
       assistant.close();

@@ -77,6 +77,23 @@ Not done, on purpose or for later:
 - **PDFs** are read when a text layer exists. Scanned PDFs need OCR, which is not built.
 - **`entity_revisions`** (edit history of an entity) is not built: merges are recorded and reversible, which covers what Phase 1 needed.
 
+## Phases 2 to 4: what was built
+
+Search and Ask (Phase 2):
+- Migration v18: `chunks`, `chunks_fts` (BM25), `index_owner` (the hash each meeting or item was indexed at), `index_meta`, `chat_messages.sources`. `src/search/index.js` cuts meetings and items into chunks, keeps only what changed up to date, and fuses the word list and (when an embedding model is set) the vector list by RRF.
+- Vectors come from the AI server's `/v1/embeddings` (`src/search/embedder.js`, setting `embeddingModel`, empty = words only) and live in a sqlite-vec table made on demand. A private source is embedded and shown only when the server is on this computer.
+- Ask: the chat across all meetings gets numbered excerpts from the index next to the meetings the question is about. Only given numbers may be cited; others are removed in code. Citations open the transcript line or the note, and are saved with the answer.
+- `src/core/fts.js`: writes to FTS5 tables with `contentless_delete` can leave SQLite's last-insert rowid beyond JavaScript's safe integers and make the next write throw; those writes now reset it.
+- `scripts/retrieval-eval.js` measures recall@k and MRR on a question set the person writes from their own data. No real set exists yet, and Portuguese quality of any embedding model is therefore still unmeasured.
+
+Decisions, promises, Inbox, brief, MCP (Phase 3) and reminders (Phase 4):
+- Migration v19: `assertions` (decision or commitment; suggested, accepted, dismissed as a tombstone, done, superseded) and `reminders`. The AI must give the exact words and the line; they are checked against the transcript in code and an item without proof is thrown away. Dates are worked out in code (`src/brain/dates.js`, English and Portuguese). Nothing is accepted by itself.
+- Inbox, Promises, Home "Needs you", and a brief before a meeting (`src/brain/brief.js`) built from facts only, with no AI in between. Reminders have a calm budget (three announcements, then one line).
+- `src/mcp` and `scripts/mcp-server.js`: a read-only MCP server (database opened read-only, no tool writes, nothing from a private source, only accepted promises and decisions).
+- Database backups to a folder, daily while the app runs (`src/core/backup.js`).
+
+Not built (they need accounts or tokens of the person, and could not be tested against the real services here): Gmail, Slack, GitHub and Discord connectors; incremental Google Calendar sync; Notion and Linear polling; actions the AI may take after approval; natural-language rules; a vault mode; the pre-meeting brief phrased by an AI (the facts-only brief is what exists). The connector contract (`SourceManager`, `ItemStore.upsert` by external id, tombstones, sync state on `sources`) is what each of them plugs into.
+
 ## Order of work (Phase 1)
 
 1. The "Doors" navigation shell (`ui/nav.js`). It maps onto today's pages, so nothing becomes unreachable (`test/navigation.test.js`).

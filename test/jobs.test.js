@@ -135,6 +135,7 @@ test('the work after a recording survives a quit in the middle and finishes at t
   const one = createApp({ dataDir, platform: fakePlatform(), version: 'test' });
   await one.ready;
   await one.runner.stop();   // so the step is caught "in flight" below, as a quit would leave it
+  one.settings.update({ llm: { ...one.settings.get('llm'), baseUrl: '' } });   // no AI server: the chain is names, summary, insights
   const n = one.notes.create({ title: 'Budget review' });
   one.notes.addSegments(n.id, [{ speaker: 'me', text: 'We agreed the marketing budget for the spring campaign and the hiring plan.', startMs: 0, endMs: 4000, channel: 'mic' }]);
   one.bus.publish('recording.stopped', { noteId: n.id, durationMs: 4000 });
@@ -229,4 +230,26 @@ test('the AI-run ledger notes every call and whether it left this computer, with
   const old = app.db.prepare('INSERT INTO ai_runs (at, lane) VALUES (?, ?)').run(Date.now() - 200 * 86400000, 'chat');
   assert.equal(app.aiRuns.prune(), 1, 'old entries go');
   assert.ok(old);
+});
+
+test('a backup is a consistent copy of the database in the chosen folder; only the newest few are kept', async (t) => {
+  const { backupTo, list, KEEP } = require('../src/core/backup');
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = tmpDir('wb-bak-');
+  const db = open(path.join(dir, 'live.sqlite'));
+  db.prepare("INSERT INTO notes (id, title, created_at, updated_at) VALUES ('n1', 'Kept in the backup', 1, 1)").run();
+  t.after(() => { db.close(); fs.rmSync(dir, { recursive: true, force: true }); });
+  const target = path.join(dir, 'backups', "it's here");   // created if missing; odd characters are fine
+  assert.throws(() => backupTo(db, ''), /Choose a folder/);
+  const first = backupTo(db, target, { now: new Date(2026, 10, 1, 9, 0, 0) });
+  const copy = new DatabaseSync(first.file, { readOnly: true });
+  assert.equal(copy.prepare("SELECT title FROM notes WHERE id = 'n1'").get().title, 'Kept in the backup');
+  assert.equal(copy.prepare('PRAGMA user_version').get().user_version, db.prepare('PRAGMA user_version').get().user_version);
+  copy.close();
+  assert.throws(() => backupTo(db, target, { now: new Date(2026, 10, 1, 9, 0, 0) }), /just made/);
+  for (let i = 1; i <= KEEP + 2; i++) backupTo(db, target, { now: new Date(2026, 10, 1 + i, 9, 0, 0) });
+  const kept = list(fs.realpathSync(target));
+  assert.equal(kept.length, KEEP, 'the oldest are removed');
+  assert.ok(!kept.some((b) => b.name.includes('2026-11-01')));
+  assert.equal(fs.statSync(kept[0].file).mode & 0o077, 0, 'readable by the owner only');
 });

@@ -101,6 +101,7 @@ test('after a recording the voices are named by themselves only when asked: auto
   s.app.llm.stream = (...a) => { asked++; return real(...a); };
 
   assert.equal(s.app.settings.get('speakerNamesFromTranscript'), 'auto', 'the default');
+  s.app.settings.update({ autoAssertions: false });   // this test counts the calls that name voices; looking for promises is another call (test/brain.test.js)
   await s.json('PUT', '/api/settings', { llm: local });
   const a = meeting(s.app); stopped(a.id);
   await until(() => nameOf(a.id) === 'Maria');
