@@ -5,6 +5,12 @@ electron/main.js        window, tray, notifications, global dictation shortcut, 
 src/server/app.js       composition root (no HTTP): stores + services + platform adapter
 src/server/http.js      local HTTP API + SSE on 127.0.0.1 (random port, per-launch token cookie, Host/Origin checks, CSP)
 src/core/               SQLite (node:sqlite, FTS5), notes, spaces, settings, templates, account
+src/jobs/               durable background work: a jobs table (queue.js) and its runner with lanes; the steps after a recording
+                        run here and resume after a quit (docs/adr/0001-brain-data-model.md)
+src/items/              sources and items (one row per thing from any source, updated in place, tombstoned when gone); sensitivity rule
+src/connectors/         folder / Obsidian vault reader (pointer mode: files stay the originals) and the manager that scans and watches
+src/graph/              people as entities: identities (e-mail, voice, name), merge proposals, reversible merges, mentions
+src/audit/              the AI-run ledger: every AI call, and whether it left this computer (never the text)
 src/asr/                model catalog/installer, ASR worker process (VAD + recognizer + voice embeddings + optional streaming drafts)
 src/recording/          recording manager (channels, timeline, echo removal, speaker labels), audio import
 src/speakers/           online voice clustering, cluster merging, voice profiles, after-recording refinement (pitch + timbre, refine.js)
@@ -17,7 +23,8 @@ src/integrations/       Notion, Linear, Obsidian, webhooks, and the service that
 src/meetings/           iCalendar parser (RRULE/TZ/overrides), Google Calendar (OAuth loopback + PKCE), meeting detector
 src/dictation/          dictate → transcribe → paste
 src/platform/           per-OS adapters (table below)
-ui/                     the interface (vanilla ES modules, no build step): app shell, views/, ⌘K palette, i18n (en, pt)
+ui/                     the interface (vanilla ES modules, no build step): app shell, views/, ⌘K palette, i18n (en, pt);
+                        navigation = four doors (Today, Ask, Library, Setup) in ui/nav.js, each page behind exactly one
 ```
 
 ## Platform adapters

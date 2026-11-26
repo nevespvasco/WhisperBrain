@@ -6,8 +6,12 @@ import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
 
-const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map((s) => `<a class="chip" href="#/note/${s.id}">${icon('link', 'sm')}${esc(s.title || t('Untitled meeting'))}</a>`).join('')}</div>` : '');
-const bubble = (m) => `<div class="bubble ${m.role}">${m.role === 'user' ? esc(m.content) : renderMarkdown(m.content) + sourcesHtml(m.sources)}</div>`;
+// where a source opens: a meeting at the line that was cited, or a note from a folder
+const hrefOf = (s) => (s.kind === 'item' ? `#/documents/${s.id}` : `#/note/${s.id}${s.segmentId ? `?tab=transcript&seg=${s.segmentId}` : ''}`);
+const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map((s) => `<a class="chip" href="${hrefOf(s)}" title="${esc(s.title || '')}">${icon(s.kind === 'item' ? 'file' : 'link', 'sm')}${s.n ? `<b>[${s.n}]</b> ` : ''}${esc(s.title || t('Untitled meeting'))}</a>`).join('')}</div>` : '');
+// [1] in an answer becomes a link to what it cites; a number with nothing behind it stays plain text
+const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${hrefOf(s)}" title="${esc(s.title || '')}">${n}</a>` : m; });
+const bubble = (m) => `<div class="bubble ${m.role}">${m.role === 'user' ? esc(m.content) : withCites(renderMarkdown(m.content), m.sources) + sourcesHtml(m.sources)}</div>`;
 const emptyHtml = (suggestions) => `<div class="chat-empty"><span class="ic-wrap">${icon('sparkles')}</span><div class="muted small">${t('Ask a question, or start from one of these:')}</div>
   <div class="chips">${suggestions.map((q) => `<button class="chip" data-q="${esc(q)}">${icon('sparkles', 'sm')}${esc(q)}</button>`).join('')}</div></div>`;
 
@@ -38,6 +42,7 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
       const res = await stream('/api/chat', { noteId, question: q }, { onDelta: (d) => { text += d; out.innerHTML = renderMarkdown(text); fol.update(); } });
       out.classList.remove('typing');
       const sources = !noteId ? res?.sources : null;
+      if (res?.answer) { text = res.answer; out.innerHTML = withCites(renderMarkdown(text), sources); }   // the checked answer: only numbers that were given stay
       if (sources?.length) out.insertAdjacentHTML('beforeend', sourcesHtml(sources));
       fol.update();
       history.push({ role: 'user', content: q }, { role: 'assistant', content: text, sources });

@@ -2,8 +2,8 @@
 // plus quick commands. Results are grouped by day; arrows + Enter navigate.
 import { S, $, $$, api, t, esc, icon, go, fmtClock, dateGroup, groupBy, debounce, safeSnippet, menu, fmtDate } from './lib.js';
 
-const KINDS = [['all', 'All'], ['meetings', 'Meetings'], ['quotes', 'Who said'], ['topics', 'Topics'], ['people', 'People'], ['glossary', 'Glossary'], ['tags', 'Tags'], ['actions', 'Actions']];
-const KIND_ICON = { meeting: 'link', quote: 'quote', topic: 'hash', person: 'user', term: 'book', tag: 'tag', action: 'checksq', cmd: 'bolt' };
+const KINDS = [['all', 'All'], ['meetings', 'Meetings'], ['quotes', 'Who said'], ['topics', 'Topics'], ['people', 'People'], ['glossary', 'Glossary'], ['tags', 'Tags'], ['actions', 'Actions'], ['docs', 'Notes & files']];
+const KIND_ICON = { meeting: 'link', quote: 'quote', topic: 'hash', person: 'user', term: 'book', tag: 'tag', action: 'checksq', doc: 'file', cmd: 'bolt' };
 const DATES = [['', 'Any time'], ['1', 'Today'], ['7', 'Past week'], ['30', 'Past month'], ['365', 'Past year']];
 const SORTS = [['relevance', 'Relevance'], ['newest', 'Newest first'], ['oldest', 'Oldest first']];
 let dlg = null;
@@ -16,6 +16,7 @@ function href(r) {
   if (r.kind === 'term') return `#/term/${r.id}`;
   if (r.kind === 'tag') return `#/meetings?tag=${r.id}`;
   if (r.kind === 'action') return `#/note/${r.noteId}?tab=summary`;
+  if (r.kind === 'doc') return `#/documents/${r.id}`;
   return r.href || '#/';
 }
 
@@ -53,7 +54,7 @@ export function openPalette(initial = '') {
   const input = $('input', dlg), box = $('.pal-results', dlg);
   input.focus();
 
-  const KIND_TITLE = { cmd: 'Commands', meeting: 'Meetings', quote: 'Who said it', topic: 'Topics', person: 'People', term: 'Glossary', tag: 'Tags', action: 'Action items' };
+  const KIND_TITLE = { cmd: 'Commands', meeting: 'Meetings', quote: 'Who said it', topic: 'Topics', person: 'People', term: 'Glossary', tag: 'Tags', action: 'Action items', doc: 'Notes & files' };
   // Groups in display order: commands first, then by kind (relevance) or by day (date sorts / empty query).
   const layout = (rows) => {
     const cmds = rows.filter((r) => r.kind === 'cmd'), rest = rows.filter((r) => r.kind !== 'cmd');
@@ -83,6 +84,7 @@ export function openPalette(initial = '') {
     else if (r.kind === 'person') sub = `(${r.count} ${r.count === 1 ? t('meeting') : t('meetings')})${r.snippet ? ' · ' + esc(r.snippet) : ''}`;
     else if (r.kind === 'tag') sub = `(${r.count} ${r.count === 1 ? t('meeting') : t('meetings')})`;
     else if (r.kind === 'term') sub = esc(r.snippet || '');
+    else if (r.kind === 'doc') sub = `${r.snippet ? safeSnippet(r.snippet) : ''}${r.source ? ` · ${esc(r.source)}` : ''}`;
     else if (r.kind === 'action') { title = `${r.done ? '✓ ' : ''}${title}`; sub = esc([r.snippet, r.noteTitle].filter(Boolean).join(' · ')); }
     const right = r.kind === 'meeting' && r.tags?.length ? r.tags.slice(0, 2).map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</span>`).join('') : r.kbd ? `<kbd>${esc(r.kbd)}</kbd>` : '';
     return `<a class="pal-item" role="option" data-i="${i}" href="${esc(href(r))}">${ic}<span class="grow"><span class="t ${r.kind === 'meeting' ? 'u' : ''}">${title}</span><span class="s">${sub}</span></span><span class="right">${right}</span></a>`;

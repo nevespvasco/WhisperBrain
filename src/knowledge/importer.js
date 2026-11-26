@@ -3,6 +3,10 @@
 // (VTT, SRT, TXT, Markdown, JSON, DOCX, HTML, CSV) become notes with named speakers; Notion pages, Obsidian notes
 // and Linear issues come in the same way, marked with their source so they can be kept apart from recordings.
 const path = require('node:path');
+const crypto = require('node:crypto');
+// sources whose pages have a stable reference of their own: importing one again updates it (a plain file does not: two files can share a name)
+const SYNCED = new Set(['notion', 'obsidian', 'linear']);
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 32);
 const { decodeAudio, transcribePcm, assignSpeakers } = require('../recording/import');
 
 let importers = null;
@@ -75,8 +79,21 @@ class Importer {
       title: p.title || prettyTitle(p.sourceName), body: p.body || '', summary: p.summary || '', attendees: p.attendees || [],
       createdAt: created, source, sourceRef, folderId, status: 'done',
     });
-    if (segs.length) {
-      // every distinct label becomes a named speaker: the user is m1, everyone else s1, s2…
+    if (segs.length) this.fillSegments(note.id, segs, created, last);
+    notes.reindex(note.id);
+    const allTags = [...new Set([...(p.tags || []), ...tags])];
+    if (allTags.length) knowledge.setNoteTags(note.id, allTags);
+    for (const a of p.actionItems || []) { try { knowledge.addAction(note.id, a); } catch { /* skip empty */ } }
+    knowledge.corpus = null;
+    try { knowledge.autoTopics(note.id); } catch { /* topics are best effort */ }
+    return { id: note.id, title: notes.get(note.id).title, status: 'done', segments: segs.length };
+  }
+
+  // Lines of a transcript into a note: every distinct label becomes a named speaker (the user is m1, everyone else s1, s2…).
+  fillSegments(noteId, segs, created, last) {
+    const { notes, speakers, db } = this.app;
+    const note = { id: noteId };
+    {
       const ids = new Map();
       let n = 0;
       const ins = db.prepare('INSERT OR IGNORE INTO note_speakers(note_id, speaker_id, channel, name, count) VALUES(?, ?, ?, ?, 0)');
@@ -92,13 +109,6 @@ class Importer {
       notes.update(note.id, { startedAt: created, endedAt: created + last });
       speakers.autoMatch?.(note.id);
     }
-    notes.reindex(note.id);
-    const allTags = [...new Set([...(p.tags || []), ...tags])];
-    if (allTags.length) knowledge.setNoteTags(note.id, allTags);
-    for (const a of p.actionItems || []) { try { knowledge.addAction(note.id, a); } catch { /* skip empty */ } }
-    knowledge.corpus = null;
-    try { knowledge.autoTopics(note.id); } catch { /* topics are best effort */ }
-    return { id: note.id, title: notes.get(note.id).title, status: 'done', segments: segs.length };
   }
 
   // Markdown from another tool (Notion page, Obsidian note, Linear issue) → a meeting with that source.
@@ -107,9 +117,41 @@ class Importer {
     const parsed = p || { title, body: markdown, segments: [] };
     if (title && (!parsed.title || parsed.title === 'note')) parsed.title = title;
     if (date && !parsed.date) parsed.date = date;
+    // The same page, note or issue imported again updates its meeting instead of making a second one (Notion, Obsidian and Linear
+    // each have a stable reference). What was last imported is remembered by a hash, so an unchanged page does nothing.
+    const hash = sha(`${parsed.title || ''}\n${parsed.body || ''}\n${parsed.summary || ''}\n${JSON.stringify(parsed.segments || [])}`);
+    const existing = SYNCED.has(source) && sourceRef ? this.app.db.prepare('SELECT id FROM notes WHERE source = ? AND source_ref = ? ORDER BY created_at LIMIT 1').get(source, String(sourceRef)) : null;
+    if (existing) return this.updateFromParsed(existing.id, parsed, hash, { link });
     const out = this.createFromParsed(parsed, { folderId, source, sourceRef });
     if (link?.url) this.app.knowledge.addLink(out.id, link);
+    this.rememberImport(out.id, hash);
     return out;
+  }
+
+  rememberImport(noteId, hash) {
+    const it = this.app.items.syncNote(noteId);
+    if (it) this.app.items.setMeta(it.id, { ...it.meta, importHash: hash });
+  }
+
+  updateFromParsed(noteId, p, hash, { link } = {}) {
+    const { notes, knowledge, db } = this.app;
+    const it = this.app.items.syncNote(noteId);
+    if (it?.meta?.importHash === hash) return { id: noteId, title: notes.get(noteId).title, status: 'done', unchanged: true, segments: 0 };
+    const segs = (p.segments || []).filter((x) => x.text);
+    notes.update(noteId, { title: p.title || notes.get(noteId).title, body: p.body || '', summary: p.summary || '' });
+    if (segs.length) {
+      db.prepare('DELETE FROM segments WHERE note_id = ?').run(noteId);
+      db.prepare('DELETE FROM note_speakers WHERE note_id = ?').run(noteId);
+      const created = Number(p.date) > 0 ? Number(p.date) : notes.get(noteId).createdAt;
+      this.fillSegments(noteId, segs, created, Math.max(...segs.map((x) => x.endMs || x.startMs || 0)));
+    }
+    notes.reindex(noteId);
+    knowledge.corpus = null;
+    try { knowledge.autoTopics(noteId); } catch { /* topics are best effort */ }
+    if (link?.url) { try { knowledge.addLink(noteId, link); } catch { /* best effort: an existing link is kept */ } }
+    const fresh = this.app.items.syncNote(noteId);
+    if (fresh) this.app.items.setMeta(fresh.id, { ...fresh.meta, importHash: hash });
+    return { id: noteId, title: notes.get(noteId).title, status: 'done', updated: true, segments: segs.length };
   }
 }
 

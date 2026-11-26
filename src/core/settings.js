@@ -86,9 +86,15 @@ const DEFAULTS = {
   perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux, macOS 14.2+, Windows with the helper); off = everything the computer plays
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
+  backupDir: '',                 // a folder for backups of the database ('' = none); with one, a copy is made every day while the app runs (src/core/backup.js)
+  ocrLanguages: 'por+eng',        // tesseract languages for scanned PDFs, where pdftoppm and tesseract are installed (src/importers/ocr.js)
+  rerank: false,                 // let the AI server order the excerpts for a question by how well each answers it (one extra request per question)
+  autoAssertions: true,          // after a meeting, look for decisions and commitments (each one a suggestion with its quote; nothing is accepted by itself)
+  embeddingModel: '',            // an embedding model on the AI server (e.g. embeddinggemma): search by meaning as well as by words; '' = words only (src/search)
+  startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
   secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
-  google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] },
+  google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false },   // gmail: the sign-in also asked for read-only access to mail
   // The platforms' own transcripts (src/transcripts): the app each person registered with the platform, and the tokens it gave
   microsoft: { clientId: '', tenant: 'organizations', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
   googleMeet: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
@@ -96,6 +102,8 @@ const DEFAULTS = {
   notion: { token: '', parentId: '', parentKind: 'page', parentTitle: '', autoExport: false },
   linear: { apiKey: '', teamId: '', teamName: '' },
   obsidian: { vaultPath: '', folder: 'Meetings', transcript: true, autoExport: false },
+  github: { token: '' },        // a personal access token (read-only: repository metadata, issues and pull requests): src/connectors/github.js
+  slack: { token: '' },         // a token of YOUR OWN Slack app (internal apps are exempt from the limits on shared apps): src/connectors/slack.js
   webhooks: [],                 // [{ id, name, url, secret, auto }]
   meet: {
     enabled: true,              // use what the meeting window shows (who is speaking, who is on the call) to name the voices on the call
@@ -113,9 +121,9 @@ const DEFAULTS = {
 };
 
 const MAX_TRANSLATION_TARGETS = 8;
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'obsidian', 'meet', 'discord', 'translation', 'assistant']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'translation', 'assistant']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], meet: ['token'], discord: ['token'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token'], meet: ['token'], discord: ['token'] };
 const MASK = '********';
 
 // Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.
@@ -178,6 +186,7 @@ function validate(key, value) {
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
+  if (key === 'startPage' && !['home', 'meetings'].includes(value)) throw new Error('startPage must be home or meetings');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
   if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);

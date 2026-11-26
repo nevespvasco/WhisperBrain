@@ -12,6 +12,7 @@ export async function api(method, path, body) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (res.status === 423) window.dispatchEvent(new Event('wb:locked'));   // the app lock closed: the lock screen takes over
   if (!res.ok) throw new ApiError(data?.error || res.statusText, res.status, data?.code);
   return data;
 }
@@ -48,7 +49,7 @@ export async function stream(path, body, { onDelta, onStage, signal } = {}) {
 // Live events from the server. Reconnects automatically (EventSource does) and re-announces on reconnect.
 export function events(handlers) {
   const es = new EventSource('/api/events');
-  const types = ['settings', 'note.created', 'note.updated', 'note.deleted', 'note.summarizing', 'note.summarize-failed', 'recording.started', 'recording.paused', 'recording.resumed', 'recording.mic-muted', 'recording.finalizing', 'recording.stopped', 'recording.level', 'recording.warning', 'recording.overlap', 'capture.request', 'transcript.segment', 'transcript.partial', 'transcript.removed', 'speakers.updated', 'translation.started', 'translation.segment', 'translation.progress', 'translation.done', 'translation.failed', 'meeting.detected', 'meeting.apps-changed', 'meeting.ended', 'meeting.autostarted', 'meeting.starting', 'model.progress', 'model.installed', 'model.removed', 'model.error', 'dictation.state', 'dictation.result', 'dictation.error', 'assistant.state', 'assistant.question', 'assistant.sentence', 'assistant.flag', 'assistant.done', 'assistant.error', 'assistant.repeat', 'assistant.summary', 'assistant.term', 'briefings.changed'];
+  const types = ['settings', 'note.created', 'note.updated', 'note.deleted', 'note.summarizing', 'note.summarize-failed', 'recording.started', 'recording.paused', 'recording.resumed', 'recording.mic-muted', 'recording.finalizing', 'recording.stopped', 'recording.level', 'recording.warning', 'recording.overlap', 'capture.request', 'transcript.segment', 'transcript.partial', 'transcript.removed', 'speakers.updated', 'translation.started', 'translation.segment', 'translation.progress', 'translation.done', 'translation.failed', 'meeting.detected', 'meeting.apps-changed', 'meeting.ended', 'meeting.autostarted', 'meeting.starting', 'model.progress', 'model.installed', 'model.removed', 'model.error', 'dictation.state', 'dictation.result', 'dictation.error', 'assistant.state', 'assistant.question', 'assistant.sentence', 'assistant.flag', 'assistant.done', 'assistant.error', 'assistant.repeat', 'assistant.summary', 'assistant.term', 'briefings.changed', 'job.changed', 'job.error', 'sources.changed', 'sources.syncing', 'sources.progress', 'people.changed'];
   for (const t of types) es.addEventListener(t, (e) => { try { handlers[t]?.(JSON.parse(e.data)); handlers['*']?.(t, JSON.parse(e.data)); } catch (err) { console.error(err); } });
   es.addEventListener('open', () => handlers.open?.());
   return es;

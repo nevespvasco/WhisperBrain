@@ -22,7 +22,7 @@ After the meeting, the same panel lists what the assistant showed.
 - The collapsed pill shows a mark when a new suggestion arrives.
 - The window never takes the keyboard by itself. It becomes focusable only while you type a question, and gives the focus back when you send it.
 
-**Briefings** (`#/briefings` in the sidebar). Paste text, or import PDF, Word, Markdown, text or HTML. A briefing is a *project*, an *agenda*, a *client*, a *company* or plain *notes* (an imported file starts as notes). Each briefing keeps a list of terms, which also bias speech recognition for the meetings it is attached to.
+**Briefings** (`#/briefings`, under Library in the menu). Paste text, or import PDF, Word, Markdown, text or HTML. A briefing is a *project*, an *agenda*, a *client*, a *company* or plain *notes* (an imported file starts as notes). Each briefing keeps a list of terms, which also bias speech recognition for the meetings it is attached to.
 
 ## How it decides
 

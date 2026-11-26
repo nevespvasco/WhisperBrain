@@ -90,7 +90,15 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
   r('GET', '/api/people/:key', async ({ params }) => k.person(params.key) || (() => { throw new HttpError(404, 'person not found'); })());
 
   // ---- search ----
-  r('GET', '/api/find', async ({ query }) => k.find({ q: query.q || '', kind: query.kind || 'all', from: query.from, to: query.to, sort: query.sort || 'relevance', source: query.source || undefined, limit: Number(query.limit) || 40 }));
+  r('GET', '/api/find', async ({ query }) => {
+    const kind = query.kind || 'all', q = query.q || '', limit = Number(query.limit) || 40;
+    const rows = k.find({ q, kind, from: query.from, to: query.to, sort: query.sort || 'relevance', source: query.source || undefined, limit });
+    // notes and files from folders and vaults (src/items) are found next to meetings
+    if (q && (kind === 'all' || kind === 'docs') && app.items) {
+      for (const it of app.items.list({ q, limit: kind === 'all' ? 8 : limit })) rows.push({ kind: 'doc', id: it.id, title: it.title, snippet: it.snippet || it.preview, at: it.occurredAt, rank: 0, source: it.sourceName });
+    }
+    return rows;
+  });
   r('GET', '/api/quotes', async ({ query }) => k.quotes(query.q || '', { speaker: query.speaker, noteId: query.noteId, from: query.from, to: query.to, limit: Number(query.limit) || 50 }));
 
   // ---- links ----
@@ -180,7 +188,7 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     if (Object.keys(patch).length) app.settings.update({ google: { ...app.settings.get('google'), ...patch } });
     if (!app.settings.get('google').clientId) throw new HttpError(400, 'Add the OAuth client ID from Google Cloud first.');
     app.pendingGoogleAuth?.cancel?.();
-    const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined });
+    const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined, gmail: !!body.gmail });
     app.pendingGoogleAuth = auth;
     auth.done.then((r2) => { app.calendar.invalidate?.(); app.bus.publish('google.connected', { email: r2.email, calendars: r2.calendars?.length || 0 }); })
       .catch((e) => app.bus.publish('google.error', { message: e.message }))

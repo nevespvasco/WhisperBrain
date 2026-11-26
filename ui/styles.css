@@ -851,3 +851,58 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 .su-cmd { display: flex; align-items: center; gap: 8px; margin-top: 6px; min-width: 0; }
 .su-cmd .xsmall { flex: none; width: 108px; }
 .su-cmd code { flex: 1; min-width: 0; overflow-x: auto; white-space: nowrap; padding: 5px 8px; border-radius: 8px; background: var(--card); border: 1px solid var(--line); font-size: 12px; }
+
+/* ---------- doors: a rail of four places plus the Record button, and the open door's pages next to it (ui/nav.js) ---------- */
+.app { --rail-w: 76px; --side-w: 304px; }
+.app.collapsed { --side-w: 76px; }
+.sidebar { flex-direction: row; }
+.rail { width: var(--rail-w); flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 0 12px; border-right: 1px solid var(--line); min-height: 0; overflow-y: auto; scrollbar-width: none; }
+.app.collapsed .rail { border-right: 0; }
+.rail-logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--accent-2), var(--accent)); display: grid; place-items: center; color: #fff; margin-bottom: 12px; flex: none; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 35%, transparent); }
+.door { width: 64px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 2px 8px; border-radius: 13px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 11.5px; font-weight: 600; line-height: 1.2; text-align: center; text-decoration: none !important; cursor: pointer; }
+.door:hover { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); color: var(--text); }
+.door[aria-current="page"] { background: var(--accent-soft); color: var(--accent); }
+.door .ic { width: 21px; height: 21px; }
+.rail-spacer { flex: 1; min-height: 12px; }
+.rec-door { color: var(--danger); }
+.rec-door:hover { color: var(--danger); background: var(--danger-soft); }
+.rec-bubble { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--danger); color: #fff; box-shadow: 0 4px 14px color-mix(in srgb, var(--danger) 35%, transparent); }
+.rec-door .rec-bubble .ic { width: 20px; height: 20px; }
+.rec-door.live .rec-bubble { background: var(--danger-soft); box-shadow: 0 0 0 2px var(--danger) inset; }
+.rail-small { padding: 7px 2px; }
+.rail-user { display: none; background: none; border: 0; padding: 4px; border-radius: 50%; cursor: pointer; margin-top: 4px; }
+.app.collapsed .rail-user { display: block; }
+.door-panel { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.app.collapsed .door-panel { display: none; }
+.door-head { padding: 18px 18px 4px; }
+.door-head h2 { font-size: 17px; }
+.door-head p { margin: 4px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.door-note { margin: 10px 10px 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+/* the panel already lists the settings sections, so the page's own copy of that list is only needed without it */
+@media (min-width: 901px) {
+  .topbar [data-top="record"] { display: none; }   /* Record lives on the rail */
+  .app:not(.collapsed) .settings-layout { grid-template-columns: minmax(0, 1fr); }
+  .app:not(.collapsed) .settings-nav { display: none; }
+}
+/* phone/tablet: rail and panel slide in together as the drawer; the top bar keeps its Record button */
+@media (max-width: 900px) {
+  .sidebar { width: 316px; }
+  .app.collapsed .door-panel { display: flex; }
+  .app.collapsed .rail-user { display: none; }
+  .app.collapsed .rail { border-right: 1px solid var(--line); }
+}
+/* compact: only the page's own menus keep their names (the settings list is the only way to its sections then) */
+.app.collapsed .settings-nav .navlink { justify-content: flex-start; padding: 7px 10px; }
+.app.collapsed .settings-nav .navlink .lbl { display: block; }
+
+/* a citation in an answer: [1] linked to the meeting or note it comes from */
+a.cite { display: inline-block; min-width: 16px; padding: 0 5px; margin: 0 1px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 11.5px; font-weight: 700; line-height: 17px; text-align: center; text-decoration: none !important; vertical-align: 1px; }
+a.cite:hover { background: var(--accent); color: var(--accent-ink); }
+.chip b { font-weight: 700; color: var(--accent); }
+
+/* the app lock screen */
+#lockscreen { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; background: var(--bg); }
+.lock-card { width: min(340px, calc(100vw - 32px)); display: grid; gap: 12px; justify-items: center; text-align: center; padding: 28px 24px; border: 1px solid var(--line); border-radius: var(--r-xl); background: var(--card); box-shadow: var(--shadow-lg); }
+.lock-card input { width: 100%; }
+.lock-card .btn { width: 100%; justify-content: center; }
+.lock-err { color: var(--danger); min-height: 1.3em; }

@@ -21,8 +21,10 @@ class LlmScheduler {
   // llm: an LlmClient. concurrency: a number, or a function returning one, read whenever a slot is handed out.
   // Default: 1 for a server on this computer (Ollama has one slot; a second request only queues inside it,
   // out of our control), 2 for a remote one.
-  constructor(llm, { concurrency } = {}) {
+  // onRun: called after every AI request with { lane, config, messages, charsOut, ms, ok, error } (the ledger, src/audit/ai-runs.js)
+  constructor(llm, { concurrency, onRun = null } = {}) {
     this.llm = llm;
+    this.onRun = onRun;
     this.concurrency = concurrency ?? (() => (isLocalUrl(llm.getConfig()?.baseUrl) ? 1 : 2));
     this.running = 0;
     this.queues = Object.fromEntries(PRIORITIES.map((p) => [p, []]));
@@ -52,10 +54,13 @@ class LlmScheduler {
       // Holds one slot from the first next() until the generator finishes, throws, or the consumer stops early.
       async *stream(messages, { signal, key, ...opts } = {}) {
         const slot = await scheduler.acquire(priority, { signal, key });
+        const t0 = Date.now();
+        let charsOut = 0, ok = true, error = null;
         try {
-          yield* llm.stream(messages, { ...opts, signal: slot.signal });
-        } finally {
+          for await (const d of llm.stream(messages, { ...opts, signal: slot.signal })) { charsOut += d.length; yield d; }
+        } catch (e) { ok = false; error = e?.message || String(e); throw e; } finally {
           slot.release();
+          if (scheduler.onRun) { try { scheduler.onRun({ lane: priority, config: llm.getConfig(), messages, charsOut, ms: Date.now() - t0, ok, error }); } catch { /* a ledger problem never breaks an AI call */ } }
         }
       },
       async complete(messages, opts) {

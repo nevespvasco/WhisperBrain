@@ -3,6 +3,7 @@
 import { S, $, $$, api, t, esc, icon, fail, go, meetingCard, fmtHour, dayStart, relDay, switchEl, menu, done, empty, PLATFORMS, callLabel, loc } from '../lib.js';
 import { startRecording, takeNotesFor, recordDetected } from '../recording.js';
 import { openImport } from './transfer.js';
+import { openBrief } from '../brief.js';
 
 const platformFromUrl = (u) => (/meet\.google/.test(u) ? 'meet' : /zoom\.us/.test(u) ? 'zoom' : /teams\.(microsoft|live)/.test(u) ? 'teams' : /webex/.test(u) ? 'webex' : /whereby/.test(u) ? 'whereby' : /jit\.si|jitsi/.test(u) ? 'jitsi' : null);
 let mode = 'online';
@@ -21,6 +22,7 @@ export async function render(main) {
   const st = S.state?.stats || {};
   const needModel = !S.models.some((m) => m.installed);
   const needLlm = !S.state?.llmConfigured;
+  const [needs, open] = await Promise.all([api('GET', '/api/inbox').then((r) => r.counts).catch(() => null), api('GET', '/api/commitments').catch(() => null)]);
   const hasCal = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   main.innerHTML = `<div class="page">
     <div class="page-head hello"><div><h1>${greet}${S.settings.userName ? `, ${esc(S.settings.userName.split(' ')[0])}` : ''}</h1><div class="sub">${new Date().toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div></div>
@@ -45,6 +47,9 @@ export async function render(main) {
         </section>
       </div>
       <aside class="stack loose">
+        ${needs && (needs.total || (open && (open.mine.length || open.theirs.length))) ? `<section class="panel"><div class="panel-head"><h2>${t('Needs you')}</h2><a class="link" href="#/inbox">${t('Open Inbox')} ${icon('chevright', 'sm')}</a></div>
+          <div class="stack tight small">${needs.suggestions ? `<div>${icon('sparkles', 'sm')} ${needs.suggestions === 1 ? t('1 suggestion to review') : t('{n} suggestions to review', { n: needs.suggestions })}</div>` : ''}${needs.overdue ? `<div style="color:var(--danger)">${icon('clock', 'sm')} ${t('Late promises of yours: {n}', { n: needs.overdue })}</div>` : ''}${needs.waiting ? `<div>${icon('clock', 'sm')} ${t('Late promises to you: {n}', { n: needs.waiting })}</div>` : ''}${needs.reminders ? `<div>${icon('bell', 'sm')} ${t('Reminders waiting: {n}', { n: needs.reminders })}</div>` : ''}
+          ${open ? `<a href="#/promises">${t('I owe')} <b>${open.mine.length}</b> · ${t('Owed to me')} <b>${open.theirs.length}</b></a>` : ''}</div></section>` : ''}
         <section class="panel">
           <div class="panel-head"><h2>${t('Today')}</h2><a class="btn ghost icon sm" href="#/calendar" title="${t('Calendar')}" aria-label="${t('Calendar')}">${icon('calendar')}</a></div>
           <div class="row between" style="margin-bottom:10px"><span class="strong">${t('Meetings')}</span>
@@ -78,6 +83,7 @@ export async function render(main) {
           { label: t('Off — just remind me'), selected: S.settings.captureCalendar === 'off', run: () => set('off') },
         ], { align: 'end' });
       } else if (a === 'notes-for') { const ev = JSON.parse(e.target.closest('[data-ev]').dataset.ev); takeNotesFor(ev, { record: e.target.closest('[data-rec]') != null }); }
+      else if (a === 'brief') { const ev = JSON.parse(e.target.closest('[data-ev]').dataset.ev); openBrief({ title: ev.title, start: ev.start, attendees: ev.attendees }); }
       else if (a === 'nm-start') startFromForm();
       else if (a === 'nm-upload') openImport();
     } catch (err) { fail(err); }
@@ -133,7 +139,7 @@ function eventCard(e, prefs, now) {
     <div class="t ellipsis">${esc(e.summary || t('Untitled event'))}</div>
     ${S.settings.captureCalendar === 'all' ? `<span class="badge accent" title="${t('Will be recorded automatically')}">${icon('mic', 'sm')}</span>` : switchEl('', capture, t('Record automatically')).replace('id=""', `data-cap="${esc(e.id)}"`)}
     <div class="when">${icon('clock', 'sm')}${relDay(e.start) !== t('Today') ? relDay(e.start) + ' ' : ''}${fmtHour(e.start)} – ${fmtHour(e.end)}${people.length ? ` · ${esc(people.slice(0, 2).join(', '))}${people.length > 2 ? ` +${people.length - 2}` : ''}` : ''}</div>
-    <div class="row" style="gap:4px">${e.url ? `<a class="btn xs ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}</a>` : ''}<button class="btn xs ${live ? 'primary' : 'soft'}" data-act="notes-for" ${live ? 'data-rec="1"' : ''}>${live ? t('Record') : t('Notes')}</button></div>
+    <div class="row" style="gap:4px"><button class="btn xs ghost" data-act="brief" title="${t('What you know before this meeting')}">${icon('sparkles', 'sm')} ${t('Prepare')}</button>${e.url ? `<a class="btn xs ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}</a>` : ''}<button class="btn xs ${live ? 'primary' : 'soft'}" data-act="notes-for" ${live ? 'data-rec="1"' : ''}>${live ? t('Record') : t('Notes')}</button></div>
   </div>`;
 }
 

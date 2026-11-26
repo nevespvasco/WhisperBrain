@@ -6,7 +6,9 @@ const crypto = require('node:crypto');
 const { meetingUrl } = require('./ics');
 
 const SCOPE = 'https://www.googleapis.com/auth/calendar.readonly openid email';
+const SCOPE_GMAIL = `${SCOPE} https://www.googleapis.com/auth/gmail.readonly`;   // only when the person chose to connect mail too
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
+const INCREMENTAL_MAX_AGE_MS = 12 * 3600_000;
 const STATUS = { accepted: 'ACCEPTED', declined: 'DECLINED', tentative: 'TENTATIVE', needsAction: 'NEEDS-ACTION' };
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
@@ -55,10 +57,11 @@ function toEvent(it, cal = {}) {
 class GoogleCalendar {
   constructor({ getConfig, saveConfig, fetchImpl = globalThis.fetch, authBase = 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl = 'https://oauth2.googleapis.com/token', revokeUrl = 'https://oauth2.googleapis.com/revoke',
-    apiBase = 'https://www.googleapis.com/calendar/v3', now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS }) {
-    Object.assign(this, { getConfig, saveConfig, authBase, tokenUrl, revokeUrl, apiBase, now, authTimeoutMs });
+    apiBase = 'https://www.googleapis.com/calendar/v3', gmailBase = 'https://gmail.googleapis.com/gmail/v1', now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS }) {
+    Object.assign(this, { getConfig, saveConfig, authBase, tokenUrl, revokeUrl, apiBase, gmailBase, now, authTimeoutMs });
     this.fetch = fetchImpl;
     this.refreshing = null;
+    this.windows = new Map();   // calendar id -> what is known of its window (calendarItems)
   }
 
   config() { return { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], ...(this.getConfig() || {}) }; }
@@ -80,7 +83,7 @@ class GoogleCalendar {
   }
 
   // Starts the loopback listener and returns the consent URL. `done` settles once Google redirects back (or after 5 min).
-  async beginAuth({ openExternal } = {}) {
+  async beginAuth({ openExternal, gmail = false } = {}) {
     const { clientId, clientSecret } = this.config();
     if (!clientId) throw new Error('Set a Google OAuth client ID (a "Desktop app" client from Google Cloud Console) before connecting.');
     const verifier = b64url(crypto.randomBytes(48)); // 64 url-safe chars
@@ -111,7 +114,7 @@ class GoogleCalendar {
         if (!r.json.refresh_token) throw authError('Google did not return a refresh token; remove WhisperBrain from your Google account permissions and try again.');
         this.saveTokens(r.json);
         const email = idTokenEmail(r.json.id_token);
-        this.saveConfig({ email });
+        this.saveConfig({ email, gmail: !!gmail });
         const calendars = await this.listCalendars().catch(() => this.config().calendars); // connected even if listing hiccups
         reply(res, 200, 'Connected', 'Connected — you can close this tab and return to WhisperBrain.');
         finish(null, { email, calendars });
@@ -124,7 +127,7 @@ class GoogleCalendar {
     const timer = setTimeout(() => finish(authError('Google sign-in timed out')), this.authTimeoutMs);
     timer.unref?.();
     const redirectUri = `http://127.0.0.1:${server.address().port}/callback`;
-    const q = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: SCOPE, access_type: 'offline', prompt: 'consent', state, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256' });
+    const q = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: gmail ? SCOPE_GMAIL : SCOPE, access_type: 'offline', prompt: 'consent', state, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256' });
     const authUrl = `${this.authBase}?${q}`;
     if (openExternal) { try { await openExternal(authUrl); } catch (e) { finish(e); } }
     return { authUrl, redirectUri, done, cancel: () => finish(authError('Google sign-in was cancelled')) };
@@ -152,8 +155,8 @@ class GoogleCalendar {
   }
 
   // GET <apiBase><path>?params with one refresh-and-retry on 401.
-  async api(path, params = {}) {
-    const url = `${this.apiBase}${path}?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''))}`;
+  async api(path, params = {}, base = this.apiBase) {
+    const url = `${base}${path}?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''))}`;
     for (let attempt = 0; ; attempt++) {
       const token = await this.accessToken({ force: attempt > 0 });
       const res = await this.fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
@@ -166,6 +169,12 @@ class GoogleCalendar {
       }
       return json;
     }
+  }
+
+  // Gmail (read-only), with the same token and the same refresh. Only after the person connected mail.
+  gmail(path, params = {}) {
+    if (!this.config().gmail) throw authError('Mail is not connected: connect Google again with mail switched on.');
+    return this.api(path, params, this.gmailBase);
   }
 
   async paginate(path, params) {
@@ -191,6 +200,27 @@ class GoogleCalendar {
     return calendars;
   }
 
+  // The raw events of one calendar for a window. The first time (or for a wider window, or after twelve hours) the whole window is read; after
+  // that only what changed since the last look is asked for (updatedMin, cancelled ones included) and applied to what is already known, so
+  // a refresh of a busy calendar is a few events, not all of them. Any trouble with that falls back to reading the whole window again.
+  async calendarItems(calId, from, to) {
+    const path = `/calendars/${encodeURIComponent(calId)}/events`;
+    const c = this.windows.get(calId);
+    if (c && c.from <= from && c.to >= to && this.now() - c.fullAt < INCREMENTAL_MAX_AGE_MS) {
+      try {
+        const changed = await this.paginate(path, { singleEvents: 'true', timeMin: new Date(c.from).toISOString(), timeMax: new Date(c.to).toISOString(), updatedMin: new Date(c.syncedAt - 60_000).toISOString(), showDeleted: 'true', maxResults: 250 });
+        for (const it of changed) { if (it.status === 'cancelled') c.items.delete(it.id); else c.items.set(it.id, it); }
+        c.syncedAt = this.now();
+        return [...c.items.values()];
+      } catch (e) { if (e.code === 'google-auth') throw e; this.windows.delete(calId); }
+    }
+    const w = c ? { from: Math.min(c.from, from), to: Math.max(c.to, to) } : { from, to };
+    const syncedAt = this.now();
+    const items = await this.paginate(path, { singleEvents: 'true', orderBy: 'startTime', timeMin: new Date(w.from).toISOString(), timeMax: new Date(w.to).toISOString(), maxResults: 250 });
+    this.windows.set(calId, { ...w, items: new Map(items.map((it) => [it.id, it])), syncedAt, fullAt: syncedAt });
+    return items;
+  }
+
   // Events of the selected calendars overlapping [from, to), sorted like expand().
   async events({ from, to }) {
     let cals = this.config().calendars;
@@ -198,9 +228,7 @@ class GoogleCalendar {
     const out = [];
     const seen = new Set();
     for (const cal of cals.filter((c) => c.selected)) {
-      const items = await this.paginate(`/calendars/${encodeURIComponent(cal.id)}/events`, {
-        singleEvents: 'true', orderBy: 'startTime', timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString(), maxResults: 250,
-      });
+      const items = await this.calendarItems(cal.id, from, to);
       for (const it of items) {
         const ev = toEvent(it, cal);
         if (!ev || ev.end <= from || ev.start >= to) continue;
@@ -217,8 +245,9 @@ class GoogleCalendar {
     const c = this.config();
     const token = c.refreshToken || c.accessToken;
     if (token) await this.postForm(this.revokeUrl, { token }).catch(() => {});
-    this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] });
+    this.windows.clear();
+    this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false });
   }
 }
 
-module.exports = { GoogleCalendar, toEvent, idTokenEmail, pkceChallenge, SCOPE };
+module.exports = { GoogleCalendar, toEvent, idTokenEmail, pkceChallenge, SCOPE, SCOPE_GMAIL };

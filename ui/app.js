@@ -18,7 +18,17 @@ import * as people from './views/people.js';
 import * as chat from './views/chat.js';
 import * as integrations from './views/integrations.js';
 import * as settings from './views/settings.js';
+import * as activity from './views/activity.js';
+import * as sources from './views/sources.js';
+import * as documents from './views/documents.js';
+import * as inbox from './views/inbox.js';
+import * as promises from './views/promises.js';
+import * as review from './views/review.js';
+import * as projects from './views/projects.js';
+import * as rules from './views/rules.js';
+import { openBrief } from './brief.js';
 import { setupOnFirstRun } from './views/setup.js';
+import { DOORS, door, doorOf, isCurrent } from './nav.js';
 
 const appEl = $('#app'), sidebar = $('#sidebar'), main = $('#main'), topbar = $('#topbar');
 
@@ -45,7 +55,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents, inbox, promises, review, projects, project: projects, rules,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
@@ -57,7 +67,8 @@ async function route() {
   if (name === 'search') { openPalette(params.get('q') || ''); name = ''; }
   const view = ROUTES[name] || home;
   S.view = { name: name || 'home', parts, params };
-  setDrawer(false);
+  if (!keepDrawer) setDrawer(false);   // a door tapped in the drawer opens its list there; a page link closes the drawer
+  keepDrawer = false;
   renderSidebar();
   main.scrollTop = 0; main.classList.remove('fit');
   const slow = setTimeout(() => { appEl.classList.add('loading'); main.setAttribute('aria-busy', 'true'); }, 220);
@@ -71,9 +82,9 @@ async function route() {
   }
 }
 window.addEventListener('hashchange', route);
+let keepDrawer = false;
 
 // ---------- sidebar ----------
-const cur = (names, extra = () => true) => (names.includes(S.view.name) && extra() ? 'aria-current="page"' : '');
 function navlink(href, ic, label, { count, current = '', title } = {}) {
   return `<a class="navlink" href="${href}" ${current} title="${esc(title || label)}">${ic}<span class="lbl">${esc(label)}</span>${count ? `<span class="count">${count}</span>` : ''}</a>`;
 }
@@ -90,47 +101,46 @@ function sideGroup(key, label, addAct, addLabel, items, emptyText) {
     ${closed ? '' : `<nav class="nav${all ? ' side-list' : ''}">${shown.map((it) => it.html).join('') || `<div class="xsmall faint side-more" style="padding:2px 10px">${esc(emptyText)}</div>`}</nav>
     ${items.length > SIDE_FIRST ? `<button type="button" class="side-more-btn side-more" data-act="side-all">${all ? t('Show less') : t('Show all {n}', { n: items.length })}</button>` : ''}`}</div>`;
 }
+// The sidebar is a rail of four doors (ui/nav.js) with the Record button, and next to it the open door's own pages.
+// "Compact sidebar" keeps only the rail.
 export function renderSidebar() {
   const st = S.state?.stats || {};
   const src = S.state?.sources || {};
   const p = S.view.params || new URLSearchParams();
   const inMeetings = S.view.name === 'meetings';
   const imported = Object.entries(src).filter(([k]) => !['recorded', 'manual'].includes(k)).reduce((a, [, v]) => a + v, 0);
+  const counts = { notes: st.notes, openActions: st.openActions, topics: st.topics, glossary: st.glossary, recorded: (src.recorded || 0) + (src.manual || 0), imported, documents: st.documents, inbox: st.inbox };
   const name = S.settings?.userName || t('Local account');
+  const open = door(doorOf(S.view.name));
+  const link = (l) => navlink(l.href, icon(l.icon), t(l.label), { count: l.count ? counts[l.count] : 0, current: isCurrent(l, S.view) ? 'aria-current="page"' : '', title: l.title ? t(l.title) : undefined });
+  const spaces = () => sideGroup('spaces', t('Spaces'), 'new-space', t('New space'), S.spaces.map((f) => ({ on: inMeetings && p.get('space') === f.id, html: navlink(`#/meetings?space=${f.id}`, icon('folder'), f.name, { count: f.notes, current: inMeetings && p.get('space') === f.id ? 'aria-current="page"' : '' }) })), t('Group meetings into spaces'));
+  const tags = () => sideGroup('tags', t('Tags'), 'new-tag', t('New tag'), S.tags.map((tg) => ({ on: inMeetings && p.get('tag') === tg.id, html: `<a class="navlink" href="#/meetings?tag=${tg.id}" ${inMeetings && p.get('tag') === tg.id ? 'aria-current="page"' : ''} title="${esc(tg.name)}" data-tag="${tg.id}"><span class="tagdot" style="background:${tg.color}"></span><span class="lbl">${esc(tg.name)}</span><span class="count">${tg.notes || ''}</span></a>` })), t('No tags yet'));
+  const section = (s) => (s.special === 'spaces' ? spaces() : s.special === 'tags' ? tags()
+    : `${s.label ? `<div class="side-label">${t(s.label)}</div>` : ''}<nav class="nav">${s.links.map(link).join('')}</nav>${s.note ? `<p class="door-note">${t(s.note)}</p>` : ''}`);
+  const rec = S.rec?.active;
+  const collapsed = !!S.settings?.sidebarCollapsed;
   sidebar.innerHTML = `
-    <div class="brand"><span class="logo">${icon('logo')}</span><span class="name">WhisperBrain</span>
-      <button class="btn ghost icon sm collapse-btn" data-act="collapse" title="${t('Collapse sidebar')}" aria-label="${t('Collapse sidebar')}">${icon('sidebar')}</button></div>
-    <div class="side-scroll">
-      <nav class="nav" aria-label="${t('Workspace')}">
-        ${navlink('#/', icon('home'), t('Home'), { current: cur(['home']) })}
-        ${navlink('#/meetings', icon('video'), t('Meetings'), { count: st.notes, current: inMeetings && ![...p.keys()].length ? 'aria-current="page"' : '' })}
-        ${navlink('#/calendar', icon('calendar'), t('Calendar'), { current: cur(['calendar']) })}
-        ${navlink('#/actions', icon('list'), t('Action items'), { count: st.openActions, current: cur(['actions']) })}
-        ${navlink('#/chat', icon('sparkles'), t('Ask AI'), { current: cur(['chat']) })}
-      </nav>
-      <div class="side-label">${t('Knowledge')}</div>
-      <nav class="nav">
-        ${navlink('#/topics', icon('network'), t('Topics'), { count: st.topics, current: cur(['topics', 'topic']) })}
-        ${navlink('#/glossary', icon('book'), t('Glossary'), { count: st.glossary, current: cur(['glossary', 'term']) })}
-        ${navlink('#/people', icon('users'), t('People'), { current: cur(['people', 'person']) })}
-        ${navlink('#/briefings', icon('doc'), t('Briefings'), { current: cur(['briefings']) })}
-      </nav>
-      <div class="side-label">${t('Sources')}</div>
-      <nav class="nav">
-        ${navlink('#/meetings?source=local', icon('mic'), t('Recorded here'), { count: (src.recorded || 0) + (src.manual || 0), current: inMeetings && p.get('source') === 'local' ? 'aria-current="page"' : '' })}
-        ${navlink('#/meetings?source=imported', icon('inbox'), t('From outside'), { count: imported, current: inMeetings && p.get('source') === 'imported' ? 'aria-current="page"' : '' })}
-        ${navlink('#/meetings?external=1', icon('globe'), t('External meetings'), { current: inMeetings && p.get('external') === '1' ? 'aria-current="page"' : '', title: t('Meetings with people outside your organisation') })}
-      </nav>
-      ${sideGroup('spaces', t('Spaces'), 'new-space', t('New space'), S.spaces.map((f) => ({ on: inMeetings && p.get('space') === f.id, html: navlink(`#/meetings?space=${f.id}`, icon('folder'), f.name, { count: f.notes, current: inMeetings && p.get('space') === f.id ? 'aria-current="page"' : '' }) })), t('Group meetings into spaces'))}
-      ${sideGroup('tags', t('Tags'), 'new-tag', t('New tag'), S.tags.map((tg) => ({ on: inMeetings && p.get('tag') === tg.id, html: `<a class="navlink" href="#/meetings?tag=${tg.id}" ${inMeetings && p.get('tag') === tg.id ? 'aria-current="page"' : ''} title="${esc(tg.name)}" data-tag="${tg.id}"><span class="tagdot" style="background:${tg.color}"></span><span class="lbl">${esc(tg.name)}</span><span class="count">${tg.notes || ''}</span></a>` })), t('No tags yet'))}
-    </div>
-    <div class="side-foot">
-      <button class="usercard" data-act="account-menu" aria-haspopup="menu" title="${esc(name)}">${avatar(name, { cls: 'lg' })}<span class="who"><b>${esc(name)}</b><span>${esc(S.settings?.userEmail || S.settings?.google?.email || t('Everything stays on this device'))}</span></span><span class="chev">${icon('chevdown', 'sm')}</span></button>
+    <nav class="rail" aria-label="${t('Main sections')}">
+      <a class="rail-logo logo" href="#/" title="WhisperBrain" aria-label="WhisperBrain">${icon('logo')}</a>
+      ${DOORS.map((d) => `<a class="door" href="${d.href}" ${d.id === open.id ? 'aria-current="page"' : ''} title="${esc(t(d.hint))}">${icon(d.icon)}<span>${esc(t(d.label))}</span></a>`).join('')}
+      <span class="rail-spacer"></span>
+      <button class="door rec-door${rec ? ' live' : ''}" data-act="${rec ? 'rec-open' : 'record'}" title="${esc(rec ? t('Go to the meeting being recorded') : t('Start recording a meeting'))}"><span class="rec-bubble">${rec ? '<span class="dot-rec"></span>' : icon('mic')}</span><span>${rec ? t('Recording') : t('Record')}</span></button>
+      <button class="door rail-small" data-act="collapse" aria-pressed="${!collapsed}" title="${esc(collapsed ? t('Show the side panel') : t('Hide the side panel'))}" aria-label="${esc(collapsed ? t('Show the side panel') : t('Hide the side panel'))}">${icon('sidebar')}</button>
+      <button class="rail-user" data-act="account-menu" aria-haspopup="menu" title="${esc(name)}" aria-label="${esc(name)}">${avatar(name)}</button>
+    </nav>
+    <div class="door-panel">
+      <div class="door-head"><h2>${esc(t(open.label))}</h2><p>${esc(t(open.hint))}</p></div>
+      <div class="side-scroll">${open.sections.map(section).join('')}</div>
+      <div class="side-foot">
+        <button class="usercard" data-act="account-menu" aria-haspopup="menu" title="${esc(name)}">${avatar(name, { cls: 'lg' })}<span class="who"><b>${esc(name)}</b><span>${esc(S.settings?.userEmail || S.settings?.google?.email || t('Everything stays on this device'))}</span></span><span class="chev">${icon('chevdown', 'sm')}</span></button>
+      </div>
     </div>`;
 }
 let menuWasOpen = false;
 sidebar.addEventListener('mousedown', (e) => { menuWasOpen = menuIsOpen() && !!e.target.closest('[data-act="account-menu"]'); }, true);
 sidebar.addEventListener('click', async (e) => {
+  const doorLink = e.target.closest('a.door');
+  if (doorLink && appEl.classList.contains('drawer') && doorLink.getAttribute('href') !== (location.hash || '#/')) keepDrawer = true;
   const a = e.target.closest('[data-act]')?.dataset.act;
   if (!a) return;
   e.preventDefault();
@@ -141,11 +151,14 @@ sidebar.addEventListener('click', async (e) => {
       const m = menu(el, [
         { label: t('Integrations'), icon: 'plug', href: '#/integrations' },
         { label: t('Settings'), icon: 'settings', href: '#/settings' },
+        ...(S.lock?.enabled ? ['sep', { label: t('Lock now'), icon: 'lock', run: async () => { await api('POST', '/api/lock/lock'); showLock(); } }] : []),
       ]);
       m.style.minWidth = `${el.offsetWidth}px`;
     }
     else if (a === 'side-toggle') { const k = e.target.closest('[data-group]').dataset.group; try { localStorage.setItem(`wb.side.${k}`, sideClosed(k) ? '1' : '0'); } catch { /* remembered for this view only */ } renderSidebar(); }
     else if (a === 'side-all') { const k = e.target.closest('[data-group]').dataset.group; if (!sideAll.delete(k)) sideAll.add(k); renderSidebar(); if (sideAll.has(k)) sidebar.querySelector(`[data-group="${k}"] .side-list`)?.scrollIntoView({ block: 'nearest' }); }
+    else if (a === 'record') startRecording(null);
+    else if (a === 'rec-open') go(`#/note/${S.rec.noteId}`);
     else if (a === 'collapse') { S.settings = await api('PUT', '/api/settings', { sidebarCollapsed: !S.settings.sidebarCollapsed }); applyTheme(); }
     else if (a === 'new-space') { const name = await promptDialog(t('New space'), '', { placeholder: t('e.g. Customers, Hiring, Product') }); if (name) { const sp = await api('POST', '/api/spaces', { name }); await refreshCounts(); go(`#/meetings?space=${sp.id}`); } }
     else if (a === 'new-tag') { const name = await promptDialog(t('New tag'), '', { placeholder: t('e.g. Important') }); if (name) { await api('POST', '/api/tags', { name }); await refreshCounts(); } }
@@ -176,6 +189,7 @@ export function renderTopbar() {
     <button class="btn" data-top="import" title="${t('Import')}" aria-label="${t('Import')}">${icon('upload')}<span class="lbl-sm">${t('Import')}</span></button>
     ${rec ? '' : translateChip('data-top="translate"')}
     ${rec ? '' : `<button class="btn primary" data-top="record">${icon('mic')}<span class="lbl-sm">${t('Record')}</span></button>`}`;
+  renderSidebar();   // the rail's Record button follows the recording too
 }
 topbar.addEventListener('click', async (e) => {
   const a = e.target.closest('[data-top]')?.dataset.top;
@@ -235,7 +249,8 @@ function connectEvents() {
     open: async () => { try { syncRec(await api('GET', '/api/recording')); S.detector = await api('GET', '/api/detector'); renderTopbar(); } catch { /* server restarting */ } },
     ...recEvents({ renderTopbar }),
     'note.created': bump, 'note.deleted': (d) => { bump(); if (S.view.name === 'note' && S.view.parts[1] === d.id) go('#/'); },
-    'knowledge.changed': bump, 'note.insights': bump,
+    'knowledge.changed': bump, 'note.insights': bump, 'sources.changed': bump, 'people.changed': bump, 'assertions.changed': bump, 'reminders.changed': bump,
+    'reminder.due': (d) => toast(d.text || t('{n} more things are waiting in your Inbox', { n: d.more }), { iconName: 'bell', timeout: 0, actions: [{ label: t('Open Inbox'), primary: true, run: () => go('#/inbox') }, { label: t('Later'), run: () => {} }] }),
     'account.changed': async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); await refreshCounts(); go('#/'); },
     'capture.request': (d) => handleCaptureRequest(d),
     'note.summarize-failed': (d) => fail(d.message),
@@ -269,7 +284,7 @@ function connectEvents() {
       bump(); if (d.noteId) go(`#/note/${d.noteId}`);
     },
     'meeting.autostart-failed': (d) => fail(d.message),
-    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') S.startingToast = toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Dismiss'), run: () => {} }] }); },
+    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') S.startingToast = toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Prepare'), keep: false, run: () => openBrief({ title: d.event.summary, start: d.event.start, attendees: d.event.attendees }) }, { label: t('Dismiss'), run: () => {} }] }); },
     'model.installed': async () => { S.state = await api('GET', '/api/state'); S.models = await api('GET', '/api/models'); },
     'model.error': (d) => fail(d.message),
     'import.done': (d) => { bump(); toast(t('Imported and transcribed ({n} lines)', { n: d.segments }), { ok: true, actions: [{ label: t('Open'), run: () => go(`#/note/${d.noteId}`) }] }); },
@@ -296,19 +311,42 @@ window.addEventListener('drop', (e) => {
   openImport({ files: [...e.dataTransfer.files] });
 });
 
+// ---------- the app lock ----------
+// While locked the app answers only this screen. (It keeps recording if a recording was already running.)
+function showLock() {
+  if ($('#lockscreen')) return;
+  const el = document.createElement('div');
+  el.id = 'lockscreen';
+  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', t('Locked'));
+  el.innerHTML = `<form class="lock-card"><span class="logo">${icon('logo')}</span><h1>WhisperBrain</h1><p class="muted">${t('Locked. Enter your passphrase.')}</p>
+    <input type="password" id="lock-pass" autocomplete="current-password" aria-label="${t('Passphrase')}" autofocus><div class="small lock-err" id="lock-err" role="alert"></div>
+    <button class="btn primary" type="submit">${icon('lock', 'sm')} ${t('Unlock')}</button></form>`;
+  document.body.append(el);
+  const input = el.querySelector('#lock-pass'); input.focus();
+  el.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try { await api('POST', '/api/lock/unlock', { passphrase: input.value }); location.reload(); } catch (err) { el.querySelector('#lock-err').textContent = err.message; input.select(); }
+  });
+}
+window.addEventListener('wb:locked', showLock);
+
 // ---------- boot ----------
 async function boot() {
   try {
     [S.settings, S.state, S.templates, S.models] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/state'), api('GET', '/api/templates'), api('GET', '/api/models')]);
     S.detector = S.state.detector;
+    S.lock = await api('GET', '/api/lock').catch(() => null);
     applyTheme();
     await refreshCounts();
     syncRec(S.state.recording);
     renderTopbar();
     connectEvents();
+    // Settings › Appearance › Start page: open on the meetings list instead of Home (only when the app opens on Home)
+    if (S.settings.startPage === 'meetings' && /^#?\/?$/.test(location.hash)) history.replaceState(null, '', '#/meetings');   // no hashchange: route() below reads it
     route();
     setupOnFirstRun();   // the first launch only, and only if something needs attention
   } catch (e) {
+    if (e instanceof ApiError && e.status === 423) { showLock(); return; }
     main.innerHTML = `<div class="page"><div class="banner warn mt">${icon('alert')}<div class="grow">${esc(e.message)} — ${e instanceof ApiError && e.status === 401 ? 'open the app from its launcher or the printed login URL.' : 'is the server running?'}</div></div></div>`;
   }
 }

@@ -187,6 +187,7 @@ function wireEvents() {
     } else if (e.type === 'meeting.autostarted') notify('Recording started', 'WhisperBrain is taking notes for this meeting. Tell the others on the call it is being recorded.', () => win?.webContents.executeJavaScript(`location.hash = '#/note/${e.data.noteId}'`).catch(() => {}));
     else if (e.type === 'meeting.ended' && core.recording.status().active) notify('Meeting ended', 'The call app released the microphone.');
     else if (e.type === 'meeting.starting') notify('Meeting starting', e.data.event.summary, () => win?.webContents.executeJavaScript(`location.hash = '#/'`).catch(() => {}));
+    else if (e.type === 'reminder.due') notify('Reminder', e.data.text || `${e.data.more} more things are waiting in your Inbox`, () => win?.webContents.executeJavaScript(`location.hash = '#/inbox'`).catch(() => {}));
     else if (e.type === 'dictation.state') updatePill(e.data.state);
     else if (e.type === 'dictation.result' && e.data.paste && !e.data.paste.ok && e.data.text) notify('Dictation copied', e.data.paste.reason || 'The text is on your clipboard.');
     else if (e.type === 'settings') { registerHotkey(); registerAssistantKeys(); updateFloat(); }
@@ -403,12 +404,12 @@ async function smoke() {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       await wait(500);
       const state = await fetch('/api/state').then((x) => x.json());
-      return { title: document.title, sidebar: document.querySelector('#sidebar')?.children.length || 0, main: document.querySelector('#main h1')?.textContent || '', platform: state.platform, version: state.version,
+      return { title: document.title, sidebar: document.querySelectorAll('#sidebar a.door[href]').length, main: document.querySelector('#main h1')?.textContent || '', platform: state.platform, version: state.version,
                worklet: await fetch('/pcm-worklet.js').then((x) => x.status), widget: await Promise.all(['/widget.html', '/widget.js', '/widget.css'].map((u) => fetch(u).then((x) => x.status))),
                assistant: await Promise.all(['/views/assistant-panel.js', '/views/briefings.js', '/api/briefings', '/api/settings'].map((u) => fetch(u).then((x) => x.status))), gum: typeof navigator.mediaDevices?.getUserMedia, secure: window.isSecureContext };
     })()`);
     console.log('SMOKE_RESULT ' + JSON.stringify(r));
-    let ok = r.title === 'WhisperBrain' && r.sidebar >= 3 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200) && r.assistant.every((x) => x === 200);
+    let ok = r.title === 'WhisperBrain' && r.sidebar >= 4 && r.main && r.worklet === 200 && r.widget.every((x) => x === 200) && r.assistant.every((x) => x === 200);
     applyFloat(true); // the floating recorder must open, load its page and have its native bridge
     await new Promise((res) => { const t0 = Date.now(); const poll = () => (float && !float.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
     // the pill is drawn after the page asked the server for the settings and the recording: wait for it (up to 5 s), do not race it
