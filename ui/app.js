@@ -21,6 +21,9 @@ import * as settings from './views/settings.js';
 import * as activity from './views/activity.js';
 import * as sources from './views/sources.js';
 import * as documents from './views/documents.js';
+import * as inbox from './views/inbox.js';
+import * as promises from './views/promises.js';
+import { openBrief } from './brief.js';
 import { setupOnFirstRun } from './views/setup.js';
 import { DOORS, door, doorOf, isCurrent } from './nav.js';
 
@@ -49,7 +52,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents, inbox, promises,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
@@ -103,7 +106,7 @@ export function renderSidebar() {
   const p = S.view.params || new URLSearchParams();
   const inMeetings = S.view.name === 'meetings';
   const imported = Object.entries(src).filter(([k]) => !['recorded', 'manual'].includes(k)).reduce((a, [, v]) => a + v, 0);
-  const counts = { notes: st.notes, openActions: st.openActions, topics: st.topics, glossary: st.glossary, recorded: (src.recorded || 0) + (src.manual || 0), imported, documents: st.documents };
+  const counts = { notes: st.notes, openActions: st.openActions, topics: st.topics, glossary: st.glossary, recorded: (src.recorded || 0) + (src.manual || 0), imported, documents: st.documents, inbox: st.inbox };
   const name = S.settings?.userName || t('Local account');
   const open = door(doorOf(S.view.name));
   const link = (l) => navlink(l.href, icon(l.icon), t(l.label), { count: l.count ? counts[l.count] : 0, current: isCurrent(l, S.view) ? 'aria-current="page"' : '', title: l.title ? t(l.title) : undefined });
@@ -242,7 +245,8 @@ function connectEvents() {
     open: async () => { try { syncRec(await api('GET', '/api/recording')); S.detector = await api('GET', '/api/detector'); renderTopbar(); } catch { /* server restarting */ } },
     ...recEvents({ renderTopbar }),
     'note.created': bump, 'note.deleted': (d) => { bump(); if (S.view.name === 'note' && S.view.parts[1] === d.id) go('#/'); },
-    'knowledge.changed': bump, 'note.insights': bump, 'sources.changed': bump, 'people.changed': bump,
+    'knowledge.changed': bump, 'note.insights': bump, 'sources.changed': bump, 'people.changed': bump, 'assertions.changed': bump, 'reminders.changed': bump,
+    'reminder.due': (d) => toast(d.text || t('{n} more things are waiting in your Inbox', { n: d.more }), { iconName: 'bell', timeout: 0, actions: [{ label: t('Open Inbox'), primary: true, run: () => go('#/inbox') }, { label: t('Later'), run: () => {} }] }),
     'account.changed': async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); await refreshCounts(); go('#/'); },
     'capture.request': (d) => handleCaptureRequest(d),
     'note.summarize-failed': (d) => fail(d.message),
@@ -276,7 +280,7 @@ function connectEvents() {
       bump(); if (d.noteId) go(`#/note/${d.noteId}`);
     },
     'meeting.autostart-failed': (d) => fail(d.message),
-    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') S.startingToast = toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Dismiss'), run: () => {} }] }); },
+    'meeting.starting': (d) => { if (!S.rec.active && S.settings.captureCalendar === 'off') S.startingToast = toast(t('“{title}” is starting', { title: d.event.summary }), { iconName: 'calendar', timeout: 0, actions: [{ label: t('Take notes'), primary: true, run: () => takeNotesFor({ title: d.event.summary, uid: d.event.uid, start: d.event.start, attendees: d.event.attendees, url: d.event.url }, { record: true }) }, { label: t('Prepare'), keep: false, run: () => openBrief({ title: d.event.summary, start: d.event.start, attendees: d.event.attendees }) }, { label: t('Dismiss'), run: () => {} }] }); },
     'model.installed': async () => { S.state = await api('GET', '/api/state'); S.models = await api('GET', '/api/models'); },
     'model.error': (d) => fail(d.message),
     'import.done': (d) => { bump(); toast(t('Imported and transcribed ({n} lines)', { n: d.segments }), { ok: true, actions: [{ label: t('Open'), run: () => go(`#/note/${d.noteId}`) }] }); },

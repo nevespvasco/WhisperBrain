@@ -53,6 +53,32 @@ module.exports = function brainRoutes(add, app, { HttpError }) {
   r('POST', '/api/entities/:id/merge', async ({ params, body }) => app.entities.merge(params.id, String(object(body).into || '')));
   r('POST', '/api/entities/:id/unmerge', async ({ params }) => app.entities.unmerge(params.id));
 
+  // ---- the Inbox, decisions and commitments, reminders, and the brief before a meeting ----
+  r('GET', '/api/inbox', async () => ({ counts: app.inbox.counts(), cards: app.inbox.cards() }));
+  r('GET', '/api/assertions', async ({ query }) => app.assertions.list({ state: query.state ? String(query.state).split(',') : undefined, kind: query.kind || undefined, noteId: query.noteId || undefined, limit: Math.min(500, Number(query.limit) || 200) }));
+  r('POST', '/api/assertions', async ({ body }) => {
+    const b = object(body);
+    const { resolveDue } = require('../brain/dates');
+    const note = b.noteId ? app.notes.get(b.noteId) : null;
+    return app.assertions.add({ kind: b.kind, text: b.text, noteId: note ? note.id : null, owner: b.owner || '', to: b.to || '', dueText: b.dueText || '', dueAt: b.dueAt || resolveDue(b.dueText || '', Date.now()), origin: 'user' }).item;
+  });
+  r('GET', '/api/commitments', async () => app.assertions.open());
+  r('PATCH', '/api/assertions/:id', async ({ params, body }) => app.assertions.edit(params.id, object(body)));
+  r('POST', '/api/assertions/:id/supersede', async ({ params, body }) => app.assertions.supersede(params.id, String(object(body).by || '')));
+  r('POST', '/api/assertions/:id/:decision', async ({ params }) => app.assertions.decide(params.id, params.decision));
+  // look for decisions and commitments in one meeting again (what was dismissed stays dismissed)
+  r('POST', '/api/notes/:id/assertions/extract', async ({ params }) => {
+    if (!app.notes.get(params.id)) throw new HttpError(404, 'meeting not found');
+    if (!app.ai.configured()) throw new HttpError(412, 'Connect an AI model first (Settings → AI).');
+    app.runner.enqueue('note.assertions', { noteId: params.id }, { key: params.id, maxAttempts: 2 });
+    return { queued: true };
+  });
+  r('GET', '/api/reminders', async () => ({ pending: app.reminders.pending(), upcoming: app.reminders.upcoming(14) }));
+  r('POST', '/api/reminders', async ({ body }) => { const b = object(body); if (!b.text || !Number(b.dueAt)) throw new HttpError(400, 'text and dueAt are required'); return app.reminders.create({ text: b.text, dueAt: Number(b.dueAt) }); });
+  r('POST', '/api/reminders/:id/snooze', async ({ params, body }) => app.reminders.snooze(params.id, Number(body?.ms) || 3600_000));
+  r('POST', '/api/reminders/:id/:state', async ({ params }) => app.reminders.setState(params.id, params.state === 'dismiss' ? 'dismissed' : params.state));
+  r('POST', '/api/brief', async ({ body }) => { const b = object(body); return app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] }); });
+
   // ---- the search index: how much is searchable, and what a question finds (meetings and notes, by words and by meaning) ----
   r('GET', '/api/index', async () => app.chunkIndex.stats());
   r('GET', '/api/retrieve', async ({ query }) => {

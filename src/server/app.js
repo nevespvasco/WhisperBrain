@@ -46,6 +46,11 @@ const { AiRuns } = require('../audit/ai-runs');
 const { ChunkIndex } = require('../search/index');
 const { LlmEmbedder } = require('../search/embedder');
 const { mayReachAi } = require('../items/policy');
+const { Assertions } = require('../brain/assertions');
+const { extractAssertions } = require('../brain/extract');
+const { Reminders } = require('../brain/reminders');
+const { Briefs } = require('../brain/brief');
+const { Inbox } = require('../brain/inbox');
 const { ItemStore } = require('../items/store');
 const { SourceManager } = require('../connectors/manager');
 const { pdfToText } = require('../importers/pdf');
@@ -121,9 +126,10 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     chain('note.summarize', noteId, { local: !settings.get('autoSummarize') || !ai.configured() }, enqueue);
     return null;
   });
-  runner.register('note.insights', async ({ noteId, local }) => {
+  runner.register('note.insights', async ({ noteId, local }, { enqueue }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     await analyze(noteId, { local: !!local });
+    if (settings.get('autoAssertions') && ai.configured()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
     return null;
   });
   bus.subscribe((e) => {
@@ -132,6 +138,15 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
   });
 
+  // Decisions, commitments, reminders, the brief before a meeting and the Inbox (src/brain). The AI only ever SUGGESTS: each finding
+  // carries the exact words it rests on, checked in code against the transcript, and waits for a person.
+  const reminders = new Reminders({ db: conn, bus });
+  const assertions = new Assertions({ db: conn, notes, entities: knowledge.entities, settings, reminders, bus });
+  runner.register('note.assertions', async ({ noteId }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
+    if (!ai.configured()) return { skipped: 'no AI server' };
+    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId);
+  });
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
   const items = new ItemStore(conn, { bus });
@@ -148,6 +163,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     return !!it && mayReachAi(items.source(it.sourceId), settings.get('llm'));
   };
   ai.index = chunkIndex; ai.mayShare = mayShare;
+  const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare });
+  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders });
   runner.register('index.sync', async () => {
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
@@ -213,6 +230,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     runner.enqueue('entities.backfill', {}, { key: 'once', maxAttempts: 2 });    // people from speakers, attendees and voice prints
     sources.start();
     wantIndex();
+    reminders.start();
   }).catch(() => {});
   // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
   const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
@@ -228,7 +246,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, chunkIndex, mayShare, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -264,7 +282,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
         vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
         speakerModelMB: (models.speakerInstalled() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
         llmConfigured: !!settings.get('llm').baseUrl,
-        stats: { ...notes.stats(), ...knowledge.stats(), documents: items.count() },
+        stats: { ...notes.stats(), ...knowledge.stats(), documents: items.count(), inbox: inbox.counts().total },
         sources: notes.sourceCounts(),
         detector: typeof detector.status === 'function' ? detector.status() : null,
         pdf: !!renderPdf,
@@ -275,6 +293,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     close() {
       self.pendingGoogleAuth?.cancel?.();
       sources.stop();
+      reminders.stop();
       runner.stop();   // takes no new job; one cut short by the closing database runs again at the next start
       detector.stop();
       assistant.close();

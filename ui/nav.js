@@ -17,6 +17,8 @@ export const DOORS = [
     hint: 'Start a meeting, see your calendar and what is left to do.',
     sections: [{ links: [
       L('#/', 'Home', 'home', ['home']),
+      L('#/inbox', 'Inbox', 'inbox', ['inbox'], { count: 'inbox' }),
+      L('#/promises', 'Promises', 'check', ['promises']),
       L('#/calendar', 'Calendar', 'calendar', ['calendar']),
       L('#/actions', 'Action items', 'list', ['actions'], { count: 'openActions' }),
     ] }],

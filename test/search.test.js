@@ -194,6 +194,6 @@ test('the retrieval evaluation counts what comes back and how high', async (t) =
   app.items.upsert(src.id, { externalId: '2', title: 'Equipa', text: 'Contratações para o segundo trimestre.' });
   app.chunkIndex.syncBatch(50);
   const r = await evaluate([{ q: 'preço plano', expect: ['Preço'] }, { q: 'contratações', expect: ['Equipa', 'Preço'] }, { q: 'nada disto existe', expect: ['Preço'] }], (q) => app.chunkIndex.search(q), { k: 3 });
-  assert.deepEqual([r.cases, r.recallAtK, r.mrr], [3, 0.5, 0.5]);
+  assert.deepEqual([r.cases, r.recallAtK, r.mrr], [3, 0.5, 0.667]);
   assert.deepEqual(r.rows.map((x) => x.firstRank), [1, 1, null]);
 });

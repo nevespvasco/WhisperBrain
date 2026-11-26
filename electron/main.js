@@ -187,6 +187,7 @@ function wireEvents() {
     } else if (e.type === 'meeting.autostarted') notify('Recording started', 'WhisperBrain is taking notes for this meeting. Tell the others on the call it is being recorded.', () => win?.webContents.executeJavaScript(`location.hash = '#/note/${e.data.noteId}'`).catch(() => {}));
     else if (e.type === 'meeting.ended' && core.recording.status().active) notify('Meeting ended', 'The call app released the microphone.');
     else if (e.type === 'meeting.starting') notify('Meeting starting', e.data.event.summary, () => win?.webContents.executeJavaScript(`location.hash = '#/'`).catch(() => {}));
+    else if (e.type === 'reminder.due') notify('Reminder', e.data.text || `${e.data.more} more things are waiting in your Inbox`, () => win?.webContents.executeJavaScript(`location.hash = '#/inbox'`).catch(() => {}));
     else if (e.type === 'dictation.state') updatePill(e.data.state);
     else if (e.type === 'dictation.result' && e.data.paste && !e.data.paste.ok && e.data.text) notify('Dictation copied', e.data.paste.reason || 'The text is on your clipboard.');
     else if (e.type === 'settings') { registerHotkey(); registerAssistantKeys(); updateFloat(); }

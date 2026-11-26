@@ -479,6 +479,51 @@ const MIGRATIONS = [
   CREATE TABLE fts_reset (id INTEGER PRIMARY KEY);   -- see src/core/fts.js
   ALTER TABLE chat_messages ADD COLUMN sources TEXT;   -- what an answer cited, so the links survive a restart
   `,
+  // v19: what was decided and promised (docs/adr/0001-brain-data-model.md, Phase 3). An assertion is a decision or a commitment taken
+  // from a meeting. Nothing the AI finds is trusted: it starts 'suggested' with the exact words it rests on (quote, checked in code to
+  // be in the transcript) and the line they are on, and only a person makes it 'accepted'. 'dismissed' is a tombstone: the same thing
+  // is never suggested again for that meeting (UNIQUE note_id + key). A commitment names who owes it (owner) and to whom, and when.
+  // reminders: something to be told about at a time; one may belong to a commitment.
+  `
+  CREATE TABLE assertions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('decision', 'commitment')),
+    text TEXT NOT NULL,
+    key TEXT NOT NULL,
+    owner_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+    owner_name TEXT NOT NULL DEFAULT '',
+    to_id TEXT REFERENCES entities(id) ON DELETE SET NULL,
+    to_name TEXT NOT NULL DEFAULT '',
+    due_at INTEGER,
+    due_text TEXT NOT NULL DEFAULT '',
+    state TEXT NOT NULL DEFAULT 'suggested' CHECK (state IN ('suggested', 'accepted', 'dismissed', 'done', 'superseded')),
+    origin TEXT NOT NULL DEFAULT 'ai' CHECK (origin IN ('ai', 'user')),
+    note_id TEXT REFERENCES notes(id) ON DELETE CASCADE,
+    segment_id INTEGER,
+    start_ms INTEGER,
+    quote TEXT NOT NULL DEFAULT '',
+    speaker TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    supersedes TEXT,
+    occurred_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    UNIQUE (note_id, key)
+  );
+  CREATE INDEX assertions_state ON assertions(state, kind);
+  CREATE INDEX assertions_owner ON assertions(owner_id);
+  CREATE TABLE reminders (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    due_at INTEGER NOT NULL,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'done', 'dismissed')),
+    assertion_id TEXT REFERENCES assertions(id) ON DELETE CASCADE,
+    fired_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX reminders_due ON reminders(state, due_at);
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
