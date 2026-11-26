@@ -24,7 +24,7 @@ class SourceManager {
   }
 
   connector(source) {
-    if (!['folder', 'obsidian'].includes(source.kind)) return null;
+    if (!['folder', 'obsidian'].includes(source.kind) || !source.config?.path) return null;   // (imported meetings have no folder to read)
     const live = this.connectors.get(source.id);
     if (live) { live.source = source; return live; }
     const c = new FolderConnector({ source, items: this.items, pdfToText: this.pdfToText });

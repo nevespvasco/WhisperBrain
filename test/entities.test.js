@@ -180,3 +180,17 @@ test('the People API: proposals, accept, merge, undo', async (t) => {
   assert.equal((await call('POST', '/api/people/proposals/999/accept')).status, 404);
   assert.equal((await call('POST', `/api/people/proposals/${props[0].id}/maybe`)).status, 400, 'only accept or reject');
 });
+
+test('after a merge the fuller name is shown, and undoing brings the other name back', (t) => {
+  const app = boot(t);
+  meeting(app, 'One', { spoke: ['Ana'] });
+  meeting(app, 'Two', { spoke: ['Ana'] });
+  meeting(app, 'Three', { spoke: ['Ana Silva'] });
+  const [p] = app.entities.proposals();
+  const res = app.entities.decide(p.id, 'accept');
+  assert.equal(res.into.name, 'Ana Silva', 'the more complete name wins even when "Ana" is in more meetings');
+  assert.equal(app.knowledge.people()[0].key, 'ana', 'the URL key of the survivor does not change');
+  const gone = [p.a, p.b].find((x) => x.id !== res.into.id);
+  app.entities.unmerge(gone.id);
+  assert.deepEqual(app.knowledge.people().map((x) => x.name).sort(), ['Ana', 'Ana Silva']);
+});

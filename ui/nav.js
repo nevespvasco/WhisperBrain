@@ -30,7 +30,7 @@ export const DOORS = [
     id: 'library', label: 'Library', icon: 'layers', href: '#/meetings',
     hint: 'Everything you recorded or imported, and what was learned from it.',
     sections: [
-      { links: [L('#/meetings', 'All meetings', 'video', ['meetings', 'note'], { count: 'notes', query: {} })] },
+      { links: [L('#/meetings', 'All meetings', 'video', ['meetings', 'note'], { count: 'notes', query: {} }), L('#/documents', 'Notes & files', 'file', ['documents'], { count: 'documents' })] },
       { label: 'Sources', links: [
         L('#/meetings?source=local', 'Recorded here', 'mic', ['meetings'], { count: 'recorded', query: { source: 'local' } }),
         L('#/meetings?source=imported', 'From outside', 'inbox', ['meetings'], { count: 'imported', query: { source: 'imported' } }),
@@ -50,7 +50,7 @@ export const DOORS = [
     id: 'setup', label: 'Setup', icon: 'settings', href: '#/integrations',
     hint: 'Connect your tools and choose how WhisperBrain works.',
     sections: [
-      { links: [L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/activity', 'Activity', 'refresh', ['activity'])] },
+      { links: [L('#/sources', 'Folders & vaults', 'folder', ['sources'], { count: 'sources' }), L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/activity', 'Activity', 'refresh', ['activity'])] },
       { label: 'Settings', links: SETTINGS_SECTIONS.map(([id, label, icon]) => L(`#/settings/${id}`, label, icon, ['settings'], { section: id })) },
     ],
   },

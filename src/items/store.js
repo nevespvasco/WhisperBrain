@@ -43,10 +43,11 @@ class ItemStore {
     return this.db.prepare('SELECT * FROM sources ORDER BY (kind = ?) DESC, created_at').all(NATIVE).map(srcRow).map((s) => ({ ...s, items: counts.get(s.id) || 0 }));
   }
 
-  // the one source of a kind (the recorder's 'native'), made when first needed
+  // Where meetings come from (the recorder, or a Notion/Obsidian/Linear import): one fixed source each, made when first needed.
+  // These hold meeting items only and have no folder: a vault someone adds as a source is a different source of the same kind.
   ensureSource(kind, defaults = {}) {
-    const row = this.db.prepare('SELECT id FROM sources WHERE kind = ? ORDER BY created_at LIMIT 1').get(kind);
-    return row ? this.source(row.id) : this.addSource({ kind, name: defaults.name || kind, ...defaults });
+    const id = kind === NATIVE ? 'src_native' : `src_imports_${kind}`;
+    return this.source(id) || this.addSource({ id, kind, name: defaults.name || kind, config: { imported: true } });
   }
 
   updateSource(id, patch) {

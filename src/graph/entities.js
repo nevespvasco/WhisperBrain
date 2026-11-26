@@ -231,7 +231,10 @@ class Entities {
       const moved = this.db.prepare('SELECT id FROM entity_identities WHERE entity_id = ?').all(fromId).map((r) => r.id);
       this.db.prepare('UPDATE entity_identities SET entity_id = ? WHERE entity_id = ?').run(intoId, fromId);
       this.db.prepare('UPDATE entities SET merged_into = ?, updated_at = ? WHERE id = ?').run(intoId, this.now(), fromId);
-      const info = this.db.prepare('INSERT INTO entity_merges (from_id, into_id, moved, created_at) VALUES (?, ?, ?, ?)').run(fromId, intoId, JSON.stringify(moved), this.now());
+      // the fuller name is the one shown ("Ana Silva" rather than "Ana"); the URL key of the survivor stays as it was
+      const words = (n) => String(n).trim().split(/\s+/).length;
+      if (words(from.name) > words(into.name)) this.db.prepare('UPDATE entities SET name = ? WHERE id = ?').run(from.name, intoId);
+      const info = this.db.prepare('INSERT INTO entity_merges (from_id, into_id, moved, created_at) VALUES (?, ?, ?, ?)').run(fromId, intoId, JSON.stringify({ ids: moved, intoName: into.name }), this.now());
       const [x, y] = fromId < intoId ? [fromId, intoId] : [intoId, fromId];
       this.db.prepare("UPDATE entity_proposals SET state = 'accepted', decided_at = ? WHERE a_id = ? AND b_id = ?").run(this.now(), x, y);
       this.db.prepare("DELETE FROM entity_proposals WHERE state = 'open' AND (a_id = ? OR b_id = ?)").run(fromId, fromId);
@@ -247,7 +250,10 @@ class Entities {
     if (!m) throw err('nothing to undo for this person', 404);
     const noteIds = this.db.prepare('SELECT DISTINCT note_id FROM mentions WHERE entity_id IN (?, ?)').all(m.from_id, m.into_id).map((r) => r.note_id);
     return this.tx(() => {
-      for (const id of parse(m.moved, [])) this.db.prepare('UPDATE entity_identities SET entity_id = ? WHERE id = ?').run(m.from_id, id);
+      const rec = parse(m.moved, []);
+      const ids = Array.isArray(rec) ? rec : rec.ids || [];
+      for (const id of ids) this.db.prepare('UPDATE entity_identities SET entity_id = ? WHERE id = ?').run(m.from_id, id);
+      if (rec.intoName) this.db.prepare('UPDATE entities SET name = ? WHERE id = ?').run(rec.intoName, m.into_id);   // the survivor's own name comes back
       this.db.prepare('UPDATE entities SET merged_into = NULL, updated_at = ? WHERE id = ?').run(this.now(), m.from_id);
       this.db.prepare('UPDATE entity_merges SET undone_at = ? WHERE id = ?').run(this.now(), m.id);
       const [x, y] = m.from_id < m.into_id ? [m.from_id, m.into_id] : [m.into_id, m.from_id];

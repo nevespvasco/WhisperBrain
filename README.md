@@ -192,6 +192,9 @@ flowchart LR
 |---|---|
 | **Home** | Start an online meeting (paste the link), an in-person one (microphone only) or upload one; recent meetings; today's calendar with per-meeting "record automatically" switches; open to-dos |
 | **Calendar** | Google Calendar (OAuth sign-in, read-only) or any iCal feed / `.ics` file; week view; record all calendar meetings, only selected ones, or just remind |
+| **Notes & files** | Read an Obsidian vault or any folder of Markdown, text and PDF files in place (nothing is written to them), searchable next to your meetings with Ctrl K. Edits, new files and deletions are picked up by themselves. A source can be marked private: only an AI on this computer may ever read it |
+| **People** | One person across meetings, e-mail and voice, with possible duplicates offered for you to decide and every merge reversible. Re-importing a Notion page, Obsidian note or Linear issue updates the meeting instead of duplicating it |
+| **Background work** | What follows a recording (names, summary, topics) survives closing the app, with an Activity page and a log of every AI call and whether it left this computer. The database is copied before an update changes it |
 | **Organise** | Spaces, coloured tags, pinning, bulk select (export, tag, move, delete), internal / external meetings from attendee domains, and a "From outside" view that keeps imported material apart from your own recordings |
 | **Import** | Audio and video (transcribed on-device); VTT/SRT (Zoom, Teams, Meet), TXT (Otter-style and others), Markdown with frontmatter, JSON (WhisperBrain, Whisper, AssemblyAI, Deepgram), DOCX, HTML, CSV; pasted text; drag and drop anywhere; Notion pages, Obsidian notes and Linear issues |
 | **Export & share** | Markdown, PDF, HTML, plain text, Obsidian Markdown (YAML + `[[links]]`), JSON, SRT, WebVTT; copy as rich text; email; print; bulk ZIP |

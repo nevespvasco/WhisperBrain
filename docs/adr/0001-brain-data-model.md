@@ -60,6 +60,23 @@ Every item has a unique `(source_id, external_id)` and a content hash, so re-imp
 - Backfills are resumable jobs, never one long transaction at start.
 - Migration numbers are global: branches that add migrations must be rebased so that their numbers do not collide.
 
+## What Phase 1 delivered, and what it did not
+
+Delivered (branch `brain/phase-1-foundation`):
+- Migrations v15 (jobs), v16 (sources, items, `items_fts`, `ai_runs`) and v17 (entities, identities, mentions, proposals, merges). Sync state (`cursor`, `last_sync_at`, `last_error`) lives on `sources` instead of a separate `sync_state` table.
+- `src/jobs` with lanes (a long folder scan never delays the steps after a recording), and the post-recording chain on it.
+- `src/items`, `src/connectors` (folder and Obsidian, pointer mode, `fs.watch` with a periodic reconcile), `src/graph/entities.js`, `src/audit/ai-runs.js`, and the per-source sensitivity rule (`src/items/policy.js`).
+- Re-importing a Notion page, Obsidian note or Linear issue updates its meeting instead of duplicating it (hash of the last import).
+- Pages: Today/Ask/Library/Setup doors, Folders & vaults, Notes & files, People merges, Activity with the AI-call ledger.
+
+Not done, on purpose or for later:
+- **No `utilityProcess` brain worker.** Jobs run in the main process. The folder scan yields to the event loop (measured: 2,000 notes in about 0.4 s, the event loop blocked at most about 40 ms), so there was no need yet. The runner has no dependency on where it runs, so moving it later changes no table or API.
+- **No chokidar.** `fs.watch` (recursive) plus a scan every 10 minutes does the job without a dependency.
+- **Notion and Linear are not polling sources yet.** Imports are still started by the person; they no longer duplicate. Polling them is Phase 4.
+- **Sensitivity is stored, editable and tested, but nothing feeds items to an AI yet.** The check (`mayReachAi`) is the single place retrieval and briefs must call from Phase 2.
+- **PDFs** are read when a text layer exists. Scanned PDFs need OCR, which is not built.
+- **`entity_revisions`** (edit history of an entity) is not built: merges are recorded and reversible, which covers what Phase 1 needed.
+
 ## Order of work (Phase 1)
 
 1. The "Doors" navigation shell (`ui/nav.js`). It maps onto today's pages, so nothing becomes unreachable (`test/navigation.test.js`).

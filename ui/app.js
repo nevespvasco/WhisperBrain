@@ -19,6 +19,8 @@ import * as chat from './views/chat.js';
 import * as integrations from './views/integrations.js';
 import * as settings from './views/settings.js';
 import * as activity from './views/activity.js';
+import * as sources from './views/sources.js';
+import * as documents from './views/documents.js';
 import { setupOnFirstRun } from './views/setup.js';
 import { DOORS, door, doorOf, isCurrent } from './nav.js';
 
@@ -47,7 +49,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
@@ -101,7 +103,7 @@ export function renderSidebar() {
   const p = S.view.params || new URLSearchParams();
   const inMeetings = S.view.name === 'meetings';
   const imported = Object.entries(src).filter(([k]) => !['recorded', 'manual'].includes(k)).reduce((a, [, v]) => a + v, 0);
-  const counts = { notes: st.notes, openActions: st.openActions, topics: st.topics, glossary: st.glossary, recorded: (src.recorded || 0) + (src.manual || 0), imported };
+  const counts = { notes: st.notes, openActions: st.openActions, topics: st.topics, glossary: st.glossary, recorded: (src.recorded || 0) + (src.manual || 0), imported, documents: st.documents };
   const name = S.settings?.userName || t('Local account');
   const open = door(doorOf(S.view.name));
   const link = (l) => navlink(l.href, icon(l.icon), t(l.label), { count: l.count ? counts[l.count] : 0, current: isCurrent(l, S.view) ? 'aria-current="page"' : '', title: l.title ? t(l.title) : undefined });
@@ -240,7 +242,7 @@ function connectEvents() {
     open: async () => { try { syncRec(await api('GET', '/api/recording')); S.detector = await api('GET', '/api/detector'); renderTopbar(); } catch { /* server restarting */ } },
     ...recEvents({ renderTopbar }),
     'note.created': bump, 'note.deleted': (d) => { bump(); if (S.view.name === 'note' && S.view.parts[1] === d.id) go('#/'); },
-    'knowledge.changed': bump, 'note.insights': bump,
+    'knowledge.changed': bump, 'note.insights': bump, 'sources.changed': bump, 'people.changed': bump,
     'account.changed': async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); await refreshCounts(); go('#/'); },
     'capture.request': (d) => handleCaptureRequest(d),
     'note.summarize-failed': (d) => fail(d.message),
