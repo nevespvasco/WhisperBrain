@@ -325,3 +325,39 @@ End to end (`node eval/run.js --embedding <CAM++> --configs owned`), WDER / cpWE
 - **Packaged build** (`electron-builder --dir --linux`): `onnxruntime-node` is now unpacked from the asar (its binding loads `libonnxruntime` beside it) and only the target system's binaries are packaged. Linux unpacked: 20 MB asar + 105 MB native modules (71 MB of them onnxruntime, x64 and arm64). The segmentation model was run from inside the packaged app (Electron 45). macOS and Windows packaging are not checked here.
 - **Small machines** (`taskset`, `eval/run.js --embedding <CAM++> --configs owned --only ami-IS1009a`, 14 min of audio fed as fast as possible): 4 cores 117 s, 2 cores 155 s for transcription and speaker analysis together (7x and 5x faster than real time), same result as on 32 cores (WDER 8.4, 4/4 speakers), 1.7 s of speaker work after Stop.
 - **A forced number of speakers** ("Others on the call", `--speakers N`): the right count gives the same result as the free one (libri-call 17.1, IS1009a 8.4), one too few costs a lot (ES2004a with 3 instead of 4: 8.9 -> 35.9 WDER), which is why the calendar hint stays off by default.
+
+## Overlapped speech: separation second pass (research, 2026-11-24): no-go for now
+
+Question: when two or three people talk at once on one mixed channel (Discord, Zoom, Meet), can a pass after Stop get back the words the mix ASR never wrote? Pipeline tried (all offline, scripts in `eval/`):
+
+1. **Find overlap.** Use the regions where two or more of sherpa's diarization turns overlap (pyannote segmentation-3.0's powerset output already marks overlap, and `OfflineSpeakerDiarization` returns overlapping turns, so no extra model is needed). On AMI these regions have a time precision of 0.72 and a recall of 0.63 against the reference overlap.
+2. **Separate** each region, padded by 0.5 s, into 2 streams. sherpa-onnx 2.0.3 only has *music* separation (Spleeter, UVR), so this used Python: SpeechBrain `sepformer-whamr16k` and ClearVoice `MossFormer2_SS_16K`.
+3. **Transcribe** both streams with Parakeet TDT 0.6B v3 (`eval/sep-asr.js`).
+4. **Merge.** The stream sharing more words with the mix ASR is the dominant voice and is dropped. From the other stream, only words that do not match a mix word within 0.6 s are added. Speakers for added words were tried three ways: the other voice the diarization heard in the region, a voice per word from the turns, or the nearest voice print of the final speakers (`eval/overlap.js`, `eval/final-voices.js`).
+
+Baseline = `diarize+refine` (the shipped default) on `ami-IS1009a`. **Overlap recall** = share of the 497 reference words (of 2026) inside reference overlap that some hypothesis word matches (same word within 1 s, any speaker). It is 32.6 % today, against 76.5 % outside overlap, so a quarter of the meeting's words fall where the recognizer gets only a third of them.
+
+| Variant | WER | WDER | cpWER | tcpWER | Overlap recall | Words added (correct) |
+|---|---|---|---|---|---|---|
+| baseline (diarize+refine) | 35.6 | 18.1 | 47.6 | 54.4 | 32.6 | – |
+| SepFormer WHAMR 16k, detected overlap | 35.0 | 27.5¹ | 61.1¹ | 69.0¹ | 36.0 | 42 (60 %) |
+| **MossFormer2, detected overlap** | **33.9** | 19.0 | **46.7** | **53.3** | **39.2** | 53 (83 %) |
+| MossFormer2, detected, ±3 s context | 32.3 | 21.2 | 46.6 | 53.1 | 48.9 | 134 (73 %) |
+| MossFormer2, *oracle* overlap (reference) | 32.9 | 21.3 | 46.1 | 53.4 | 45.1 | 107 (75 %) |
+| MossFormer2, detected, *oracle speaker* for added words | 33.9 | 18.2 | 46.3 | 52.6 | 39.2 | 53 |
+| Opus 32 kbps copy: baseline | 32.5 | 12.4 | 43.2 | 44.9 | 35.8 | – |
+| Opus 32 kbps copy: MossFormer2, detected | 31.3 | 14.4 | 42.6 | 44.7 | 42.7 | 57 (68 %) |
+
+¹ The SepFormer row was scored on the older offline diarize-only baseline (WDER 26.3, cpWER 60.3, tcpWER 68.1), so read only its change: WER −0.6, cpWER +0.8.
+
+How to read it:
+
+- **Separation does recover words.** MossFormer2 adds about 50 words with 83 % precision and raises overlap recall from 33 % to 39 % (49 % with more context). WER drops 1.2 to 3.3 points.
+- **But the gain is small where it matters.** cpWER and tcpWER improve by only about 1 point, because only about half of the added words land on the right speaker. Diarization inside overlap is the weak part, and voice prints from 1–3 s separated snippets are unreliable. Even a perfect speaker choice (the "oracle speaker" row) caps the gain at −1.3 cpWER. Even with perfect overlap regions, both streams together reach only 54 % overlap recall: short backchannels and the overlapped words themselves still come out wrong after separation.
+- **Opus.** Re-encoding the mix at 32 kbps (voip) did not hurt the separator: the gain was about the same. Discord and Zoom encode each person separately before mixing, which is probably easier than this test. Note that the codec pass alone moved the baseline by 3 WER points (different VAD cuts and clustering, 3 speakers found instead of 4). **Single-recording differences of about 1 point are within noise.**
+- **Stop-time cost is the blocker.** MossFormer2 (55.7 M params, PyTorch CPU) needed 432 s for the 141 s of detected overlap in this 14-minute meeting at 8 threads (RTF 3.1; 2.9 at 16 threads, with other jobs loading the machine at about 13). Re-transcribing the streams adds about 25 s. Today's whole after-Stop speaker pass takes 55–80 s, so this would add roughly 3–7 minutes per 14-minute meeting. On a GPU the separation takes 20 s, but the app is CPU-only. SepFormer took a third of MossFormer2's GPU time (its CPU time was not measured) but gave no gain.
+- **Licences and shipping.** MossFormer2 code and weights are Apache-2.0, but its training recipe points to WSJ0-2mix (LDC). Most other checkpoints also touch WSJ0 or WHAM! noise (CC BY-NC). Clean-data options are `ConvTasNet_Libri2Mix_sepclean_16k` (LibriSpeech only; models trained on Libri2Mix score badly on real meetings) and pyannote `speech-separation-ami-1.0`, which is trained on AMI, gated, 1.28 GB, and has no ONNX export. Not measured: TIGER (0.8 M params, fast, but no ONNX export and WHAM!-noise training data) and pyannote PixIT (gated). Neither would change the main limit, which is speaker attribution. The model survey with sources is in the session notes, not in the repo.
+
+**Recommendation: no-go for wiring this into the app now.** The best realistic setting gains about 1.7 WER and 0.9 cpWER on the one real recording. That is within run-to-run noise, at 3–7 extra minutes of CPU per meeting, with an extra 200+ MB model of unclear training-data provenance. Better ways to get overlapped speech back: per-speaker capture where the app allows it (the Discord per-user audio spike), a joint diarization-plus-separation model trained on meetings once one exists in ONNX at a reasonable size, and better diarization inside overlap first, since attribution, not recovery, is what caps cpWER. Revisit if a fast (RTF < 0.2 on CPU), cleanly licensed 16 kHz separator appears, or with more real overlapped recordings to show a gain beyond noise.
+
+Reproduce: see the header of `eval/overlap.js`. `eval/run.js --dump DIR` writes each run's final words for it, and `eval/separate.py` needs a throwaway Python venv.

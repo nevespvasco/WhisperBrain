@@ -6,6 +6,7 @@
 //
 //   node eval/run.js [--only ami-IS1009a] [--configs online,refine,diarize] [--meeteval path/to/meeteval-wer]
 //                    [--threshold 0.5] [--window-shift 0.1]   (diarization clustering threshold, segmentation hop)
+//                    [--dump DIR]   (also write each run's final words to DIR/<recording>.<config>.json, for eval/overlap.js)
 //
 // Models come from $WB_MODELS_DIR or ./.models (speech model, VAD, voice model, segmentation model). Results are
 // printed and saved to .eval/results/<time>.json; with --meeteval, cpWER/tcpWER are also computed by meeteval itself.
@@ -155,6 +156,7 @@ const pct = (x) => (x === null || x === undefined ? '  n/a' : typeof x === 'stri
         const t = scoreTime(rec.words, r.words);
         const me = bin ? meeteval(bin, rec.words, r.words, name) : null;
         results.push({ recording: name, config: c, ...s, time: t, meeteval: me, seconds: r.seconds, resources: r.resources, warnings: r.warnings });
+        if (opt('--dump')) { fs.mkdirSync(opt('--dump'), { recursive: true }); fs.writeFileSync(path.join(opt('--dump'), `${name}.${c}.json`), JSON.stringify(r.words)); }
         console.log(`${name.padEnd(14)} ${c.padEnd(15)} WER ${pct(s.wer)} (in overlap ${pct(t.werInOverlap)}, outside ${pct(t.werOutOverlap)})  WDER ${pct(s.wder)}  cpWER ${pct(s.cpwer)}  tcpWER ${pct(s.tcpwer)}  DER ${pct(t.der)}  JER ${pct(t.jer)}  overlap P/R ${pct(t.overlap.precision)}/${pct(t.overlap.recall)}  speakers ${s.hypSpeakers}/${s.refSpeakers}`
           + (me ? `  [meeteval cpWER ${pct(me.cpwer)} tcpWER ${pct(me.tcpwer)}]` : '') + `  (${r.seconds.total.toFixed(0)} s,${r.seconds.live ? ` live catch-up ${r.seconds.live.toFixed(0)} s,` : ''} after Stop ${r.seconds.stop.toFixed(1)} s, speaker pass ${r.seconds.speakers.toFixed(1)} s, ${r.resources.stopCpuSeconds != null ? `${r.resources.stopCpuSeconds.toFixed(0)} CPU-s after Stop, ` : ''}peak RSS ${r.resources.peakRssMB} MB)`
           + (r.warnings.length ? `  warnings: ${r.warnings.join('; ')}` : ''));
