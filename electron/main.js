@@ -13,6 +13,27 @@ app.setName('WhisperBrain');
 if (process.env.WB_USER_DATA) app.setPath('userData', process.env.WB_USER_DATA);
 if (!app.requestSingleInstanceLock() && !SMOKE) { app.quit(); process.exit(0); }
 
+// A log to read when something goes wrong: this process's console plus the page's errors and warnings (wired in the
+// window below), in <userData>/logs/app.log; the previous run's log is kept as app.old.log.
+const LOG = (() => {
+  try {
+    const dir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'app.log');
+    try { fs.renameSync(file, path.join(dir, 'app.old.log')); } catch { /* first run */ }
+    return file;
+  } catch { return null; }
+})();
+const logText = (x) => (x instanceof Error ? x.stack || x.message : typeof x === 'string' ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })());
+for (const level of ['log', 'warn', 'error']) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    orig(...args);
+    if (LOG) { try { fs.appendFileSync(LOG, `${new Date().toISOString()} ${level.toUpperCase()} ${args.map(logText).join(' ').replace(/([?&#](?:t|token|key)=)[^&\s]+/gi, '$1…')}\n`); } catch { /* disk full: keep going */ } }
+  };
+}
+process.on('unhandledRejection', (e) => console.error('unhandled rejection:', e));
+
 const { createApp } = require('../src/server/app');
 const { createServer } = require('../src/server/http');
 
@@ -113,6 +134,11 @@ function createWindow(url) {
   });
   // If the page process dies (out of memory, GPU trouble), reload it instead of leaving a blank white window.
   // Back off when it keeps dying so a crash on load does not spin.
+  // the page's errors and warnings go to the log too
+  win.webContents.on('console-message', (e) => {
+    if (e.level !== 'error' && e.level !== 'warning') return;
+    (e.level === 'error' ? console.error : console.warn)(`[page] ${e.message} (${String(e.sourceId || '').replace(origin, '')}:${e.lineNumber})`);
+  });
   let crashes = [];
   win.webContents.on('render-process-gone', (_e, d) => {
     console.error(`renderer gone: ${d.reason} (exit ${d.exitCode})`);

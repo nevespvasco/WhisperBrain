@@ -78,8 +78,8 @@ export async function render(main) {
       else if (what === 'snooze') await api('POST', `/api/reminders/${id}/snooze`, { ms: 24 * 3600_000 });
       else if (what === 'later') { const d = new Date(); d.setDate(d.getDate() + 7); d.setHours(18, 0, 0, 0); await api('PATCH', `/api/assertions/${id}`, { dueAt: d.getTime() }); done(t('Moved a week')); }
       else if (what === 'edit') { await editDialog(id, type); }
-      else if (what === 'approve') { const r = await api('POST', `/api/actions/${id}/approve`); if (r.state === 'done') done(`${t('Sent')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be sent.'))); }
-      else if (what === 'reject-action') await api('POST', `/api/actions/${id}/reject`);
+      else if (what === 'approve') { const r = await api('POST', `/api/outbound/${id}/approve`); if (r.state === 'done') done(`${t('Sent')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be sent.'))); }
+      else if (what === 'reject-action') await api('POST', `/api/outbound/${id}/reject`);
       else if (what === 'sup-yes' || what === 'sup-no') { const [o, n] = id.split(':'); await api('POST', `/api/inbox/supersede/${o}/${n}/${what === 'sup-yes' ? 'confirm' : 'reject'}`); }
       else if (what === 'idle-no') await api('POST', `/api/inbox/idle/${id}/dismiss`);
       else if (what === 'nodismiss') await api('POST', `/api/inbox/noreply/${id}/dismiss`);

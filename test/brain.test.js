@@ -257,15 +257,16 @@ test('the actions API: only a promise you accepted can be proposed, and approvin
   let sent = 0;
   app.integrations.linear = () => ({ createIssue: async () => { sent++; return { identifier: 'ENG-1', url: 'u' }; } });
   const suggested = app.assertions.add({ kind: 'commitment', text: 'Not accepted yet', owner: 'Ana', origin: 'ai' }).item;
-  assert.equal((await call('POST', '/api/actions', { kind: 'linear.issue', assertionId: suggested.id })).status, 409, 'a suggestion nobody accepted is not sent anywhere');
+  assert.equal((await call('POST', '/api/outbound', { kind: 'linear.issue', assertionId: suggested.id })).status, 409, 'a suggestion nobody accepted is not sent anywhere');
   app.assertions.decide(suggested.id, 'accept');
-  const p = await call('POST', '/api/actions', { kind: 'linear.issue', assertionId: suggested.id });
+  const p = await call('POST', '/api/outbound', { kind: 'linear.issue', assertionId: suggested.id });
   assert.equal(p.status, 200);
   assert.equal(sent, 0);
-  assert.equal((await call('GET', '/api/actions')).body.pending.length, 1);
-  assert.equal((await call('POST', `/api/actions/${p.body.id}/approve`)).body.state, 'done');
+  assert.equal((await call('GET', '/api/outbound')).body.pending.length, 1);
+  assert.ok(Array.isArray((await call('GET', '/api/actions')).body), 'GET /api/actions stays the meetings\' action items (the Actions page, Today), not these');
+  assert.equal((await call('POST', `/api/outbound/${p.body.id}/approve`)).body.state, 'done');
   assert.equal(sent, 1);
-  assert.equal((await call('POST', '/api/actions', { kind: 'nope', assertionId: suggested.id })).status, 400);
+  assert.equal((await call('POST', '/api/outbound', { kind: 'nope', assertionId: suggested.id })).status, 400);
 });
 
 test('a promise somebody else made to you gets a reminder to check with them', async (t) => {

@@ -76,17 +76,17 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
 
   // ---- the Inbox, decisions and commitments, reminders, and the brief before a meeting ----
   r('GET', '/api/inbox', async () => ({ counts: app.inbox.counts(), cards: app.inbox.cards() }));
-  // actions that reach outside: proposed here, run only when approved in the Inbox, with exactly the arguments shown
-  r('GET', '/api/actions', async () => ({ kinds: app.actions.kinds(), pending: app.actions.pending(), recent: app.actions.recent(20) }));
-  r('POST', '/api/actions', async ({ body }) => {
+  // actions that reach outside (/api/outbound; /api/actions is the meetings' action items, routes-knowledge.js): proposed here, run only when approved in the Inbox, with exactly the arguments shown
+  r('GET', '/api/outbound', async () => ({ kinds: app.actions.kinds(), pending: app.actions.pending(), recent: app.actions.recent(20) }));
+  r('POST', '/api/outbound', async ({ body }) => {
     const b = object(body);
     const assertion = b.assertionId ? app.assertions.get(b.assertionId) : null;
     if (b.assertionId && !assertion) throw new HttpError(404, 'promise not found');
     if (assertion && assertion.state !== 'accepted') throw new HttpError(409, 'only a promise you accepted can be sent anywhere');
     return app.actions.propose(String(b.kind || ''), { assertion, note: assertion?.noteId ? app.notes.get(assertion.noteId) : null, webhookId: b.webhookId }, { assertionId: assertion?.id || null });
   });
-  r('POST', '/api/actions/:id/approve', async ({ params }) => app.actions.approve(params.id));
-  r('POST', '/api/actions/:id/reject', async ({ params }) => app.actions.reject(params.id));
+  r('POST', '/api/outbound/:id/approve', async ({ params }) => app.actions.approve(params.id));
+  r('POST', '/api/outbound/:id/reject', async ({ params }) => app.actions.reject(params.id));
   r('POST', '/api/inbox/supersede/:old/:new/:decision', async ({ params }) => (params.decision === 'confirm' ? app.supersession.confirm(params.old, params.new) : params.decision === 'reject' ? app.supersession.reject(params.old, params.new) : (() => { throw new HttpError(400, 'decision must be confirm or reject'); })()));
   r('POST', '/api/inbox/noreply/:id/dismiss', async ({ params }) => { app.inbox.dismissNoReply(params.id); return { ok: true }; });
   r('GET', '/api/assertions', async ({ query }) => app.assertions.list({ state: query.state ? String(query.state).split(',') : undefined, kind: query.kind || undefined, noteId: query.noteId || undefined, limit: Math.min(500, Number(query.limit) || 200) }));

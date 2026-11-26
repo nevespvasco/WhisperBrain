@@ -7,7 +7,7 @@ const src = (a) => `<a class="quote-src" href="#/note/${a.noteId}?tab=transcript
 
 export async function render(main) {
   const draw = async () => {
-    const [open, decisions, finished, acts] = await Promise.all([api('GET', '/api/commitments'), api('GET', '/api/assertions?state=accepted,superseded&kind=decision&limit=100'), api('GET', '/api/assertions?state=done&kind=commitment&limit=50'), api('GET', '/api/actions').catch(() => ({ kinds: [] }))]);
+    const [open, decisions, finished, acts] = await Promise.all([api('GET', '/api/commitments'), api('GET', '/api/assertions?state=accepted,superseded&kind=decision&limit=100'), api('GET', '/api/assertions?state=done&kind=commitment&limit=50'), api('GET', '/api/outbound').catch(() => ({ kinds: [] }))]);
     const ready = acts.kinds.filter((k) => k.ready);
     const lists = { mine: open.mine, theirs: open.theirs, decisions, finished };
     const rows = lists[tab] || [];
@@ -29,7 +29,7 @@ export async function render(main) {
     const tb = e.target.closest('[data-tab]'); if (tb) { tab = tb.dataset.tab; return draw(); }
     const lb = e.target.closest('[data-send]');
     if (lb) {
-      const propose = async (kind) => { try { await api('POST', '/api/actions', { kind, assertionId: lb.dataset.send }); done(t('Proposed. Approve it in the Inbox to send it.')); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); } };
+      const propose = async (kind) => { try { await api('POST', '/api/outbound', { kind, assertionId: lb.dataset.send }); done(t('Proposed. Approve it in the Inbox to send it.')); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); } };
       menu(lb, lb.dataset.kinds.split(',').map((x) => { const [kind, label] = x.split('|'); return { label: ({ 'linear.issue': t('A Linear issue'), 'webhook.post': t('A webhook'), 'obsidian.note': t('A note in Obsidian') })[kind] || label, run: () => propose(kind) }; }));
       return;
     }
