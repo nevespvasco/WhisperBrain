@@ -103,12 +103,14 @@ const consentChip = () => {
 export function setRecConsent(consent, noteId = S.rec.noteId) { if (S.rec.active && S.rec.noteId === noteId) { S.rec.consent = consent; renderRecbar(); } }
 async function loadRecConsent(noteId) { try { setRecConsent(await getConsent(noteId), noteId); } catch { /* the bar still shows the warning */ } }
 
+const OVERLAP_CHIP_MS = 4000;
 export function renderRecbar() {
   if (!S.rec.active) { recbar.hidden = true; return; }
   recbar.hidden = false;
   const bars = (v) => { const n = Math.min(5, Math.round(Math.sqrt(v || 0) * 14)); return `<span class="meter">${[0, 1, 2, 3, 4].map((i) => `<b style="height:${4 + i * 3}px;${i < n ? '' : 'background:var(--line-2)'}"></b>`).join('')}</span>`; };
   patchChildren(recbar, `<span class="dot-rec"></span><span class="time">${fmtTimer(S.rec.elapsedMs || 0)}</span>
     <a class="live" href="#/note/${S.rec.noteId}?tab=transcript">${S.rec.finalizing ? `<span class="spinner" aria-hidden="true"></span> ${S.rec.stage === 'speakers' ? t('Identifying speakers…') : t('Finishing transcription…')}` : S.rec.paused ? t('Paused') : S.liveDraft ? `<span class="draft">${esc(S.liveDraft)}</span>` : esc(S.liveText || t('Listening…'))}</a>
+    ${S.rec.overlapAt && Date.now() - S.rec.overlapAt < OVERLAP_CHIP_MS && !S.rec.finalizing ? `<span class="lvl overlap" title="${esc(t('Two or more people are speaking at the same time'))}">${icon('users', 'sm')}<b class="xsmall">${t('Talking over each other')}</b></span>` : ''}
     ${S.rec.micMuted ? `<span class="lvl muted" title="${esc(t('Your microphone is muted: nothing you say is recorded'))}">${icon('micoff', 'sm')}<b class="xsmall">${t('Muted')}</b></span>` : `<span class="lvl" title="${t('Microphone')}${S.rec.aec?.active ? ` · ${t('echo cancelled')}` : ''}">${icon('mic', 'sm')}${bars(S.level.mic)}</span>`}<span class="lvl" title="${t('System audio')}">${icon('waves', 'sm')}${bars(S.level.system)}</span>
     ${S.rec.micAvailable === false ? '' : `<button class="btn sm icon ${S.rec.micMuted ? 'danger' : ''}" data-rec="mute" ${S.rec.finalizing ? 'disabled' : ''} aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}" aria-label="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic')}</button>`}
     <button class="btn sm icon" data-rec="pause" ${S.rec.finalizing ? 'disabled' : ''} title="${S.rec.paused ? t('Resume') : t('Pause')}" aria-label="${S.rec.paused ? t('Resume') : t('Pause')}">${icon(S.rec.paused ? 'play' : 'pause')}</button>
@@ -184,6 +186,8 @@ export function recEvents({ renderTopbar }) {
     },
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),
+    // two or more people at once (the owned speaker pipeline sees it while recording): a short-lived chip in the bar
+    'recording.overlap': (d) => { if (S.rec.active && S.rec.noteId === d.noteId) { S.rec.overlapAt = Date.now(); renderRecbar(); setTimeout(() => { if (S.rec.active) renderRecbar(); }, OVERLAP_CHIP_MS + 50); } },
     'transcript.segment': (d) => { S.liveText = `${lineText(d.segment)}: ${d.segment.text}`; showDraft({ ch: d.segment.speaker === 'me' ? 'mic' : 'system', text: '' }); if (S.rec.active) renderRecbar(); },
     // draft words: the bar shows the most recent draft line, dimmed, until the final text arrives
     'transcript.partial': (d) => { showDraft(d); if (S.rec.active) renderRecbar(); },

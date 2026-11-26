@@ -593,6 +593,8 @@ code { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
 .dot-rec { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--danger); animation: pulse 1.4s infinite; flex: none; box-shadow: 0 0 0 4px color-mix(in srgb, var(--danger) 18%, transparent); }
 .meter { display: inline-flex; gap: 2px; align-items: flex-end; height: 16px; vertical-align: middle; }
 .meter b { width: 3px; border-radius: 2px; background: var(--accent); transition: height .1s; }
+.chip.suggest { border-style: dashed; color: var(--text-2); cursor: default; }
+.recbar .lvl.overlap { color: var(--warn); white-space: nowrap; }
 .recbar .lvl { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--muted); font-weight: 600; }
 
 .toasts { position: fixed; right: 18px; bottom: 18px; display: grid; gap: 10px; z-index: 200; width: min(380px, calc(100vw - 36px)); }

@@ -13,6 +13,9 @@ const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
 const { speechOf, invitedNames } = require('../meet/names');
 const { Spool } = require('./spool');
+const { LiveDiarizer, diarizeOwned } = require('../speakers/owned');
+const { toTimeline } = require('../speakers/diarize');
+const LEGACY_MODEL_ID = require('../speakers/voice-models').LEGACY.id;
 const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
@@ -281,7 +284,34 @@ class RecordingManager {
     if (this.spoolDir && this.speakers && s.speakerDetection && (s.speakerDiarize || s.speakerRefine)) {
       try { a.spool[ch] = new Spool(this.spoolDir, a.noteId, ch); } catch { /* no disk: embeddings alone still work */ }
     }
+    if (a.spool[ch] && s.speakerDiarize && s.speakerPipeline === 'owned') this.followSpool(a, ch, s);
     return a.spool[ch];
+  }
+
+  // The owned diarization pipeline follows the spool while recording (a niced worker, one thread): each 10 s window is
+  // segmented and embedded as soon as it is complete, so Stop only clusters; a window with two people at once is
+  // reported right away (recording.overlap).
+  followSpool(a, ch, s) {
+    const m = this.models;
+    if (!['mic', 'system'].includes(ch) || !m.segmentationInstalled?.() || !m.speakerInstalled?.()) return;
+    try {
+      a.live = a.live || {};
+      a.live[ch] = new LiveDiarizer({
+        file: a.spool[ch].file, segmentation: m.segmentationPath(), embedding: m.speakerPath(), threads: 1, finishThreads: s.asrThreads,
+        onOverlap: (o) => this.onLiveOverlap(a, ch, o),
+        onWarning: (msg) => this.bus.publish('recording.warning', { message: `live speaker analysis (${ch}): ${msg}` }),
+      });
+    } catch (e) { a.live[ch] = null; this.bus.publish('recording.warning', { message: `live speaker analysis: ${e.message}` }); }
+  }
+
+  // Two or more people at once on a channel (seconds of spool) -> on the note timeline, for the live view.
+  onLiveOverlap(a, ch, { start, end }) {
+    if (this.active !== a) return;
+    for (const t of toTimeline([{ start, end, speaker: 0 }], a.stretches[ch] || [])) {
+      a.overlaps = a.overlaps || [];
+      a.overlaps.push({ channel: ch, startMs: t.startMs, endMs: t.endMs });
+      this.bus.publish('recording.overlap', { noteId: a.noteId, channel: ch, startMs: t.startMs, endMs: t.endMs });
+    }
   }
 
   onPcm(a, ch, buf) {
@@ -499,7 +529,9 @@ class RecordingManager {
         a.stage = 'speakers';
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
         if (s.speakerDiarize) diarized = await this.diarize(a, s);
-        if (s.speakerRefine) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
+        // the owned pipeline does not over-split like sherpa's clustering, which the acoustic pass is there to repair; on AMI IS1009a it
+        // joined two real people (WDER 17.3 -> 31.4, eval/README.md), so it is skipped for channels the owned pipeline diarized
+        if (s.speakerRefine && !(s.speakerPipeline === 'owned' && diarized.length)) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
@@ -517,6 +549,15 @@ class RecordingManager {
     return { noteId: a.noteId, durationMs: a.accMs, note };
   }
 
+  // The voice model before the current one, when saved voices made with it exist and it is still installed: the speakers' prints are
+  // then also made with it, so those voices are recognised, and gain a print of the current model when remembered again.
+  // -> { path, id } or null
+  altVoiceModel() {
+    const m = this.models;
+    if (!this.speakers?.hasPrintsOf || !m.legacySpeakerInstalled?.() || m.speakerPath() === m.legacySpeakerPath()) return null;
+    return this.speakers.hasPrintsOf(LEGACY_MODEL_ID) ? { path: m.legacySpeakerPath(), id: LEGACY_MODEL_ID } : null;
+  }
+
   // Diarize each channel's spool on its own (mic and system audio are never clustered together) and relabel this
   // recording's words. Needs the segmentation and voice models; without them the live labels stand.
   // -> the channels that were diarized
@@ -526,6 +567,7 @@ class RecordingManager {
     if (!m.segmentationInstalled?.() || !m.speakerInstalled?.()) return done;
     const note = this.notes.get(a.noteId);
     const attendees = s.speakerCountHint ? note?.attendees : null;
+    const alt = this.altVoiceModel();
     for (const ch of Object.keys(a.spool)) {
       const spool = a.spool[ch];
       if (!spool || spool.broken || !spool.samples) continue;
@@ -537,10 +579,13 @@ class RecordingManager {
       const expected = told ? null : (joined || expectedSpeakers({ attendees, channel: ch }));
       if (told || expected) a.settled.add(ch); // the head count is known: the acoustic pass must not change how many speakers there are
       try {
+        const live = a.live?.[ch];
+        const run = live ? (o) => live.finish({ samples: spool.samples, numSpeakers: o.numSpeakers || 0, altEmbedding: o.altEmbedding || null })
+          : s.speakerPipeline === 'owned' && !this.diarization.run ? diarizeOwned : this.diarization.run;
         const out = await diarizeChannel({
-          diarize: this.diarization.run, notes: this.notes, speakers: this.speakers, noteId: a.noteId, channel: ch,
+          diarize: run, notes: this.notes, speakers: this.speakers, noteId: a.noteId, channel: ch,
           source: { file: spool.file }, stretches: a.stretches[ch], segIds: refs.map((r) => r.segId),
-          segmentation: m.segmentationPath(), embedding: m.speakerPath(), threads: s.asrThreads, options: { ...(expected ? { expected } : {}), ...told, ...this.diarization },
+          segmentation: m.segmentationPath(), embedding: m.speakerPath(), altEmbedding: alt?.path, altModel: alt?.id, threads: s.asrThreads, options: { ...(expected ? { expected } : {}), ...told, ...this.diarization },
         });
         // utterances that were cut keep pointing at their own audio, for the acoustic pass that may follow
         for (const [id, parts] of out?.splits || []) {
@@ -673,7 +718,10 @@ class RecordingManager {
     this.onPcm(a, ch, pcm);
   }
 
-  closeSpools(a) { for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } } }
+  closeSpools(a) {
+    for (const l of Object.values(a.live || {})) { try { l?.stop(); } catch { /* gone */ } }
+    for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } }
+  }
 
   teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); a.meet?.detach(); this.closeSpools(a); }
 }

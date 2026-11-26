@@ -6,6 +6,7 @@ const path = require('node:path');
 const os = require('node:os');
 const db = require('../core/db');
 const { Bus } = require('../core/events');
+const { byFile: byVoiceModelFile } = require('../speakers/voice-models');
 const { Notes } = require('../core/notes');
 const { Settings } = require('../core/settings');
 const { Templates } = require('../core/templates');
@@ -55,6 +56,10 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const semantic = new SemanticIndex({ db: conn, notes, embedder: new HashEmbedder() });
   semantic.enabled = () => settings.get('semanticSearch');
   const models = new Models(modelsDir || path.join(dataDir, 'models'), { bus });
+  // the store tags and judges voice prints by the model that makes them: follow what is installed (and what a download changes)
+  const syncVoiceModel = () => { const vm = byVoiceModelFile(models.speakerPath()); if (vm) speakers.useModel(vm); };
+  syncVoiceModel();
+  bus.subscribe((e) => { if (e.type === 'model.installed') syncVoiceModel(); });
   const engine = new AsrEngine({ speakerModel: () => (models.speakerInstalled() ? models.speakerPath() : null) });
   const plat = platform || createPlatform({ clipboard });
   const llm = new LlmClient(() => settings.get('llm'));
@@ -190,7 +195,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
         model: model ? { id: model.id } : null,
         modelAdvice: recommend({ language: settings.get('asrLanguage') === 'auto' ? settings.get('language') : settings.get('asrLanguage') }),
         vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
-        speakerModelMB: (models.speakerInstalled() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
+        speakerModelMB: (models.speakerUpToDate() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
+        speakerModelUpgrade: models.speakerInstalled() && !models.speakerUpToDate(),   // only the voice model before the current one is installed
         llmConfigured: !!settings.get('llm').baseUrl,
         stats: { ...notes.stats(), ...knowledge.stats() },
         sources: notes.sourceCounts(),

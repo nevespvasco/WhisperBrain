@@ -280,7 +280,7 @@ function transcriptTab(body) {
       ${!S.rec.active && N.segs.length ? `<label class="btn sm ghost" title="${t('Name the speakers from a Teams, Zoom or Meet transcript file (.vtt, .srt, .docx) of this meeting')}">${icon('users', 'sm')} ${t('Attach platform transcript')}<input type="file" id="attachtranscript" accept=".vtt,.srt,.docx,.txt,.md,.json,.html" hidden></label>` : ''}
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
-    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
+    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${x.suggestedName ? `<span class="chip suggest" title="${esc(t('This voice sounds like {name}, but not surely enough to say so', { name: x.suggestedName }))}">${esc(t('{name}?', { name: x.suggestedName }))}</span><button class="btn xs ghost icon" data-suggest-yes="${x.speakerId}" title="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}" aria-label="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-suggest-no="${x.speakerId}" title="${esc(t('No, not {name}', { name: x.suggestedName }))}" aria-label="${esc(t('No, not {name}', { name: x.suggestedName }))}">${icon('x', 'sm')}</button>` : ''}${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
     ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
     ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : preflightOn(N.note, N.segs) ? preflightHtml(N.note) : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
   if (prev && $('.segs-wrap', body)?.contains(prev)) { patchTranscript(body, html); } else body.innerHTML = html;
@@ -574,6 +574,8 @@ function bind(main) {
     if (e.target.closest('[data-tr-cancel]')) { const j = N.tr.job; N.tr.job = null; if (j) await api('POST', `/api/notes/${N.id}/translate/cancel`, { lang: j.lang }).catch(() => {}); renderTab(); return; }
     const gn = e.target.closest('[data-guess-names]');
     if (gn) { guessNames(gn); return; }
+    const sy = e.target.closest('[data-suggest-yes]'), sn = e.target.closest('[data-suggest-no]');
+    if (sy || sn) { await answerSuggestion((sy || sn).dataset[sy ? 'suggestYes' : 'suggestNo'], !!sy); return; }
     const cn = e.target.closest('[data-confirm-name]');
     if (cn) { await keepGuess(cn.dataset.confirmName); return; }
     const rn = e.target.closest('[data-reject-name]');
@@ -765,6 +767,19 @@ async function keepGuess(speakerId) {
   if (!sp?.name) return;
   try { await api('PATCH', `/api/notes/${N.id}/speakers/${speakerId}`, { name: sp.name }); await reloadTranscript(); } catch (e) { fail(e); }
 }
+// "Ana?" answered: yes links the voice (and adds to it when the speech was clean enough), no remembers it is not her
+async function answerSuggestion(speakerId, accept) {
+  try {
+    const res = await api('POST', `/api/notes/${N.id}/speakers/${speakerId}/suggestion`, { accept });
+    if (res?.printSkipped) toast(printSkippedText(res.printSkipped), { timeout: 9000 });
+    await reloadTranscript();
+  } catch (e) { fail(e); }
+}
+function printSkippedText(p) {
+  const why = p.code === 'short' ? t('only {s} s of clear speech (needs {n} s)', { s: Math.round(p.seconds), n: p.needed })
+    : p.code === 'clipped' ? t('the sound was distorted (too loud)') : t('too much background noise');
+  return t('Name saved. The voice was not remembered: {why}.', { why });
+}
 async function dropGuess(speakerId) {
   try { await api('POST', `/api/notes/${N.id}/speakers/${speakerId}/reject-name`); await reloadTranscript(); } catch (e) { fail(e); }
 }
@@ -780,7 +795,11 @@ async function renameSpeaker(speakerId) {
       <div class="hint">${t('Voices are compared on this device only.')}</div>`,
   });
   if (!r?.value) return;
-  try { await api('PATCH', `/api/notes/${N.id}/speakers/${speakerId}`, { name: r.value, remember: !!r.data.remember }); await reloadTranscript(); done(); } catch (e) { fail(e); }
+  try {
+    const res = await api('PATCH', `/api/notes/${N.id}/speakers/${speakerId}`, { name: r.value, remember: !!r.data.remember });
+    if (res?.printSkipped) toast(printSkippedText(res.printSkipped), { timeout: 9000 });
+    await reloadTranscript(); done();
+  } catch (e) { fail(e); }
 }
 
 async function toggleStar(el) {

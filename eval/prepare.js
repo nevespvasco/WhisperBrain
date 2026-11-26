@@ -9,6 +9,12 @@
 //                  "mic" channel, three on "system", with quick turn changes (most pauses shorter than the 0.6 s the
 //                  VAD needs to cut) and some overlap. Reference times are exact per utterance; words inside an
 //                  utterance are spread by character count.
+//   --local <folder> [--name pt-meeting-1]
+//                  Your own recording (e.g. a pt-PT meeting, recorded with everyone's consent; never commit it): the folder
+//                  holds system.wav and/or mic.wav (any format ffmpeg reads) and ref.tsv, one line per utterance:
+//                  start<TAB>end<TAB>speaker<TAB>text (seconds; a corrected transcript exported from WhisperBrain will do).
+//                  Words inside an utterance are spread by character count, as for libri-call, so WDER/cpWER/DER are exact
+//                  per utterance and approximate inside it.
 // Each recording is a folder with <channel>.wav (16 kHz mono s16le) and ref.json { name, channels, words }.
 const fs = require('node:fs');
 const path = require('node:path');
@@ -154,9 +160,34 @@ async function libriCall() {
   console.log(`  ${changes} same-channel speaker changes with less than 0.6 s of pause`);
 }
 
+function spread(start, end, speaker, text) {
+  const ws = String(text).trim().split(/\s+/).filter(Boolean);
+  const chars = ws.reduce((a, w) => a + w.length + 1, 0);
+  let pos = 0;
+  return ws.map((w) => { const s = start + (pos / chars) * (end - start); pos += w.length + 1; return { speaker, start: s, end: start + (pos / chars) * (end - start), word: w }; });
+}
+
+function local(dir, name) {
+  const channels = {};
+  for (const ch of ['mic', 'system']) {
+    const f = fs.readdirSync(dir).find((x) => x.startsWith(`${ch}.`));
+    if (f) channels[ch] = floatToPcm16(pcm16ToFloat(run('ffmpeg', ['-v', 'error', '-i', path.join(dir, f), '-f', 's16le', '-ac', '1', '-ar', '16000', 'pipe:1'])));
+  }
+  if (!Object.keys(channels).length) throw new Error(`${dir}: no mic.* or system.* audio file`);
+  const words = [];
+  for (const line of fs.readFileSync(path.join(dir, 'ref.tsv'), 'utf8').split('\n')) {
+    const [a, b, speaker, ...text] = line.split('\t');
+    if (!speaker || !Number.isFinite(Number(a)) || !Number.isFinite(Number(b))) continue;
+    words.push(...spread(Number(a), Number(b), speaker.trim(), text.join(' ')));
+  }
+  if (!words.length) throw new Error(`${dir}/ref.tsv: no utterances (start<TAB>end<TAB>speaker<TAB>text)`);
+  writeRecording(name, channels, words.sort((x, y) => x.start - y.start));
+}
+
 (async () => {
   fs.mkdirSync(DL, { recursive: true });
   fs.mkdirSync(DATA, { recursive: true });
+  if (opt('--local')) { local(path.resolve(opt('--local')), opt('--name', path.basename(path.resolve(opt('--local'))))); return; }
   for (const m of AMI) { try { await ami(m); } catch (e) { console.warn(`ami-${m}: ${e.message}`); } }
   if (!args.includes('--no-libri')) await libriCall();
 })().catch((e) => { console.error(e.message); process.exit(1); });

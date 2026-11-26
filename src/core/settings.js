@@ -32,6 +32,7 @@ const DEFAULTS = {
   speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
   speakerCountHint: false,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only). Off: exactly right it takes AMI 18.1 -> 14.8 and libri-call 24.9 -> 17.9 WDER, one voice off it costs up to 6 points; see eval/README.md
+  speakerPipeline: 'sherpa',    // who-spoke-when after Stop: 'sherpa' (sherpa-onnx's diarization, recomputed at Stop) or 'owned' (WhisperBrain's own pipeline, src/speakers/owned: windows computed while recording, live overlap events, a few seconds at Stop); see eval/README.md
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
   speakerNamesFromTranscript: 'auto', // while recording and after, an AI reads the transcript and names voices from what people say ("I'm Maria", "Thanks, George"): auto = only when the AI server runs on this computer, on = always, off = never. The names are guesses that say so, and never save a voice print
   translation: {
@@ -181,6 +182,7 @@ function validate(key, value) {
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
   if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);
   if (key === 'speakerNamesFromTranscript' && !['auto', 'on', 'off'].includes(value)) throw new Error('speakerNamesFromTranscript must be auto, on or off');
+  if (key === 'speakerPipeline' && !['sherpa', 'owned'].includes(value)) throw new Error('speakerPipeline must be sherpa or owned');
   if (key === 'floatingRecorder' && !['off', 'background', 'always'].includes(value)) throw new Error('floatingRecorder must be off, background or always');
   if (key === 'autoRecord' && !['off', 'ask', 'always'].includes(value)) throw new Error('autoRecord must be off, ask or always');
   if (key === 'captureCalendar' && !['off', 'selected', 'all'].includes(value)) throw new Error('captureCalendar must be off, selected or all');

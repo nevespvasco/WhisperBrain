@@ -28,7 +28,9 @@ const { assignWords, toTimeline } = require('../src/speakers/diarize');
 const { planPieces, mergeVoices } = require('./pieces');
 const { foldStarved } = require('../src/speakers/final');
 const regroup = require('./regroup');
-const { score } = require('./metrics');
+const { score, scoreTime } = require('./metrics');
+const { DiarizationState } = require('../src/speakers/owned/pipeline');
+const { Segmenter } = require('../src/speakers/owned/segmentation');
 
 const ROOT = path.join(__dirname, '..');
 const DATA = path.join(ROOT, '.eval', 'data');
@@ -37,6 +39,9 @@ const args = process.argv.slice(2);
 const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : d; };
 const num = (k, d) => Number(opt(k, d));
 const models = new Models(process.env.WB_MODELS_DIR || path.join(ROOT, '.models'));
+// embedding bake-off: another voice model (cache keys then carry its name)
+const EMB_TAG = opt('--embedding') ? `:${path.basename(opt('--embedding'))}` : '';
+if (opt('--embedding')) { const f = path.resolve(opt('--embedding')); models.speakerPath = () => f; }
 fs.mkdirSync(CACHE, { recursive: true });
 const cached = async (key, make) => {
   const f = path.join(CACHE, `${crypto.createHash('sha1').update(key).digest('hex').slice(0, 16)}.json`);
@@ -81,7 +86,7 @@ async function transcript(name, rec) {
 const channelPcm = (rec, ch) => floatToPcm16(parseWav(fs.readFileSync(path.join(rec.dir, rec.channels[ch]))).samples);
 
 async function runWorker(name, ch, pcm, from, to, o) {
-  const key = `dz:${name}:${ch}:${from}:${to}:${o.threshold}:${o.numSpeakers || 0}:${o.windowShift}`;
+  const key = `dz:${name}:${ch}:${from}:${to}:${o.threshold}:${o.numSpeakers || 0}:${o.windowShift}${EMB_TAG}`;
   return cached(key, async () => {
     const t0 = Date.now();
     const res = await diarize({ pcm: Buffer.from(pcm.subarray(from * 2, to * 2)), segmentation: models.segmentationPath(), embedding: models.speakerPath(), threads: o.threads, threshold: o.threshold, windowShift: o.windowShift, numSpeakers: o.numSpeakers });
@@ -109,6 +114,26 @@ async function turnPrints(name, ch, pcm, turns, tag, minSec) {
   });
 }
 
+// The owned pipeline's per-window results (segmentation + embeddings) for a channel, cached, so clustering and rebuild
+// options are scored in seconds. -> { state: DiarizationState, seconds }
+async function ownedState(name, ch, pcm, o) {
+  const tag = `${path.basename(models.speakerPath())}:${o.step}:v2`;
+  const raw = await cached(`own:${name}:${ch}:${tag}`, async () => {
+    const sherpa = require('sherpa-onnx-node');
+    const ex = new sherpa.SpeakerEmbeddingExtractor({ model: models.speakerPath(), numThreads: o.threads, provider: 'cpu', debug: 0 });
+    const embed = (x) => { const st = ex.createStream(); st.acceptWaveform({ samples: x, sampleRate: 16000 }); st.inputFinished(); return ex.isReady(st) ? Array.from(ex.compute(st, false)) : null; };
+    const seg = await new Segmenter(models.segmentationPath(), { threads: o.threads }).open();
+    // pcm is a Buffer of s16le bytes (floatToPcm16): read it as 16-bit samples
+    const f = new Float32Array(pcm.length >> 1);
+    for (let k = 0; k < f.length; k++) f[k] = pcm.readInt16LE(k * 2) / 32768;
+    const st = new DiarizationState({ step: o.step });
+    const t0 = Date.now();
+    await st.add(st.pending(f.length, true), { read: (a, b) => f.subarray(a, Math.min(b, f.length)), segment: (w) => seg.run(w), embed });
+    return { seconds: (Date.now() - t0) / 1000, windows: st.windows.map((w) => ({ start: w.start, seg: Buffer.from(w.seg).toString('base64'), emb: w.emb, active: w.active, solo: w.solo })) };
+  });
+  return { seconds: raw.seconds, windows: raw.windows.map((w) => ({ ...w, seg: new Uint8Array(Buffer.from(w.seg, 'base64')), emb: w.emb.map((e) => (e ? Float32Array.from(e) : null)) })) };
+}
+
 (async () => {
   const strategy = opt('--strategy', 'full');
   const o = { threshold: num('--threshold', 0.6), windowShift: num('--window-shift', 0.1), threads: num('--threads', 8), numSpeakers: num('--speakers', 0) };
@@ -118,17 +143,31 @@ async function turnPrints(name, ch, pcm, turns, tag, minSec) {
     const rec = { ...JSON.parse(fs.readFileSync(path.join(DATA, name, 'ref.json'), 'utf8')), dir: path.join(DATA, name) };
     const tr = await transcript(name, rec);
     const hyp = [];
+    const hypTurnsAll = [];
     let stopSeconds = 0, totalSeconds = 0, found = 0;
     for (const ch of Object.keys(rec.channels)) {
       const words = tr.words.filter((w) => w.ch === ch);
-      if (ch === 'mic') { for (const w of words) hyp.push({ ...w, speaker: 'mic' }); continue; }
+      if (ch === 'mic') { for (const w of words) hyp.push({ ...w, speaker: 'mic' }); hypTurnsAll.push(...tr.utterances.filter((u) => u.ch === 'mic').map((u) => ({ start: u.from / 16000, end: u.to / 16000, speaker: 'mic' }))); continue; }
       const pcm = channelPcm(rec, ch);
       const total = pcm.length;
-      let turns = [], speakers = new Set();
-      if (strategy === 'full') {
+      let turns = [], speakers = new Set(), exclusive = null;
+      if (strategy === 'owned') {
+        const ownOpts = { step: num('--step', 16000), threads: o.threads };
+        const raw = await ownedState(name, ch, pcm, ownOpts);
+        const plda = opt('--plda') ? JSON.parse(fs.readFileSync(path.resolve(opt('--plda') === '1' ? path.join(ROOT, 'src', 'speakers', 'owned', 'plda', `${path.basename(models.speakerPath(), '.onnx')}.json`) : opt('--plda')), 'utf8')) : null;
+        const st = new DiarizationState({ step: ownOpts.step, ...(plda ? { plda, vbxThreshold: num('--vbx-threshold', 0.6), Fa: num('--fa', 0.07), Fb: num('--fb', 0.8) } : {}), ...(opt('--own-threshold') ? { threshold: num('--own-threshold') } : {}), ...(opt('--min-cluster') ? { minClusterSize: num('--min-cluster') } : {}), constrained: opt('--constrained', '1') === '1' });
+        st.windows = raw.windows;
+        const t0 = Date.now();
+        const r = st.diarize(total >> 1, { numSpeakers: o.numSpeakers }); // total counts bytes here
+        stopSeconds += (Date.now() - t0) / 1000; totalSeconds += raw.seconds;
+        turns = r.turns;
+        if (opt('--exclusive', '0') === '1') exclusive = r.exclusive;
+        hypTurnsAll.push(...r.turns.map((t) => ({ ...t, speaker: `${ch}:${t.speaker}` })));
+      } else if (strategy === 'full') {
         const r = await runWorker(name, ch, pcm, 0, total, o);
         stopSeconds += r.seconds; totalSeconds += r.seconds;
         turns = r.turns;
+        hypTurnsAll.push(...r.turns.map((t) => ({ ...t, speaker: `${ch}:${t.speaker}` })));
       } else if (strategy === 'regroup') {
         const base = num('--base-threshold', 0.4);
         const r = await runWorker(name, ch, pcm, 0, total, { ...o, threshold: base, numSpeakers: 0 });
@@ -172,10 +211,15 @@ async function turnPrints(name, ch, pcm, turns, tag, minSec) {
       const tl = toTimeline(turns, [{ at: 0, ms: 0 }]);
       speakers = new Set(tl.map((t) => t.speaker));
       found += speakers.size;
-      const got = assignWords(words.map((w) => ({ startMs: w.start * 1000, endMs: w.end * 1000 })), tl, { tolerance: 200 });
+      const got = assignWords(words.map((w) => ({ startMs: w.start * 1000, endMs: w.end * 1000 })), exclusive ? toTimeline(exclusive, [{ at: 0, ms: 0 }]) : tl, { tolerance: 200 });
       words.forEach((w, i) => hyp.push({ ...w, speaker: `${ch}:${got[i].speaker}` }));
     }
     const s = score(rec.words, hyp);
-    console.log(`${name.padEnd(14)} ${strategy.padEnd(6)} WDER ${(100 * s.wder).toFixed(1).padStart(5)}  cpWER ${(100 * s.cpwer).toFixed(1).padStart(5)}  speakers ${s.hypSpeakers}/${s.refSpeakers}  diarization ${totalSeconds.toFixed(0)} s total, ${stopSeconds.toFixed(0)} s left for Stop`);
+    // DER/JER/overlap from the diarization's own turns where it has them (system channel), the mic channel's utterances otherwise
+    const t = scoreTime(rec.words, hyp, { hypTurns: ['owned', 'full'].includes(strategy) ? hypTurnsAll : null });
+    const p1 = (x) => (x == null ? '  n/a' : (100 * x).toFixed(1).padStart(5));
+    const line = `${name.padEnd(14)} ${strategy.padEnd(6)} WDER ${p1(s.wder)}  cpWER ${p1(s.cpwer)}  DER ${p1(t.der)} (miss ${p1(t.miss)} fa ${p1(t.falseAlarm)} conf ${p1(t.confusion)})  JER ${p1(t.jer)}  ovl P/R ${p1(t.overlap.precision)}/${p1(t.overlap.recall)}  speakers ${s.hypSpeakers}/${s.refSpeakers}  diarization ${totalSeconds.toFixed(0)} s total, ${stopSeconds.toFixed(stopSeconds < 10 ? 2 : 0)} s left for Stop`;
+    console.log(line);
+    if (opt('--json')) fs.appendFileSync(opt('--json'), JSON.stringify({ name, strategy, args: args.join(' '), wder: s.wder, cpwer: s.cpwer, wer: s.wer, ...t, hypSpeakers: s.hypSpeakers, refSpeakers: s.refSpeakers, totalSeconds, stopSeconds }) + '\n');
   }
 })().catch((e) => { console.error(e.stack || e.message); process.exit(1); });

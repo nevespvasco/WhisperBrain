@@ -238,3 +238,90 @@ With a real model (`WB_EVAL_LLM=1 WB_EVAL_LLM_URL=http://127.0.0.1:11434/v1 WB_E
 - the first request after loading took 8.9 s (the model loading).
 
 So with a local GPU model, the first words appear about 1.3 s after the other person stops talking. A CPU-only model will be several times slower; the speculative start (a suggestion is prepared during the pause, before it is shown) hides part of that.
+
+
+## The owned diarization pipeline (2026-11-26, from the voice-intelligence report; `src/speakers/owned/`)
+
+sherpa-onnx's `OfflineSpeakerDiarization` is a black box that recomputes everything at Stop. The owned pipeline is the pyannote 3.1 recipe reimplemented in the app: 10 s windows every 1 s, pyannote segmentation-3.0 run by `onnxruntime-node` (`segmentation.js`), one voice print per active local speaker from the frames where it speaks alone (the same WeSpeaker model through sherpa), global clustering (`ahc.js`, or VBx with an LDA+PLDA, `vbx.js`), and the frame-level activity rebuilt from the overlapping windows (`pipeline.js`), giving overlap-aware turns, exclusive turns and the overlap regions. `worker.js` can follow a channel's spool while the meeting runs (`LiveDiarizer`), so Stop only clusters. Setting `speakerPipeline: 'owned'` ("Analyse speakers while recording" in Settings → Audio); the default stays `sherpa`.
+
+New measures in `metrics.js` / `run.js` / `offline.js`: DER (no collar, overlap scored) and JER from time-based turns, overlap precision/recall, WER inside vs outside reference overlap, per-stage times, CPU and peak memory. In `run.js` DER/JER are computed from word-derived turns (so they are not comparable with `offline.js`, which uses the diarization's own turns). Seven AMI meetings are prepared (`node eval/prepare.js --ami ...`; the mirror returns 503 often, retry) and `node eval/prepare.js --local <folder>` makes your own recording (e.g. pt-PT) a test set from a `ref.tsv`.
+
+**Protocol.** Tuning meetings: ami-IS1008a, ami-ES2011a, ami-TS3004a. Held-out: ami-IS1009a, ami-ES2004a, ami-TS3003a, ami-EN2002a. libri-call is reported but its readers are in the PLDA's training set (dev-clean), so it says nothing about VBx. Parameters were chosen on the tuning meetings only. All figures: WDER %, then number of speakers found (true: 4; libri-call 4).
+
+**Cached comparison, no acoustic refine on either side** (`node eval/offline.js --strategy full|owned [--plda 1 ...]`, window states cached per model):
+
+| | EN2002a | ES2004a | ES2011a | IS1008a | IS1009a | TS3003a | TS3004a | libri-call | mean of 8 |
+|---|---|---|---|---|---|---|---|---|---|
+| sherpa (threshold 0.6, today's default) | 61.3 / 57 | 35.4 / 20 | 51.2 / 23 | 33.3 / 3 | 26.3 / 6 | 42.7 / 28 | 47.1 / 40 | 25.0 / 3 | 40.3 |
+| owned, AHC 0.7046 (pyannote 3.1's value) | 14.2 / 4 | 5.1 / 4 | 15.7 / 4 | 46.6 / 1 | 29.9 / 2 | 14.6 / 5 | 18.8 / 3 | 25.4 / 3 | 21.3 |
+| owned, AHC 0.65 (shipped fallback) | 15.3 / 6 | 5.1 / 4 | 16.1 / 4 | 29.1 / 2 | 31.8 / 4 | 14.5 / 4 | 10.7 / 4 | 25.4 / 3 | 18.5 |
+| **owned, VBx + PLDA** (vbx threshold 0.4, Fa 0.07, Fb 0.8; shipped) | 14.2 / 4 | 5.3 / 4 | 13.5 / 3 | 9.6 / 4 | 17.9 / 3 | 15.5 / 1 | 18.8 / 3 | 25.4 / 3 | **15.0** |
+
+On the three tuning meetings the means are 27.0 (AHC 0.7046), 18.6 (AHC 0.65) and 14.0 (VBx); on the four held-out ones 15.9, 16.7 and 13.2. Using the exclusive turns for word assignment moved WDER by at most 1.1 points either way (EN2002a 14.2 → 13.1, TS3004a 18.8 → 19.1): no reason to prefer it on this data, it stays on because it cannot overlap-split a word. VBx is sensitive to its parameters: other settings of the 12 tried collapsed to one speaker or split into 20+; the shipped ones were the best on the tuning meetings.
+
+**Warning about WDER.** TS3003a is a meeting where one person says most of the words: VBx merged the three minor speakers into one (1 speaker found) yet WDER is 15.5, because the words of the dominant speaker are right. Read it together with the speaker count and JER (84.3 there).
+
+**PLDA.** `eval/plda-train.js` trains the LDA (128 d) + PLDA for the shipped voice model on 5,793 crops (2-8 s) of 146 LibriSpeech readers (dev/test clean/other; clean 60 %, simulated call 25 %, simulated phone 15 %) and writes `src/speakers/owned/plda/<model>.json` (451 KB). It is specific to the model: without a file for the voice model in use the pipeline falls back to AHC. pyannote community-1's own PLDA is behind a gated download and was not used.
+
+**End to end** (`node eval/run.js --configs diarize+refine,owned,owned+refine`, the real recording pipeline; held-out meetings and libri-call; the audio is pushed much faster than real time, so the live worker's catch-up time is reported separately and is not Stop time). WDER / cpWER, speakers found (true 4), seconds from Stop to the finished transcript:
+
+| Recording | sherpa + refine (today) | owned + refine | **owned** (shipped: the acoustic refine is skipped for it) |
+|---|---|---|---|
+| ami-EN2002a (36 min) | 59.7 / 110.0, 55, 733 s | 30.6 / 67.0, 4, 17 s | **14.4 / 55.8**, 4, 42 s |
+| ami-ES2004a (17.5 min) | 29.3 / 72.5, 18, 314 s | 11.0 / 47.7, 4, 6.8 s | **9.5 / 45.2**, 4, 6.6 s |
+| ami-TS3003a (25 min) | 32.6 / 72.0, 25, 437 s | 15.5 / 53.9, 1, 3.0 s | **15.5 / 53.9**, 1, 2.8 s |
+| ami-IS1009a (14 min) | **18.1 / 47.6**, 4, 268 s | 31.4 / 65.3, 2, 4.5 s | 17.3 / 48.8, 3, 3.9 s |
+| libri-call (5.6 min) | **24.9 / 57.1**, 3, 150 s | 25.4 / 58.6, 3, 4.0 s | 25.4 / 58.6, 3, 7.0 s |
+| **mean** | 32.9 / 71.8, ~380 s | 22.8 / 58.5, ~7 s | **16.4 / 52.5**, ~12 s |
+
+(Sherpa's ES2004a/TS3003a/EN2002a figures are far from IS1009a's 18.1 because its clustering threshold was tuned on IS1009a.) The acoustic refine was made to repair sherpa's over-splitting; on the owned pipeline it merged real people (IS1009a 17.3 -> 31.4, EN2002a 14.4 -> 30.6), so `RecordingManager.stop` skips it for channels the owned pipeline diarized. The Stop pass drops from 2.5-12 minutes to well under a minute (the 42 s on EN2002a was measured while two other jobs shared the machine; the pipeline's own part was 16 s); the work moves into the meeting, in a niced single-thread worker that ran at roughly 0.3x real time on a busy machine (the 36 minute meeting needed about 680 s of catch-up), so it keeps up. Times are wall-clock on a shared 32-core machine: upper bounds. The DER/JER of `run.js` come from word-derived turns and are not comparable with the table above.
+
+**What this does and does not show.** Five recordings, one of which (IS1009a) the old pipeline was tuned on and one (libri-call) the PLDA saw the readers of. The owned pipeline is clearly better on the three long meetings where sherpa over-splits (and ties on IS1009a and libri-call), but it can under-split: it found 3 of 4 people on IS1009a and TS3003a collapsed to one (WDER hides it, cpWER 53.9 and JER 84.3 do not). Not yet measured: the live overlap events against the reference (overlap P/R from `offline.js`: EN2002a 86/70, ES2004a 78/50, TS3003a 47/46), CPU load on a 4-core machine, real calls, pt-PT. It is therefore opt-in; making it the default needs the held-out set above to be extended (more AMI meetings via `--ami`, a pt-PT meeting via `--local`).
+
+
+## Voice model bake-off and calibrated "ask" band (2026-11-26; details and method in `eval/bakeoff-results.md`)
+
+Same 40 LibriSpeech readers and simulated call/phone channels as the saved-voices harness (`node eval/voices.js ... --model <file>`; each model has its own cache and its own average voice), 300 histories, seed 7; the diarization column is `offline.js` with the same model on the six cached recordings. Correct / wrong person / strangers linked, % (shipped settings 0.6 / 0.02):
+
+| Model | Saved voices | WDER, owned pipeline (AHC) | ms per 10 s, 1 thread | Licence |
+|---|---|---|---|---|
+| WeSpeaker ResNet34-LM (shipped) | 78.5 / 0.6 / 4.2 | 20.3 | 347 | CC-BY-4.0 weights |
+| **3D-Speaker CAM++ (en voxceleb)** | **92.1 / 0.0 / 0.0** | **9.2** | **114** | **Apache-2.0** |
+| NeMo TitaNet-L | 85.1 / 0.0 / 0.0 | 9.3 | 431 | CC-BY-4.0 (HF) |
+| WeSpeaker ResNet293-LM | 84.2 / 1.9 / 17.8 | not run | 2787 | CC-BY-4.0 weights |
+
+CAM++ is better in every scenario, three times faster and cleanly licensed, and **it is now the app's voice model** (see "CAM++ as the voice model" below). One chapter of one reader (1988/148538) is probably mislabelled and puts a floor under every EER; the saved-voice results exclude nothing. ResNet293 is worse than ResNet34 here, probably an export or front-end mismatch.
+
+Calibration (logistic on the centred score, fitted on half the people, scored on the other half): for ResNet34-LM, P(same person) never reaches 0.95 on call/phone audio, so a "match if P >= 0.95, ask if >= 0.6" rule would ask about 14-43 % of decisions; for CAM++ it asks 2-3.5 % and 95-100 % of the questions are right, with 0 wrong links. The app's "ask" band (`MATCH.ask` = 0.45, speakers between 0.45 and 0.6 are suggested as "Ana?" and the user answers yes or no) is a first, uncalibrated value for the shipped model; the calibrated thresholds for both models are at the end of `bakeoff-results.md`.
+
+
+## CAM++ as the voice model (2026-11-26)
+
+**What changed.** The default voice model is 3D-Speaker CAM++ (Apache-2.0, 512 dimensions, 30 MB, `models.js`); `src/speakers/voice-models.js` holds, per model, its average voice (`VOICE_MEAN` for CAM++ from `node eval/voices.js mean --model`) and its match settings (CAM++: link at a centred score of 0.63 with no margin, suggest "Ana?" from 0.44 to 0.63; ResNet34: the old 0.6 / 0.02 / 0.45). Migration v16 tags every stored voice print (`voices`, `voice_exemplars`, `note_speakers`) with the model that made it (everything before is `wespeaker-resnet34-lm`). Prints of different models are never compared (`cosine` of different sizes is -1), never folded into one profile or mean, and each model has its own channel averages.
+
+**Saved voices keep working.** Raw audio is deleted after Stop, so a voice saved with ResNet34 cannot be remade with CAM++. While such voices exist and the ResNet34 file is installed, the after-recording pass also makes every speaker's print with ResNet34 (`alt_centroid`); `autoMatch` judges a voice on the current model's prints when it has any, otherwise on that second print. Remembering the voice again (naming the speaker, "Yes, it is Ana") adds prints of both models, after which the new model alone recognises her. Not covered: meetings with no after-recording diarization (no pooled print, so no second print), and the live labels while recording (live matching uses the current model only). An existing install keeps ResNet34 until CAM++ is downloaded (Settings → Audio shows a banner; new installs get CAM++ directly); the app switches by itself when the download completes. Tests: `test/voice-models.test.js`.
+
+**Results with CAM++ in the owned pipeline.** Cached comparison (`offline.js --strategy owned --embedding <CAM++>`), WDER, mean of the 8 recordings: AHC 0.55 10.3, **AHC 0.65 9.6** (on the three tuning meetings 8.4; 0.55: 9.3; 0.75: 11.3), AHC 0.75 11.8, and VBx with a PLDA trained for CAM++ (`eval/plda-train.js --model`, 5,793 crops) 11.3 at best, with 5-10 speakers where 4 are true. So CAM++ uses plain AHC at 0.65 and no PLDA (the unused PLDA file is not shipped; ResNet34 keeps its own). With AHC 0.65, 6 of 8 recordings find the 4 true speakers (the other two find 3).
+
+End to end (`node eval/run.js --embedding <CAM++> --configs owned`), WDER / cpWER, speakers found (true 4), seconds of speaker work after Stop:
+
+| Recording | sherpa + refine + ResNet34 (before) | owned + ResNet34 | **owned + CAM++** |
+|---|---|---|---|
+| ami-EN2002a | 59.7 / 110.0, 55 | 14.4 / 55.8, 4 | **11.3 / 53.9**, 4, 3.4 s |
+| ami-ES2004a | 29.3 / 72.5, 18 | 9.5 / 45.2, 4 | **8.9 / 44.8**, 4, 2.0 s |
+| ami-TS3003a | 32.6 / 72.0, 25 | 15.5 / 53.9, 1 | **10.1 / 47.5**, 3, 1.6 s |
+| ami-IS1009a | 18.1 / 47.6, 4 | 17.3 / 48.8, 3 | **8.4 / 40.7**, 4, 1.7 s |
+| libri-call | 24.9 / 57.1, 3 | 25.4 / 58.6, 3 | **17.1 / 42.3**, 4, 1.9 s |
+| **mean** | 32.9 / 71.8 | 16.4 / 52.5 | **11.2 / 45.8** |
+
+(The "after Stop" time of `run.js` for the owned pipeline includes transcription still to finish, because the audio is fed far faster than real time; the speaker pass itself is the figure above.) The owned pipeline with CAM++ is better than today's pipeline on all five recordings, but it is still **opt-in** (`speakerPipeline`): the sample is five recordings plus the cached comparison on eight, all English (AMI, LibriSpeech); no real calls, no pt-PT, nothing on a 4-core machine. The step to take before making it the default is a pt-PT meeting through `node eval/prepare.js --local`.
+
+### Checks added later the same day (owned pipeline + CAM++)
+
+- **Live overlap events** (`test/owned-live.test.js`, real models): two voices mixed at once are reported as `recording.overlap` while recording, before Stop. In the browser (Settings → Audio switch, recording bar chip, "Ana?" yes/no chips, "voice not remembered" toast, "better voice model" banner) the behaviour was checked by hand against a seeded scratch server; the chip disappears after 4 s.
+- **Second print by the old model** (same file): with CAM++ active and a voice saved by ResNet34, every speaker gets a CAM++ print and a ResNet34 print, with both the owned and the sherpa pipeline.
+- **File import** (`test/server.test.js`): a two-voice WAV imported with `speakerPipeline: owned` has two speakers, the first recognised when it returns, prints and their quality stored, and no voice print in the API response (a second print, `altCentroid`, did leak into it before this check and is now stripped).
+- **Model download** (`test/voice-models.test.js`, local HTTP server): the CAM++ file is checked against its SHA-256 and installed, a wrong checksum leaves nothing behind, and the old ResNet34 file is untouched. The real GitHub URL was not downloaded from the app in this check (the file's checksum is that of the copy used in the bake-off).
+- **Packaged build** (`electron-builder --dir --linux`): `onnxruntime-node` is now unpacked from the asar (its binding loads `libonnxruntime` beside it) and only the target system's binaries are packaged. Linux unpacked: 20 MB asar + 105 MB native modules (71 MB of them onnxruntime, x64 and arm64). The segmentation model was run from inside the packaged app (Electron 45). macOS and Windows packaging are not checked here.
+- **Small machines** (`taskset`, `eval/run.js --embedding <CAM++> --configs owned --only ami-IS1009a`, 14 min of audio fed as fast as possible): 4 cores 117 s, 2 cores 155 s for transcription and speaker analysis together (7x and 5x faster than real time), same result as on 32 cores (WDER 8.4, 4/4 speakers), 1.7 s of speaker work after Stop.
+- **A forced number of speakers** ("Others on the call", `--speakers N`): the right count gives the same result as the free one (libri-call 17.1, IS1009a 8.4), one too few costs a lot (ES2004a with 3 instead of 4: 8.9 -> 35.9 WDER), which is why the calendar hint stays off by default.

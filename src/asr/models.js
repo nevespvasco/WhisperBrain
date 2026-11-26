@@ -54,9 +54,17 @@ const VAD = {
   sha256: '9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6',
 };
 
-// Voice embeddings for telling speakers apart (language-independent).
+// Voice embeddings for telling speakers apart (language-independent). 3D-Speaker CAM++ (Apache-2.0) since 2026-11-26: better than
+// the WeSpeaker ResNet34 before it in every saved-voice scenario and in diarization, and 3x faster (eval/bakeoff-results.md).
 const SPEAKER = {
-  id: 'speaker-voice', name: 'Speaker recognition (WeSpeaker ResNet34)',
+  id: 'speaker-voice', name: 'Speaker recognition (3D-Speaker CAM++)',
+  url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx',
+  sizeMB: 30, sha256: '98daf9bcf1c8abf3db374fec4c27a5eda7c58705bb3f180d057b085a72a88bb5',
+};
+// The model before it. Kept working where it is already installed, because voices saved with it can only be recognised by it
+// (their prints cannot be remade: the audio is deleted); it is never downloaded again.
+const SPEAKER_LEGACY = {
+  id: 'speaker-voice-resnet34', name: 'Speaker recognition (WeSpeaker ResNet34)',
   url: 'https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx',
   sizeMB: 26, sha256: 'e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012',
 };
@@ -100,11 +108,12 @@ function recommend({ totalMemMB = os.totalmem() / 1048576, cpus = os.availablePa
 }
 
 class Models {
-  constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, segmentation = SEGMENTATION, bus } = {}) {
+  constructor(dir, { catalog = CATALOG, vad = VAD, speaker = SPEAKER, speakerLegacy = SPEAKER_LEGACY, segmentation = SEGMENTATION, bus } = {}) {
     this.dir = dir;
     this.catalog = catalog;
     this.vad = vad;
     this.speaker = speaker;
+    this.speakerLegacy = speakerLegacy;
     this.segmentation = segmentation;
     this.bus = bus;
     this.downloads = new Map(); // id -> { progress, abort }
@@ -114,8 +123,14 @@ class Models {
 
   modelDir(id) { return path.join(this.dir, id); }
   vadPath() { return path.join(this.dir, 'silero-vad', 'silero_vad.onnx'); }
-  speakerPath() { return path.join(this.dir, 'speaker', path.basename(new URL(this.speaker.url).pathname)); }
+  // The voice model in use: the current one, or the one before it where that is all this install has (it keeps working until the
+  // current one is downloaded). Speaker features need any of them: speakerInstalled().
+  currentSpeakerPath() { return path.join(this.dir, 'speaker', path.basename(new URL(this.speaker.url).pathname)); }
+  legacySpeakerPath() { return path.join(this.dir, 'speaker', path.basename(new URL(this.speakerLegacy.url).pathname)); }
+  speakerPath() { const cur = this.currentSpeakerPath(); return !fs.existsSync(cur) && fs.existsSync(this.legacySpeakerPath()) ? this.legacySpeakerPath() : cur; }
   speakerInstalled() { return fs.existsSync(this.speakerPath()); }
+  speakerUpToDate() { return fs.existsSync(this.currentSpeakerPath()); }   // false while only the model before it is installed
+  legacySpeakerInstalled() { return fs.existsSync(this.legacySpeakerPath()); }
   segmentationPath() { return path.join(this.dir, 'segmentation', path.basename(this.segmentation.file)); }
   segmentationInstalled() { return fs.existsSync(this.segmentationPath()); }
 
@@ -201,7 +216,7 @@ class Models {
   installDeps() {
     this.depsPending ??= (async () => {
       if (!this.vadInstalled()) await this.installVad();
-      if (!this.speakerInstalled()) await this.installSpeaker().catch((e) => this.bus?.publish('model.error', { id: this.speaker.id, message: `speaker recognition: ${e.message}` }));
+      if (!this.speakerUpToDate()) await this.installSpeaker().catch((e) => this.bus?.publish('model.error', { id: this.speaker.id, message: `speaker recognition: ${e.message}` }));
       if (!this.segmentationInstalled()) await this.installSegmentation().catch((e) => this.bus?.publish('model.error', { id: this.segmentation.id, message: `speaker segmentation: ${e.message}` }));
     })().finally(() => { this.depsPending = null; });
     return this.depsPending;
@@ -217,7 +232,7 @@ class Models {
   }
 
   async installSpeaker() {
-    const dest = this.speakerPath();
+    const dest = this.currentSpeakerPath();
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     const tmp = dest + '.part';
     const sha = await download(this.speaker.url, tmp, {});
@@ -246,7 +261,7 @@ class Models {
 
   // The voice model and the segmentation model, whichever is missing (both are needed to tell speakers apart).
   async installSpeakerModels() {
-    if (!this.speakerInstalled()) await this.installSpeaker();
+    if (!this.speakerUpToDate()) await this.installSpeaker();
     if (!this.segmentationInstalled()) await this.installSegmentation();
   }
 

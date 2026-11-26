@@ -8,10 +8,7 @@
 // speaker per window, and the embeddings are clustered over the whole recording. Each speaker also gets a voice print
 // pooled over up to 30 s of solo speech, and a pitch (used only as a veto when merging or matching voices).
 const fs = require('node:fs');
-const { soloStretches } = require('./diarize');
-const { voiceFeatures } = require('../audio/features');
-
-const RATE = 16000;
+const { voicesOf } = require('./voices-of');
 
 function toFloat(buf) {
   const b = buf.byteOffset % 2 === 0 ? buf : Buffer.from(buf); // Int16Array views need an even byteOffset
@@ -33,20 +30,8 @@ function diarize(m) {
   });
   const turns = sd.process(samples).map((t) => ({ start: t.start, end: t.end, speaker: t.speaker }));
   const extractor = new sherpa.SpeakerEmbeddingExtractor({ model: m.embedding, numThreads: threads, provider: 'cpu', debug: 0 });
-  const voices = [...new Set(turns.map((t) => t.speaker))].map((id) => {
-    const ms = Math.round(turns.filter((t) => t.speaker === id).reduce((a, t) => a + t.end - t.start, 0) * 1000);
-    const parts = soloStretches(turns, id).map(([s, e]) => samples.subarray(Math.round(s * RATE), Math.round(e * RATE)));
-    if (!parts.length) return { speaker: id, centroid: null, pitch: null, ms };
-    const all = new Float32Array(parts.reduce((a, p) => a + p.length, 0));
-    let at = 0;
-    for (const p of parts) { all.set(p, at); at += p.length; }
-    const st = extractor.createStream();
-    st.acceptWaveform({ samples: all, sampleRate: RATE });
-    st.inputFinished();
-    const centroid = extractor.isReady(st) ? Float32Array.from(extractor.compute(st, false)) : null; // no external buffers (Electron)
-    const f0 = parts.slice(0, 8).map((p) => voiceFeatures(p.subarray(0, 8 * RATE))?.f0).filter(Boolean).sort((a, b) => a - b);
-    return { speaker: id, centroid, pitch: f0.length ? f0[(f0.length - 1) >> 1] : null, ms };
-  });
+  const alt = m.altEmbedding ? new sherpa.SpeakerEmbeddingExtractor({ model: m.altEmbedding, numThreads: threads, provider: 'cpu', debug: 0 }) : null; // an older voice model, for saved voices made with it
+  const voices = voicesOf(samples, turns, extractor, alt);
   return { turns, voices };
 }
 

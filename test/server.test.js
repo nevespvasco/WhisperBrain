@@ -166,6 +166,28 @@ test('import a WAV file into a note', real, async (t) => {
   await assert.rejects(s.json('POST', `/api/notes/${n.id}/import-audio`, Buffer.alloc(0)), (e) => e.status === 400);
 });
 
+test('import a two-voice WAV file with the owned speaker pipeline: speakers told apart, prints made, nothing biometric in the API', real, async (t) => {
+  const s = await boot(t, { withModels: true });
+  s.app.settings.update({ speakerPipeline: 'owned', speakerDiarize: true, speakerRefine: false });
+  const { wavToPcm16, pcm16ToWav } = require('../src/audio/pcm');
+  const en = wavToPcm16(fs.readFileSync(path.join(s.app.models.modelDir('parakeet-tdt-0.6b-v3'), 'test_wavs', 'en.wav')));
+  const other = wavToPcm16(fs.readFileSync(fixture('speech-0.wav')));
+  const gap = Buffer.alloc(32000);
+  const wav = pcm16ToWav(Buffer.concat([en, gap, other, gap, en, gap]));
+  const n = await s.json('POST', '/api/notes', { title: 'Imported, two voices' });
+  const r = await s.json('POST', `/api/notes/${n.id}/import-audio?filename=two.wav`, wav);
+  assert.ok(r.segments >= 3, JSON.stringify(r));
+  const segs = await s.json('GET', `/api/notes/${n.id}/transcript`);
+  const ids = segs.map((x) => x.speakerId);
+  assert.ok(new Set(ids).size >= 2, `two voices: ${JSON.stringify(ids)}`);
+  assert.equal(ids[0], ids[ids.length - 1], 'the first voice is recognised when it comes back');
+  const speakers = await s.json('GET', `/api/notes/${n.id}/speakers`);
+  assert.ok(speakers.length >= 2);
+  assert.ok(JSON.stringify(speakers).length < 4000, 'no voice print in the API response');
+  assert.ok(speakers.every((x) => x.centroid === undefined && x.altCentroid === undefined));
+  assert.ok(s.app.speakers.forNote(n.id).some((x) => x.centroid && x.quality?.seconds > 0), 'the pooled voice print and its quality are stored');
+});
+
 test('spaces, advanced search filters and per-speaker quotes', async (t) => {
   const s = await boot(t);
   const sp = await s.json('POST', '/api/spaces', { name: 'Clients' });

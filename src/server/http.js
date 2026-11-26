@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { decodeAudio, transcribePcm, assignSpeakers } = require('../recording/import');
 const { refineNote } = require('../speakers/refine');
 const { diarizeChannel } = require('../speakers/final');
+const { diarizeOwned } = require('../speakers/owned');
 const { nameFromTranscript } = require('../speakers/transcript-names');
 const { LANGUAGES, isLanguage } = require('../llm/languages');
 
@@ -165,10 +166,11 @@ function createRoutes(app) {
     const saved = app.notes.addSegments(params.id, labelled);
     const prefs = app.settings.all();
     let diarized = false;
+    const alt = app.recording.altVoiceModel();
     if (prefs.speakerDetection && prefs.speakerDiarize && saved.length && app.models.segmentationInstalled() && app.models.speakerInstalled()) { // who spoke when, word by word
       try {
-        diarized = !!await diarizeChannel({ notes: app.notes, speakers: app.speakers, noteId: params.id, channel: 'system', source: { pcm }, stretches: [{ at: 0, ms: 0 }], segIds: saved.map((x) => x.id),
-          segmentation: app.models.segmentationPath(), embedding: app.models.speakerPath(), threads: prefs.asrThreads });
+        diarized = !!await diarizeChannel({ ...(prefs.speakerPipeline === 'owned' ? { diarize: diarizeOwned } : {}), notes: app.notes, speakers: app.speakers, noteId: params.id, channel: 'system', source: { pcm }, stretches: [{ at: 0, ms: 0 }], segIds: saved.map((x) => x.id),
+          segmentation: app.models.segmentationPath(), embedding: app.models.speakerPath(), altEmbedding: alt?.path, altModel: alt?.id, threads: prefs.asrThreads });
       } catch (e) { console.warn('speaker diarization failed:', e.message); }
     }
     if (prefs.speakerDetection && prefs.speakerRefine && saved.length) { // a second, acoustic look (pitch, timbre) at who spoke
@@ -254,6 +256,14 @@ function createRoutes(app) {
     noteOr404(params.id);
     const r = app.speakers.rename(params.id, params.sid, body.name, { remember: !!body.remember, consentSource: body.remember ? 'user' : null });
     if (!r) throw new HttpError(404, 'speaker not found');
+    app.notes.reindex(params.id);
+    return r;
+  });
+  // "Ana?": the user confirms or declines a saved voice the speaker was suggested (not sure enough to be linked by itself)
+  add('POST', '/api/notes/:id/speakers/:sid/suggestion', async ({ params, body }) => {
+    noteOr404(params.id);
+    const r = app.speakers.answerSuggestion(params.id, params.sid, !!body.accept);
+    if (!r) throw new HttpError(409, 'There is no suggestion for this speaker.');
     app.notes.reindex(params.id);
     return r;
   });

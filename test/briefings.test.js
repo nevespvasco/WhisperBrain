@@ -36,7 +36,7 @@ test('migration v14: briefings of the kinds that are gone become notes, the othe
   old.close();
   const db = open(file);
   try {
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 14);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);
     const kinds = Object.fromEntries(db.prepare('SELECT id, kind FROM briefings').all().map((r) => [r.id, r.kind]));
     assert.deepEqual(kinds, { a: 'notes', b: 'notes', c: 'project', d: 'company' });
     assert.equal(db.prepare("SELECT count(*) AS c FROM briefings WHERE text = 'kept'").get().c, 4);

@@ -136,7 +136,9 @@ function splitByWords(seg, labels) {
 // Plan the relabelling of one channel. segments: the utterances of this recording on this channel, [{ id, startMs,
 // endMs, text, speakerId, words }]; turns: timeline turns. -> { map, born, changes: [{ id, parts }] } where `parts`
 // replaces the utterance (only utterances that change are listed), plus `words`/`overlapped` counts.
-function planChannel({ segments, turns, prefix = 's', usedIds = [], tolerance = 200 }) {
+// exclusive: optional timeline turns with one speaker per moment (the owned pipeline's); when given, each word goes
+// to the speaker that dominates that moment, while `turns` (overlap included) still flag overlapped words.
+function planChannel({ segments, turns, exclusive = null, prefix = 's', usedIds = [], tolerance = 200 }) {
   const { map, born } = mapSpeakers(segments, turns, { prefix, usedIds });
   const changes = [];
   let nWords = 0, overlapped = 0;
@@ -146,6 +148,7 @@ function planChannel({ segments, turns, prefix = 's', usedIds = [], tolerance = 
     let flagChanged = false;
     if (words.length) {
       const got = assignWords(words, turns, { tolerance });
+      if (exclusive?.length) assignWords(words, exclusive, { tolerance }).forEach((x, i) => { if (x.speaker !== null) got[i].speaker = x.speaker; });
       nWords += got.length;
       overlapped += got.filter((g) => g.overlap).length;
       // an overlapped word (two people talking at once) carries a fourth element, 1; redone from scratch on every pass

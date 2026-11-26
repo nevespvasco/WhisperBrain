@@ -15,6 +15,7 @@ function norm(v) {
 }
 
 function cosine(a, b) {
+  if (a.length !== b.length) return -1;   // prints of different voice models are never alike (and never merged or linked)
   let d = 0, x = 0, y = 0;
   for (let i = 0; i < a.length; i++) { d += a[i] * b[i]; x += a[i] * a[i]; y += b[i] * b[i]; }
   return d / (Math.sqrt(x * y) || 1);
@@ -136,6 +137,7 @@ const MATCH = {
   cross: 0,           // what a print heard through another channel loses; centring per channel already accounts for it (0 was best)
   negative: 0.05,     // a speaker at least as close to a voice the user rejected as to the profile (within this) is not linked
   prior: { mic: 10, system: 3 },   // how many heard voices the shipped average counts for, per channel (any value from 3 to 20 did as well)
+  ask: 0.45,          // below `threshold` but at least this: not linked, but suggested ("Ana?") for the user to confirm or decline
 };
 const MAX_PRINTS = 6;    // voice prints kept per saved voice
 const MERGE_SIM = 0.9;   // two prints of one channel this alike (plain cosine) are one print
@@ -212,10 +214,10 @@ function matchVoices(speakers, voices, threshold = MATCH.threshold, allowed = nu
 // an unknown one, as profiles from before the channel was kept) is folded into it (weighted by seconds of speech); beyond MAX_PRINTS the two closest prints merge, same channel first.
 function addPrint(prints, add, { max = MAX_PRINTS, mergeSim = MERGE_SIM } = {}) {
   const e = norm(add.embedding);
-  const np = { embedding: e, weight: Math.max(0.5, add.weight || 1), channel: add.channel || '', pitch: add.pitch || null, source: add.source || null };
+  const np = { embedding: e, weight: Math.max(0.5, add.weight || 1), channel: add.channel || '', pitch: add.pitch || null, source: add.source || null, model: add.model || null };
   const list = prints.filter((p) => !(np.source && p.source === np.source));
   const fold = (a, b) => ({ embedding: blend(a.embedding, a.weight, b.embedding, b.weight), weight: a.weight + b.weight, channel: a.channel === b.channel || !b.channel ? a.channel : !a.channel ? b.channel : '',
-    pitch: a.pitch && b.pitch ? (a.pitch * a.weight + b.pitch * b.weight) / (a.weight + b.weight) : a.pitch || b.pitch || null, source: null });
+    pitch: a.pitch && b.pitch ? (a.pitch * a.weight + b.pitch * b.weight) / (a.weight + b.weight) : a.pitch || b.pitch || null, source: null, model: a.model || b.model || null });
   let near = -1, nearSim = mergeSim;
   list.forEach((p, i) => { const c = p.channel === np.channel || !p.channel || !np.channel ? cosine(p.embedding, e) : -1; if (c >= nearSim) { nearSim = c; near = i; } });
   if (near >= 0) list[near] = fold(list[near], np); else list.push(np);

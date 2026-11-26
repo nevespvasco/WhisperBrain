@@ -2,6 +2,7 @@
 const { newId } = require('../core/ids');
 const { tx } = require('../core/db');
 const { toBlob, fromBlob, norm, blend, cosine, mergeClusters, matchVoices, addPrint, populationMean, MATCH, MAX_REJECTS, VOICE_MEAN } = require('./cluster');
+const { MODELS, LEGACY, byId } = require('./voice-models');
 const { semitones } = require('../audio/features');
 const { displayFor, describe } = require('./display');
 const { nameKey } = require('../meet/protocol');
@@ -9,6 +10,18 @@ const { nameKey } = require('../meet/protocol');
 const PITCH_VETO = 4;   // semitones: two voices this far apart in pitch are never the same person
 // A voice print is biometric data: it is saved only on the say-so of someone, and the profile records whose.
 const CONSENT_SOURCES = new Set(['user', 'meeting', 'import']);
+// A voice print is remembered only from speech clean enough to stand for the person; a print from a few seconds of noisy
+// or clipped audio would drift the profile (quality comes from the after-recording pass, voices-of.js).
+const PRINT_QUALITY = { minSeconds: 8, maxClipped: 0.01, minSnrDb: 10 };
+
+// Why a voice print should not be remembered, or null. q: { seconds, clipped, snrDb } (null when unknown: no check).
+function printProblem(q) {
+  if (!q) return null;
+  if (q.seconds != null && q.seconds < PRINT_QUALITY.minSeconds) return { code: 'short', seconds: q.seconds, needed: PRINT_QUALITY.minSeconds };
+  if (q.clipped != null && q.clipped > PRINT_QUALITY.maxClipped) return { code: 'clipped', clipped: q.clipped };
+  if (q.snrDb != null && q.snrDb < PRINT_QUALITY.minSnrDb) return { code: 'noisy', snrDb: q.snrDb };
+  return null;
+}
 
 
 // Default label for a speaker that has not been named. Channel "mic" ids are m1, m2…; system audio ids are s1, s2…
@@ -20,17 +33,26 @@ function defaultLabel(speakerId, channelSpeaker, userName = '') {
 }
 
 class Speakers {
-  constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.adapt = true; this.enabled = () => true; }   // enabled(): voice prints at all (an organisation can switch them off)   // mean: the average voice that prints are centred on, see cluster.js
+  constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.modelId = LEGACY.id; this.adapt = true; this.enabled = () => true; }   // enabled(): voice prints at all (an organisation can switch them off)   // mean: the average voice that prints are centred on, see cluster.js
+  //   modelId: the voice model new prints come from (voice-models.js); every stored print is tagged with it
+
+  // The voice model this app now makes prints with (voice-models.js): new prints carry its id, scores are centred on its average
+  // voice and judged with its thresholds. Prints of other models stay, and are matched with their own model's settings.
+  useModel(model) { this.modelId = model.id; this.mean = model.mean; return this; }
+  // Are there saved voices with prints made by this model? (then a new meeting's speakers also get a print by it)
+  hasPrintsOf(modelId) { return !!this.db.prepare('SELECT 1 FROM voice_exemplars WHERE negative = 0 AND model = ? LIMIT 1').get(modelId); }
+  meanOf(modelId) { return modelId === this.modelId ? this.mean : (byId(modelId)?.mean || null); }
 
   // ---- per-note speakers ----
   forNote(noteId) {
     const rows = this.db.prepare(`
       SELECT ns.speaker_id AS speakerId, ns.channel, ns.name, ns.name_source AS nameSource, ns.name_confidence AS nameConfidence, ns.voice_id AS voiceId, v.name AS voiceName, ns.count, ns.centroid, ns.pitch,
+             ns.suggested_voice_id AS suggestedVoiceId, sv.name AS suggestedName, ns.suggested_score AS suggestedScore, ns.quality, ns.model, ns.alt_centroid AS altCentroid, ns.alt_model AS altModel,
              (SELECT COALESCE(SUM(end_ms - start_ms), 0) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS talkMs,
              (SELECT COUNT(*) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS segments
-      FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id
+      FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id LEFT JOIN voices sv ON sv.id = ns.suggested_voice_id
       WHERE ns.note_id = ? ORDER BY ns.channel, CAST(substr(ns.speaker_id, 2) AS INTEGER)`).all(noteId);
-    return rows.map((r) => ({ ...r, centroid: fromBlob(r.centroid) }));
+    return rows.map((r) => ({ ...r, centroid: fromBlob(r.centroid), altCentroid: fromBlob(r.altCentroid), quality: r.quality ? JSON.parse(r.quality) : null, suggestedName: r.suggestedVoiceId && !r.name && !r.voiceId ? r.suggestedName : null }));
   }
 
   // Milliseconds of this speaker's speech that were spoken while somebody else talked (the after-recording pass flags those
@@ -58,17 +80,21 @@ class Speakers {
 
   publicForNote(noteId, userName) {
     const shown = this.display(noteId, userName);
-    return this.forNote(noteId).filter((s) => s.segments > 0).map(({ centroid, ...s }) => {
+    return this.forNote(noteId).filter((s) => s.segments > 0).map(({ centroid, altCentroid, ...s }) => {
       const name = s.name || s.voiceName || '';
       const d = name ? { label: name, kind: 'name', n: shown.map.get(s.speakerId)?.n ?? null } : shown.of(s.speakerId, s.channel === 'mic' ? 'me' : 'them');
       return { ...s, label: d.label, labelKind: d.kind, displayNo: d.n };
     });
   }
 
-  save(noteId, { speakerId, channel, centroid, count, voiceId, pitch }) {
-    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, centroid, count, voice_id, pitch) VALUES(?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(note_id, speaker_id) DO UPDATE SET centroid = excluded.centroid, count = excluded.count, voice_id = COALESCE(note_speakers.voice_id, excluded.voice_id), pitch = COALESCE(excluded.pitch, note_speakers.pitch)`)
-      .run(noteId, speakerId, channel, toBlob(centroid), count, voiceId || null, pitch || null);
+  // altCentroid/altModel: a second print of the same speech made by an older voice model, so saved voices of that model are still
+  // recognised (see autoMatch).
+  save(noteId, { speakerId, channel, centroid, count, voiceId, pitch, altCentroid = null, altModel = null }) {
+    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, centroid, count, voice_id, pitch, model, alt_centroid, alt_model) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(note_id, speaker_id) DO UPDATE SET centroid = excluded.centroid, count = excluded.count, voice_id = COALESCE(note_speakers.voice_id, excluded.voice_id), pitch = COALESCE(excluded.pitch, note_speakers.pitch),
+        model = CASE WHEN excluded.centroid IS NULL THEN note_speakers.model ELSE excluded.model END,
+        alt_centroid = COALESCE(excluded.alt_centroid, note_speakers.alt_centroid), alt_model = COALESCE(excluded.alt_model, note_speakers.alt_model)`)
+      .run(noteId, speakerId, channel, toBlob(centroid), count, voiceId || null, pitch || null, this.modelId, toBlob(altCentroid), altCentroid ? altModel : null);
   }
 
   // A speaker whose identity is known from outside the audio (a Discord user): no voice print, named from the start.
@@ -138,6 +164,7 @@ class Speakers {
     if (consent !== true || !this.enabled()) return false;
     const sp = this.forNote(noteId).find((x) => x.speakerId === speakerId);
     if (!sp?.name || !sp.centroid || sp.talkMs - this.overlapMs(noteId, speakerId) < 8000) return false; // a voice print needs some seconds of clean speech to mean anything
+    if (printProblem(sp.quality)) return false;
     const existing = this.voiceByName(sp.name);
     if (existing && sp.voiceId !== existing.id) return false;
     this.rename(noteId, speakerId, sp.name, { remember: true, consentSource: 'meeting', keepSource: true });
@@ -194,30 +221,52 @@ class Speakers {
     if (linked && !same(linked.name, clean)) {
       const confirmedHere = sp.name && same(sp.name, linked.name);
       if (!confirmedHere || this.voiceByName(clean)) {
-        if (sp.centroid && this.enabled()) this.reject(linked.id, sp.centroid, source);
+        if (sp.centroid && this.enabled()) this.reject(linked.id, sp.centroid, source, sp.model || LEGACY.id);
         voiceId = null;
       }
     }
-    if (remember && clean && sp.centroid && CONSENT_SOURCES.has(consentSource) && this.enabled()) {
+    const problem = remember && clean && sp.centroid ? printProblem(sp.quality) : null;
+    if (remember && clean && sp.centroid && !problem && CONSENT_SOURCES.has(consentSource) && this.enabled()) {
       const existing = voiceId ? this.voice(voiceId) : this.voiceByName(clean);
       // overlapped speech is two people at once: it does not count as this person's clean speech
       const seconds = sp.talkMs > 0 ? Math.max(0, sp.talkMs - this.overlapMs(noteId, speakerId)) / 1000 : Math.max(1, sp.count) * 3;
-      const print = { embedding: sp.centroid, weight: Math.min(30, seconds), channel: sp.channel === 'mic' ? 'mic' : 'system', pitch: sp.pitch, source };
+      const channel = sp.channel === 'mic' ? 'mic' : 'system';
+      const print = { embedding: sp.centroid, weight: Math.min(30, seconds), channel, pitch: sp.pitch, source, model: sp.model || LEGACY.id };
+      // the same speech through an older model, kept so that model's saved voices go on working
+      const alt = sp.altCentroid && sp.altModel ? { embedding: sp.altCentroid, weight: print.weight, channel, pitch: sp.pitch, source, model: sp.altModel } : null;
       if (existing) {
-        this.reinforce(existing.id, print, { name: clean, utterances: Math.max(1, sp.count) });
+        this.reinforce(existing.id, print, { name: clean, utterances: Math.max(1, sp.count), alt });
         this.db.prepare('UPDATE voices SET consent_at = COALESCE(consent_at, ?), consent_source = COALESCE(consent_source, ?), enrolled_from = COALESCE(enrolled_from, ?) WHERE id = ?').run(Date.now(), consentSource, source, existing.id);
         voiceId = existing.id;
       } else {
         voiceId = newId();
         tx(this.db, () => {
-          this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at, consent_at, consent_source, enrolled_from) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now(), Date.now(), consentSource, source);
-          this.writePrints(voiceId, addPrint([], print));
+          this.db.prepare('INSERT INTO voices(id, name, embedding, samples, pitch, created_at, updated_at, consent_at, consent_source, enrolled_from, model) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(voiceId, clean, toBlob(norm(sp.centroid)), Math.max(1, sp.count), sp.pitch || null, Date.now(), Date.now(), Date.now(), consentSource, source, print.model);
+          this.writePrints(voiceId, [...addPrint([], print), ...(alt ? addPrint([], alt) : [])]);
         });
       }
     }
-    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ?, name_source = CASE WHEN ? THEN name_source ELSE ? END, name_confidence = CASE WHEN ? THEN name_confidence ELSE ? END WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, keepSource ? 1 : 0, clean ? 'user' : '', keepSource ? 1 : 0, clean ? 1 : null, noteId, speakerId);
+    this.db.prepare('UPDATE note_speakers SET name = ?, voice_id = ?, suggested_voice_id = NULL, suggested_score = NULL, name_source = CASE WHEN ? THEN name_source ELSE ? END, name_confidence = CASE WHEN ? THEN name_confidence ELSE ? END WHERE note_id = ? AND speaker_id = ?').run(clean, voiceId || null, keepSource ? 1 : 0, clean ? 'user' : '', keepSource ? 1 : 0, clean ? 1 : null, noteId, speakerId);
     this.bus?.publish('speakers.updated', { noteId });
-    return this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
+    const out = this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
+    return out && problem ? { ...out, printSkipped: problem } : out;
+  }
+
+  // "Ana?": the user says yes (the speaker is linked to that saved voice and, its speech being clean enough, adds to it) or no
+  // (the print is kept on the voice as "not this person", and the question is not asked again for it).
+  answerSuggestion(noteId, speakerId, accept) {
+    const sp = this.forNote(noteId).find((s) => s.speakerId === speakerId);
+    if (!sp?.suggestedVoiceId) return null;
+    const v = this.voice(sp.suggestedVoiceId);
+    this.db.prepare('UPDATE note_speakers SET suggested_voice_id = NULL, suggested_score = NULL WHERE note_id = ? AND speaker_id = ?').run(noteId, speakerId);
+    if (!v) return this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
+    if (!accept) {
+      if (sp.centroid && this.enabled()) this.reject(v.id, sp.centroid, `${noteId}:${speakerId}`, sp.model || LEGACY.id);
+      this.bus?.publish('speakers.updated', { noteId });
+      return this.publicForNote(noteId).find((s) => s.speakerId === speakerId);
+    }
+    this.db.prepare('UPDATE note_speakers SET voice_id = ? WHERE note_id = ? AND speaker_id = ?').run(v.id, noteId, speakerId);
+    return this.rename(noteId, speakerId, v.name, { remember: true, consentSource: 'user' });
   }
 
   // Reassign one segment to another (possibly new) speaker, for corrections.
@@ -295,8 +344,8 @@ class Speakers {
     tx(this.db, () => {
       const known = new Set(this.forNote(noteId).map((s) => s.speakerId));
       for (const sp of speakers) {
-        if (known.has(sp.id)) this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, pitch = COALESCE(?, pitch) WHERE note_id = ? AND speaker_id = ?').run(toBlob(sp.centroid), sp.count, sp.pitch || null, noteId, sp.id);
-        else this.db.prepare('INSERT INTO note_speakers(note_id, speaker_id, channel, centroid, count, pitch) VALUES(?, ?, ?, ?, ?, ?)').run(noteId, sp.id, channel, toBlob(sp.centroid), sp.count, sp.pitch || null);
+        if (known.has(sp.id)) this.db.prepare('UPDATE note_speakers SET centroid = ?, count = ?, pitch = COALESCE(?, pitch), model = ? WHERE note_id = ? AND speaker_id = ?').run(toBlob(sp.centroid), sp.count, sp.pitch || null, this.modelId, noteId, sp.id);
+        else this.db.prepare('INSERT INTO note_speakers(note_id, speaker_id, channel, centroid, count, pitch, model) VALUES(?, ?, ?, ?, ?, ?, ?)').run(noteId, sp.id, channel, toBlob(sp.centroid), sp.count, sp.pitch || null, this.modelId);
       }
       const move = this.db.prepare('UPDATE segments SET speaker_id = ? WHERE id = ? AND note_id = ?');
       for (const [segId, speakerId] of assignments) move.run(speakerId, segId, noteId);
@@ -317,7 +366,8 @@ class Speakers {
       const known = new Map(this.forNote(noteId).map((s) => [s.speakerId, s]));
       for (const v of voices) {
         const old = known.get(v.speakerId);
-        this.save(noteId, { speakerId: v.speakerId, channel, centroid: v.centroid || old?.centroid || null, count: v.count, pitch: v.pitch });
+        this.save(noteId, { speakerId: v.speakerId, channel, centroid: v.centroid || old?.centroid || null, count: v.count, pitch: v.pitch, altCentroid: v.altCentroid || null, altModel: v.altModel || null });
+        this.db.prepare('UPDATE note_speakers SET quality = ? WHERE note_id = ? AND speaker_id = ?').run(v.quality ? JSON.stringify(v.quality) : null, noteId, v.speakerId);
       }
       this.db.prepare(`DELETE FROM note_speakers WHERE note_id = ? AND channel = ? AND name = '' AND voice_id IS NULL
         AND NOT EXISTS (SELECT 1 FROM segments s WHERE s.note_id = note_speakers.note_id AND s.speaker_id = note_speakers.speaker_id)`).run(noteId, channel);
@@ -328,36 +378,73 @@ class Speakers {
   // Link unnamed speakers of a note to the saved voices they sound like, each voice to at most one speaker. Speakers the user
   // named are left alone; links made automatically earlier (live, on a few utterances) are judged again on what is known
   // now, so a better voice print can correct a wrong guess. -> number of speakers linked.
-  autoMatch(noteId, threshold = MATCH.threshold, opts = {}) {
+  // A saved voice is only ever compared with prints of the model that made its own prints (voice-models.js), with that model's
+  // average voice and thresholds. A voice that has prints of the current model is judged on those; one that only has prints of an
+  // older model is judged on the speaker's second print made by that model (when the recording made one). `threshold` overrides
+  // the model's own (the evaluation harness does).
+  // Speakers fairly like a saved voice nobody else here has, but short of the threshold, are only suggested ("Ana?").
+  autoMatch(noteId, threshold = null, opts = {}) {
     if (!this.enabled()) return 0;   // no voice prints, no recognising them
     const all = this.forNote(noteId);
     const used = new Set(all.filter((s) => s.name).map((s) => s.voiceId).filter(Boolean));
-    const free = all.filter((s) => !s.name && s.centroid);
+    const free = all.filter((s) => !s.name && (s.centroid || s.altCentroid));
     if (!free.length) return 0;
     const pitchOf = new Map(all.map((s) => [s.speakerId, s.pitch]));
     const voices = this.voices().filter((v) => !used.has(v.id));
-    const cands = free.map((s) => ({ id: s.speakerId, centroid: s.centroid, channel: s.channel }));
-    const matches = matchVoices(cands, voices, threshold, (s, v) => !(pitchOf.get(s.id) && v.pitch && semitones(pitchOf.get(s.id), v.pitch) > PITCH_VETO), { mu: this.channelMeans(), ...opts });
+    const allowed = (s, v) => !(pitchOf.get(s.id) && v.pitch && semitones(pitchOf.get(s.id), v.pitch) > PITCH_VETO);
+    // the speaker's print made by model m, if the recording made one
+    const printOf = (s, m) => (s.centroid && (s.model || LEGACY.id) === m ? s.centroid : s.altCentroid && s.altModel === m ? s.altCentroid : null);
+    const hasPrints = (v, m) => v.exemplars.some((x) => !x.negative && x.model === m) || (!v.exemplars.some((x) => !x.negative) && (v.model || LEGACY.id) === m);
+    const view = (v, m) => ({ ...v, exemplars: v.exemplars.filter((x) => x.model === m) });
+    const order = [this.modelId, ...new Set([...free.flatMap((s) => [s.model || LEGACY.id, s.altModel]), ...voices.flatMap((v) => v.exemplars.map((x) => x.model))].filter((m) => m && m !== this.modelId && byId(m)))];
+    const settingsOf = (m) => byId(m)?.match || MATCH;
+    const taken = new Set(), linkedBy = new Set();
+    const matches = new Map();
+    const stage = (ask) => {
+      const out = new Map();
+      for (const m of order) {
+        const cfg = settingsOf(m);
+        const spk = free.filter((s) => !matches.has(s.speakerId) && !out.has(s.speakerId) && printOf(s, m)).map((s) => ({ id: s.speakerId, centroid: printOf(s, m), channel: s.channel }));
+        // newer prints win: a voice that has prints of a model earlier in `order` is not judged by a later one
+        const pool = voices.filter((v) => !taken.has(v.id) && hasPrints(v, m) && !order.slice(0, order.indexOf(m)).some((e) => hasPrints(v, e))).map((v) => view(v, m));
+        if (!spk.length || !pool.length) continue;
+        const thr = ask ? Math.min(cfg.ask ?? MATCH.ask, threshold ?? Infinity) : (threshold ?? cfg.threshold);
+        const got = matchVoices(spk, pool, thr, allowed, { mu: this.channelMeans(m), margin: cfg.margin, ...opts });
+        for (const [sid, g] of got) { out.set(sid, g); taken.add(g.voiceId); }
+      }
+      return out;
+    };
+    for (const [sid, g] of stage(false)) matches.set(sid, g);
+    taken.clear(); for (const g of matches.values()) taken.add(g.voiceId);
+    const asks = opts.ask === false ? new Map() : stage(true);
     let changed = 0;
     for (const s of free) {
       const next = matches.get(s.speakerId)?.voiceId || null;
-      if (next === (s.voiceId || null)) continue;
-      const score = next ? matches.get(s.speakerId).score : null;
-      this.db.prepare("UPDATE note_speakers SET voice_id = ?, name_source = CASE WHEN ? IS NOT NULL THEN 'voice' WHEN name_source = 'voice' THEN '' ELSE name_source END, name_confidence = CASE WHEN ? IS NOT NULL THEN ? WHEN name_source = 'voice' THEN NULL ELSE name_confidence END WHERE note_id = ? AND speaker_id = ?").run(next, next, next, score, noteId, s.speakerId);
-      changed++;
+      if (next !== (s.voiceId || null)) {
+        const score = next ? matches.get(s.speakerId).score : null;
+        this.db.prepare("UPDATE note_speakers SET voice_id = ?, name_source = CASE WHEN ? IS NOT NULL THEN 'voice' WHEN name_source = 'voice' THEN '' ELSE name_source END, name_confidence = CASE WHEN ? IS NOT NULL THEN ? WHEN name_source = 'voice' THEN NULL ELSE name_confidence END WHERE note_id = ? AND speaker_id = ?").run(next, next, next, score, noteId, s.speakerId);
+        changed++;
+      }
+      const sug = matches.has(s.speakerId) ? null : asks.get(s.speakerId) || null;
+      if ((s.suggestedVoiceId || null) !== (sug?.voiceId || null)) {
+        this.db.prepare('UPDATE note_speakers SET suggested_voice_id = ?, suggested_score = ? WHERE note_id = ? AND speaker_id = ?').run(sug?.voiceId || null, sug?.score ?? null, noteId, s.speakerId);
+        changed++;
+      }
     }
     if (changed) this.bus?.publish('speakers.updated', { noteId });
     return matches.size;
   }
 
-  // The average voice of each channel, to centre voice prints on (see cluster.js): the shipped mean pulled towards the
-  // distinct voices heard on that channel so far, i.e. every speaker of every note and every saved print. -> channel -> mean
-  channelMeans() {
+  // The average voice of each channel for one voice model, to centre voice prints on (see cluster.js): the model's average voice
+  // pulled towards the distinct voices heard on that channel so far, i.e. every speaker of every note and every saved print made by
+  // that model. -> channel -> mean
+  channelMeans(modelId = this.modelId) {
+    const base = this.meanOf(modelId);
     const per = { mic: [], system: [] };
-    for (const r of this.db.prepare('SELECT channel, centroid FROM note_speakers WHERE centroid IS NOT NULL ORDER BY rowid DESC LIMIT 800').all()) if (per[r.channel] && per[r.channel].length < 250) per[r.channel].push(fromBlob(r.centroid));
-    for (const r of this.db.prepare("SELECT channel, embedding FROM voice_exemplars WHERE negative = 0 AND channel != ''").all()) if (per[r.channel]) per[r.channel].push(fromBlob(r.embedding));
-    const mu = Object.fromEntries(Object.keys(per).map((ch) => [ch, this.adapt ? populationMean(per[ch], this.mean, MATCH.prior[ch]) : this.mean]));
-    return (channel) => mu[channel] || this.mean;
+    for (const r of this.db.prepare('SELECT channel, centroid FROM note_speakers WHERE centroid IS NOT NULL AND model = ? ORDER BY rowid DESC LIMIT 800').all(modelId)) if (per[r.channel] && per[r.channel].length < 250) per[r.channel].push(fromBlob(r.centroid));
+    for (const r of this.db.prepare("SELECT channel, embedding FROM voice_exemplars WHERE negative = 0 AND channel != '' AND model = ?").all(modelId)) if (per[r.channel]) per[r.channel].push(fromBlob(r.embedding));
+    const mu = Object.fromEntries(Object.keys(per).map((ch) => [ch, this.adapt && base ? populationMean(per[ch], base, MATCH.prior[ch]) : base]));
+    return (channel) => mu[channel] || base;
   }
 
   // ---- voice profiles ----
@@ -365,48 +452,60 @@ class Speakers {
   // kind of sound (a room microphone, a call), so a person who is heard both ways is recognised either way, and prints of
   // voices the user said are not this person.
   voices() {
-    const rows = this.db.prepare('SELECT id, name, embedding, samples, pitch, created_at AS createdAt FROM voices ORDER BY name COLLATE NOCASE').all();
+    const rows = this.db.prepare('SELECT id, name, embedding, samples, pitch, model, created_at AS createdAt FROM voices ORDER BY name COLLATE NOCASE').all();
     const by = new Map();
-    for (const x of this.db.prepare('SELECT id, voice_id AS voiceId, embedding, weight, channel, pitch, negative, source FROM voice_exemplars ORDER BY id').all()) {
+    for (const x of this.db.prepare('SELECT id, voice_id AS voiceId, embedding, weight, channel, pitch, negative, source, model FROM voice_exemplars ORDER BY id').all()) {
       if (!by.has(x.voiceId)) by.set(x.voiceId, []);
-      by.get(x.voiceId).push({ id: x.id, embedding: fromBlob(x.embedding), weight: x.weight, channel: x.channel, pitch: x.pitch, negative: !!x.negative, source: x.source });
+      by.get(x.voiceId).push({ id: x.id, embedding: fromBlob(x.embedding), weight: x.weight, channel: x.channel, pitch: x.pitch, negative: !!x.negative, source: x.source, model: x.model });
     }
     return rows.map((v) => ({ ...v, embedding: fromBlob(v.embedding), exemplars: by.get(v.id) || [] }));
   }
   voice(id) { return this.voices().find((v) => v.id === id) || null; }
   voiceByName(name) { return this.voices().find((v) => v.name.toLowerCase() === String(name).toLowerCase()) || null; }
 
-  // Replace a voice's positive prints (rejected ones stay) and refresh the mean and pitch kept on the profile.
+  // Replace a voice's positive prints (rejected ones stay) and refresh the mean and pitch kept on the profile. Each print carries
+  // the model that made it (`model`, the current one when missing); the profile's mean is of the current model's prints, else of the
+  // model of its first print, so it is never a blend of prints that cannot be compared.
   writePrints(voiceId, prints) {
     this.db.prepare('DELETE FROM voice_exemplars WHERE voice_id = ? AND negative = 0').run(voiceId);
-    const ins = this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at) VALUES(?, ?, ?, ?, ?, 0, ?, ?)');
+    const ins = this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at, model) VALUES(?, ?, ?, ?, ?, 0, ?, ?, ?)');
+    const modelOf = (p) => p.model || this.modelId;
+    const group = prints.some((p) => modelOf(p) === this.modelId) ? this.modelId : (prints[0] ? modelOf(prints[0]) : this.modelId);
     let mean = null, w = 0, pw = 0, pitch = 0;
     for (const p of prints) {
-      ins.run(voiceId, toBlob(p.embedding), p.weight, p.channel || '', p.pitch || null, p.source || null, Date.now());
+      ins.run(voiceId, toBlob(p.embedding), p.weight, p.channel || '', p.pitch || null, p.source || null, Date.now(), modelOf(p));
+      if (modelOf(p) !== group) continue;
       mean = mean ? blend(mean, w, p.embedding, p.weight) : norm(p.embedding);
       w += p.weight;
       if (p.pitch) { pitch += p.pitch * p.weight; pw += p.weight; }
     }
-    if (mean) this.db.prepare('UPDATE voices SET embedding = ?, pitch = ? WHERE id = ?').run(toBlob(mean), pw ? pitch / pw : null, voiceId);
+    if (mean) this.db.prepare('UPDATE voices SET embedding = ?, pitch = ?, model = ? WHERE id = ?').run(toBlob(mean), pw ? pitch / pw : null, group, voiceId);
   }
 
-  // Add what a speaker sounded like to a saved voice. print: { embedding, weight (seconds), channel, pitch, source }.
-  reinforce(voiceId, print, { name, utterances = 1 } = {}) {
+  // Add what a speaker sounded like to a saved voice. print: { embedding, weight (seconds), channel, pitch, source, model }; alt: the
+  // same speech through an older model. Prints of one model are folded and capped among themselves.
+  reinforce(voiceId, print, { name, utterances = 1, alt = null } = {}) {
     const v = this.voice(voiceId);
     if (!v) return false;
+    const modelOf = (p) => p.model || this.modelId;
+    const addTo = (list, p) => [...list.filter((x) => modelOf(x) !== modelOf(p)), ...addPrint(list.filter((x) => modelOf(x) === modelOf(p)), p)];
     tx(this.db, () => {
-      const known = v.exemplars.filter((x) => !x.negative);
-      this.writePrints(voiceId, addPrint(known.length ? known : [{ embedding: v.embedding, weight: (v.samples || 1) * 4, channel: '', pitch: v.pitch, source: null }], print));
+      let known = v.exemplars.filter((x) => !x.negative);
+      // a profile from before the print table is its mean
+      if (!known.length && v.embedding && (v.model || LEGACY.id) === modelOf(print)) known = [{ embedding: v.embedding, weight: (v.samples || 1) * 4, channel: '', pitch: v.pitch, source: null, model: v.model || LEGACY.id }];
+      let next = addTo(known, print);
+      if (alt) next = addTo(next, alt);
+      this.writePrints(voiceId, next);
       this.db.prepare('UPDATE voices SET name = ?, samples = samples + ?, updated_at = ? WHERE id = ?').run(name || v.name, utterances, Date.now(), voiceId);
     });
     return true;
   }
 
   // Remember that this voice print is NOT the saved voice (the user corrected an automatic link).
-  reject(voiceId, embedding, source) {
+  reject(voiceId, embedding, source, model = this.modelId) {
     tx(this.db, () => {
       if (source) this.db.prepare('DELETE FROM voice_exemplars WHERE voice_id = ? AND negative = 1 AND source = ?').run(voiceId, source);
-      this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at) VALUES(?, ?, 1, \'\', NULL, 1, ?, ?)').run(voiceId, toBlob(norm(embedding)), source || null, Date.now());
+      this.db.prepare('INSERT INTO voice_exemplars(voice_id, embedding, weight, channel, pitch, negative, source, created_at, model) VALUES(?, ?, 1, \'\', NULL, 1, ?, ?, ?)').run(voiceId, toBlob(norm(embedding)), source || null, Date.now(), model);
       this.db.prepare('DELETE FROM voice_exemplars WHERE negative = 1 AND voice_id = ? AND id NOT IN (SELECT id FROM voice_exemplars WHERE negative = 1 AND voice_id = ? ORDER BY id DESC LIMIT ?)').run(voiceId, voiceId, MAX_REJECTS);
     });
   }
@@ -420,4 +519,4 @@ class Speakers {
   removeAllVoices() { this.db.prepare('UPDATE note_speakers SET voice_id = NULL').run(); return this.db.prepare('DELETE FROM voices').run().changes; }
 }
 
-module.exports = { Speakers, defaultLabel };
+module.exports = { Speakers, defaultLabel, printProblem, PRINT_QUALITY };

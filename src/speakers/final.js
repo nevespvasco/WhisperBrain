@@ -24,7 +24,8 @@ function nearest(res, id, keep) {
 
 // Merge voices into others: to = Map(voice -> the voice it joins). res: { turns, voices } -> the same shape, plus `folded`.
 function applyFold(res, to) {
-  return { ...res, turns: res.turns.map((t) => ({ ...t, speaker: to.get(t.speaker) ?? t.speaker })), voices: res.voices.filter((v) => !to.has(v.speaker)), folded: to.size };
+  const relabel = (list) => list?.map((t) => ({ ...t, speaker: to.get(t.speaker) ?? t.speaker }));
+  return { ...res, turns: relabel(res.turns), exclusive: relabel(res.exclusive), voices: res.voices.filter((v) => !to.has(v.speaker)), folded: to.size };
 }
 
 // Fold the voices that hold too little speech into the closest other voice. res: { turns, voices } as the worker
@@ -59,25 +60,29 @@ function capVoices(res, max) {
 // free to find fewer (people invited do not always come), a voice that holds too little of the speech to be a person taking part
 // is folded into its nearest neighbour, and if there are still more voices than that, the smallest join the ones they sound like.
 // numSpeakers is the person's own count ("Others on the call"): forced on the clustering as it is.
-const DEFAULTS = { threshold: 0.6, windowShift: 0.1, tolerance: 200, minShare: 0.05, minSeconds: 8 };
+// exclusive: when the diarization says who dominates each moment (the owned pipeline does), words follow that rather
+// than the longest-covering of the overlapping turns.
+const DEFAULTS = { threshold: 0.6, windowShift: 0.1, tolerance: 200, minShare: 0.05, minSeconds: 8, exclusive: true };
 
 // source: { file } (a spool) or { pcm } (s16le mono 16 kHz). stretches: [{ at, ms }], where each stretch of the
 // source starts in samples and on the note timeline. segIds: the utterances of this recording on this channel (an
 // earlier recording into the same note keeps its labels). -> { changes, born, speakers, overlapped, words, splits:
 // Map(oldId -> [{ id, startMs, endMs }]) } or null when there was nothing to do.
 // diarize: the model call (diarizer.js by default; tests pass a scripted one).
-async function diarizeChannel({ diarize = runWorker, notes, speakers, noteId, channel, source, stretches, segIds, segmentation, embedding, threads = 2, options = {} }) {
+// altEmbedding/altModel: an older voice model (path, id) the speakers' prints are also made with, so saved voices of that model are still recognised.
+async function diarizeChannel({ diarize = runWorker, notes, speakers, noteId, channel, source, stretches, segIds, segmentation, embedding, altEmbedding = null, altModel = null, threads = 2, options = {} }) {
   const o = { ...DEFAULTS, ...options };
   const channelSpeaker = channel === 'mic' ? 'me' : 'them';
   const ours = new Set(segIds);
   const segments = notes.segmentWords(noteId).filter((s) => ours.has(s.id) && s.speaker === channelSpeaker);
   if (!segments.length) return null;
-  let res = await diarize({ ...source, segmentation, embedding, threads, threshold: o.threshold, windowShift: o.windowShift, numSpeakers: o.numSpeakers || undefined });
+  let res = await diarize({ ...source, segmentation, embedding, altEmbedding: altEmbedding || undefined, threads, threshold: o.threshold, windowShift: o.windowShift, numSpeakers: o.numSpeakers || undefined });
   if (!res?.turns?.length) return null;
   if (!o.numSpeakers && o.expected) res = capVoices(foldStarved(res, o), o.expected);
   const turns = toTimeline(res.turns, stretches);
+  const exclusive = o.exclusive && res.exclusive?.length ? toTimeline(res.exclusive, stretches) : null;
   const usedIds = speakers.forNote(noteId).map((x) => x.speakerId);
-  const plan = planChannel({ segments, turns, prefix: channel === 'mic' ? 'm' : 's', usedIds, tolerance: o.tolerance });
+  const plan = planChannel({ segments, turns, exclusive, prefix: channel === 'mic' ? 'm' : 's', usedIds, tolerance: o.tolerance });
 
   const splits = new Map();
   for (const ch of plan.changes) {
@@ -93,10 +98,10 @@ async function diarizeChannel({ diarize = runWorker, notes, speakers, noteId, ch
   for (const [final, speakerId] of plan.map) {
     const v = res.voices.find((x) => x.speaker === final);
     if (!counts.has(speakerId)) continue; // heard by the segmentation model but holding no words
-    voices.push({ speakerId, centroid: v?.centroid || null, pitch: v?.pitch || null, count: counts.get(speakerId) });
+    voices.push({ speakerId, centroid: v?.centroid || null, pitch: v?.pitch || null, count: counts.get(speakerId), quality: v?.quality || null, altCentroid: v?.altCentroid || null, altModel: v?.altCentroid ? altModel : null });
   }
   speakers.adoptDiarization(noteId, channel, voices);
-  return { changes: plan.changes.length, born: plan.born, speakers: voices.length, overlapped: plan.overlapped, words: plan.words, splits };
+  return { changes: plan.changes.length, born: plan.born, speakers: voices.length, overlapped: plan.overlapped, words: plan.words, splits, overlaps: res.overlaps || null, stats: res.stats || null };
 }
 
 module.exports = { diarizeChannel, foldStarved, capVoices, DIARIZE_DEFAULTS: DEFAULTS };

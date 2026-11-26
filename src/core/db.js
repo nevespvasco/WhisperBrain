@@ -316,6 +316,24 @@ const MIGRATIONS = [
   `
   UPDATE briefings SET kind = 'notes' WHERE kind IN ('resume', 'job');
   `,
+  // v15: a saved voice the speaker probably is, but not surely enough to link it ("Ana?", the user confirms or declines), and how
+  // clean the speech behind the speaker's voice print was (JSON: seconds, clipped, snrDb), checked before a print is remembered.
+  `
+  ALTER TABLE note_speakers ADD COLUMN suggested_voice_id TEXT;
+  ALTER TABLE note_speakers ADD COLUMN suggested_score REAL;
+  ALTER TABLE note_speakers ADD COLUMN quality TEXT;
+  `,
+  // v16: which voice model made each voice print. Prints of different models are never compared (other dimensions, other
+  // geometry); everything stored so far came from WeSpeaker ResNet34, hence the default. A speaker of a meeting can also carry
+  // a second print (alt_centroid, made by the older model) so saved voices of that model can still be recognised after the
+  // app moved to a new one; once the voice is remembered again it gains a print of the new model.
+  `
+  ALTER TABLE voices ADD COLUMN model TEXT NOT NULL DEFAULT 'wespeaker-resnet34-lm';
+  ALTER TABLE voice_exemplars ADD COLUMN model TEXT NOT NULL DEFAULT 'wespeaker-resnet34-lm';
+  ALTER TABLE note_speakers ADD COLUMN model TEXT NOT NULL DEFAULT 'wespeaker-resnet34-lm';
+  ALTER TABLE note_speakers ADD COLUMN alt_centroid BLOB;
+  ALTER TABLE note_speakers ADD COLUMN alt_model TEXT;
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

@@ -17,6 +17,8 @@ asarUnpack:
   # Discord calls are end-to-end encrypted (DAVE); the bot decrypts them with a native module
   - "**/node_modules/@snazzah/davey-*/**"
   - "**/node_modules/sqlite-vec-*/**"   # the native extension must be a real file on disk to be loaded
+  # the owned speaker pipeline runs the segmentation model with onnxruntime-node (a .node binding that loads libonnxruntime beside it)
+  - "**/node_modules/onnxruntime-node/**"
 extraResources:
   - from: resources
     to: resources
@@ -26,6 +28,15 @@ extraResources:
   - from: extension/meet
     to: extension/meet
 linux:
+  # a platform's own `files` replaces the list above, so it repeats it; the extra line leaves out the onnxruntime binaries of the other systems
+  files:
+    - electron/**
+    - src/**
+    - ui/**
+    - package.json
+    - "!**/*.md"
+    - "!**/test/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**"
   target: [AppImage, deb]
   category: Office
   icon: build/icon.png
@@ -42,6 +53,15 @@ deb:
   depends: [libpipewire-0.3-0, pipewire-bin, xclip, libx11-6, libxtst6, libxi6, libatspi2.0-0]
   recommends: [wl-clipboard, wtype]
 mac:
+  # a platform's own `files` replaces the list above, so it repeats it; the extra line leaves out the onnxruntime binaries of the other systems
+  files:
+    - electron/**
+    - src/**
+    - ui/**
+    - package.json
+    - "!**/*.md"
+    - "!**/test/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{linux,win32}/**"
   target: [dmg, zip]
   category: public.app-category.productivity
   icon: build/icon.png
@@ -61,6 +81,15 @@ mac:
     NSAppleEventsUsageDescription: WhisperBrain pastes dictated text into the focused app.
     NSAccessibilityUsageDescription: WhisperBrain reads who is speaking in the meeting window of your browser, to name the voices on the call.
 win:
+  # a platform's own `files` replaces the list above, so it repeats it; the extra line leaves out the onnxruntime binaries of the other systems
+  files:
+    - electron/**
+    - src/**
+    - ui/**
+    - package.json
+    - "!**/*.md"
+    - "!**/test/**"
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
   target: [nsis, portable]
   icon: build/icon.png
   extraResources:
