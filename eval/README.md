@@ -361,3 +361,23 @@ How to read it:
 **Recommendation: no-go for wiring this into the app now.** The best realistic setting gains about 1.7 WER and 0.9 cpWER on the one real recording. That is within run-to-run noise, at 3–7 extra minutes of CPU per meeting, with an extra 200+ MB model of unclear training-data provenance. Better ways to get overlapped speech back: per-speaker capture where the app allows it (the Discord per-user audio spike), a joint diarization-plus-separation model trained on meetings once one exists in ONNX at a reasonable size, and better diarization inside overlap first, since attribution, not recovery, is what caps cpWER. Revisit if a fast (RTF < 0.2 on CPU), cleanly licensed 16 kHz separator appears, or with more real overlapped recordings to show a gain beyond noise.
 
 Reproduce: see the header of `eval/overlap.js`. `eval/run.js --dump DIR` writes each run's final words for it, and `eval/separate.py` needs a throwaway Python venv.
+
+## CAM++ regression on real calls, and the fix (2026-11-26)
+
+**Symptom.** After the app switched itself to CAM++ (download done), a 3-person Discord call came out as 18 voices; the day before, with ResNet34, a Discord call came out as 1.
+
+**Causes.** (1) The same-voice threshold (`speakerThreshold` 0.6: live labels, consolidate, imports) was ResNet34's. Raw cosine on call audio (`.eval/voices`, clips >= 2 s): ResNet34 puts 51 % of different people at >= 0.6 (merges everyone), CAM++ puts 20 % of the same person under 0.6 (splits everyone). (2) The default after-Stop pipeline was still `sherpa`, which with CAM++ finds 13-23 voices for 4 (bakeoff table above). (3) The `whisperbrain-integrate` checkout's `node_modules` was a symlink to main's, which has no `onnxruntime-node`, so the owned pipeline could not start and failed silently ("not following a recording" at Stop).
+
+**Fix.** Each voice model has its own same-voice threshold (`voice-models.js` `same`: ResNet34 0.6, CAM++ 0.5; `speakerThreshold` defaults to null = the model's), `speakerPipeline` defaults to `owned`, a live follower that cannot start warns at once and Stop runs the one-shot instead.
+
+**Results (CAM++, `run.js`).** After Stop, owned: ES2004a 4/4 voices WDER 8.9, IS1009a 4/4 8.4, libri-call 4/4 17.1 (before, sherpa+refine: IS1009a 20/4 23.8, libri-call 7/4 24.2). Live labels (online), WDER / voices: 0.4 49.4/5, 28.4/4, 48.0/3; 0.45 34.3/6, 27.9/4, 48.0/3; **0.5 34.3/6, 28.1/5, 32.0/5**; 0.6 –, 29.3/9, 31.4/7. Not yet measured on real Discord audio (Opus, Krisp, short turns).
+
+## Speaker tests on your own Discord calls (2026-11-26)
+
+The eval recordings above are meetings and audiobooks; Discord sounds different (Opus, Krisp noise suppression, short turns, laughter). A **speaker test recording** gives a scored recording of a real call with no hand labelling:
+
+1. Settings → Integrations → Discord (bot set up, your user ID filled in) → **Start a speaker test**, while you are in a voice channel with 2+ people (ask them first). Talk normally for 5-10 minutes, then Stop. The bot hears each person on their own and the computer's mixed sound is recorded too; only the bot's people are transcribed. Both are kept in `<data>/speaker-tests/<time>-<note>/` (`system.pcm`, `person-<id>.pcm`, `meta.json`, `src/recording/speaker-test.js`) until you delete the folder. On Linux `<data>` is `~/.config/WhisperBrain`.
+2. `WB_MODELS_DIR=~/.config/WhisperBrain/models node eval/discord-test.js <folder> --name discord-1`: aligns the people's streams on the mixed sound (speech activity, best lag within ±3 s; it warns when the match is weak), leaves out your own voice (Discord does not play it back to you), transcribes each person's stream and writes `.eval/data/discord-1/` (system.wav + ref.json, every word with its real speaker).
+3. `node eval/run.js --only discord-1 --configs online,owned`, and `--same 0.45` / `0.55` to tune the live labels' same-voice threshold.
+
+Rehearsal: libri-call turned into a fake speaker test (each person's stream = the call cut to their words, the mixed sound 0.25 s late) gave lag 0.25 s found exactly (correlation 1.00, next best 0.40) and owned WDER 17.4 (libri-call itself: 17.1), so building the reference adds no error of its own.

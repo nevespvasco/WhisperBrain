@@ -163,7 +163,7 @@ function createRoutes(app) {
     let pcm;
     try { pcm = await decodeAudio(buf, query.filename, { engine: app.engine }); } catch (e) { throw new HttpError(415, e.message); }
     const segs = await transcribePcm(app.engine, pcm);
-    const labelled = assignSpeakers(params.id, segs, app.speakers, { threshold: app.settings.get('speakerThreshold') });
+    const labelled = assignSpeakers(params.id, segs, app.speakers, { threshold: app.recording.sameVoiceThreshold() });
     const saved = app.notes.addSegments(params.id, labelled);
     const prefs = app.settings.all();
     let diarized = false;
@@ -176,9 +176,9 @@ function createRoutes(app) {
     }
     if (prefs.speakerDetection && prefs.speakerRefine && saved.length) { // a second, acoustic look (pitch, timbre) at who spoke
       const refs = saved.map((x) => ({ segId: x.id, ch: 'system', from: Math.round(x.startMs * 16), to: Math.round(x.endMs * 16) }));
-      try { await refineNote({ speakers: app.speakers, noteId: params.id, refs, read: (_ch, from, to) => pcm.subarray(from * 2, to * 2), threshold: prefs.speakerThreshold }); } catch (e) { console.warn('speaker analysis failed:', e.message); }
+      try { await refineNote({ speakers: app.speakers, noteId: params.id, refs, read: (_ch, from, to) => pcm.subarray(from * 2, to * 2), threshold: app.recording.sameVoiceThreshold() }); } catch (e) { console.warn('speaker analysis failed:', e.message); }
     }
-    app.speakers.consolidate(params.id, app.settings.get('speakerThreshold'), { channels: diarized ? ['mic'] : ['mic', 'system'] });
+    app.speakers.consolidate(params.id, app.recording.sameVoiceThreshold(), { channels: diarized ? ['mic'] : ['mic', 'system'] });
     app.speakers.autoMatch(params.id);
     app.notes.update(params.id, { status: 'done', endedAt: Date.now() });
     app.notes.reindex(params.id);
@@ -341,8 +341,8 @@ function createRoutes(app) {
     // calls: the live calls the person chose to record (ids such as 'zoom', 'discord'), turned into the applications behind them
     const apps = Array.isArray(body.calls) && body.calls.length ? app.detector.appsFor?.(body.calls.map(String)) : undefined;
     const wholeOutput = Array.isArray(body.calls) && !body.calls.length; // [] = the person chose everything the computer plays
-    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system, apps: apps?.length ? apps : undefined, wholeOutput }); } catch (e) {
-      throw new HttpError({ 'no-model': 412, busy: 409, 'not-found': 404 }[e.code] || 500, e.message, e.code);
+    try { return await app.recording.start(noteId, { mic: body.mic, system: body.system, apps: apps?.length ? apps : undefined, wholeOutput, speakerTest: body.speakerTest === true }); } catch (e) {
+      throw new HttpError({ 'no-model': 412, busy: 409, 'not-found': 404, 'no-discord': 412 }[e.code] || 500, e.message, e.code);
     }
   });
   add('POST', '/api/recording/pause', async () => app.recording.pause());

@@ -13,9 +13,11 @@ const { nameKey } = require('../meet/protocol');
 const { planCorrections } = require('../meet/correct');
 const { speechOf, invitedNames } = require('../meet/names');
 const { Spool } = require('./spool');
+const { SpeakerTestRecorder } = require('./speaker-test');
+const nodePath = require('node:path');
 const { LiveDiarizer, diarizeOwned } = require('../speakers/owned');
 const { toTimeline } = require('../speakers/diarize');
-const LEGACY_MODEL_ID = require('../speakers/voice-models').LEGACY.id;
+const { LEGACY: { id: LEGACY_MODEL_ID }, sameVoiceThreshold } = require('../speakers/voice-models');
 const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
@@ -69,6 +71,7 @@ class RecordingManager {
       echo: { cancellation: a.aec ? { ...a.aec } : null, dropped: { ...a.echoDropped } },
       draft: a.draft ? { on: a.draft.on, reason: a.draft.reason || null } : { on: false, reason: null },
       discord: a.discord ? { ...a.discord.info, people: [...a.remote.values()].map((r) => r.name) } : null,
+      speakerTest: !!a.test,
     };
   }
 
@@ -94,7 +97,9 @@ class RecordingManager {
   // alone where the platform can (Linux), see resolveSystemApp. apps: the applications the person chose to record (several calls at
   // once): only their audio, and it stays so (widenSystemCapture leaves it alone). wholeOutput: the person chose everything the
   // computer plays, so no application is followed and nothing needs saying about it.
-  async start(noteId, { mic, system, app, apps, wholeOutput } = {}) {
+  // speakerTest: a speaker test recording (needs the Discord bot in the call): the bot's per-person streams and the computer's
+  // mixed sound are both kept on disk (speaker-test.js) and only the bot's are transcribed; see eval/discord-test.js.
+  async start(noteId, { mic, system, app, apps, wholeOutput, speakerTest = false } = {}) {
     if (this.active) throw new RecordingError('busy', 'A recording is already in progress.');
     const note = this.notes.get(noteId);
     if (!note) throw new RecordingError('not-found', 'Note not found.');
@@ -106,7 +111,7 @@ class RecordingManager {
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
       noteId, chosenApps: apps?.length ? apps : null, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
-      fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, s.speakerThreshold), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
+      fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, this.sameVoiceThreshold()), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
       draft: null,                         // { requested, on, reason }: live draft captions for this recording (see applyDraft)
@@ -125,7 +130,13 @@ class RecordingManager {
       await this.applyVocabulary(noteId);
       this.applyDraft(a); // loads in the worker's queue ahead of the first audio; the recording does not wait for it
       a.resumedAt = Date.now();
-      if (await this.joinDiscord(a, s, want.mic)) want.system = false; // the bot hears everyone separately: the mixed system audio would only repeat it
+      const joined = await this.joinDiscord(a, s, want.mic);
+      if (speakerTest) {
+        if (!joined) throw new RecordingError('no-discord', 'A speaker test needs the Discord bot in your voice channel: set it up in Settings → Integrations → Discord, join a voice channel, then try again.');
+        if (!this.spoolDir) throw new RecordingError('no-disk', 'A speaker test needs somewhere to keep the audio.');
+        want.system = true; // the mixed sound is the thing under test; it goes to disk, not to the transcript (onPcm)
+        a.test = new SpeakerTestRecorder(nodePath.join(nodePath.dirname(this.spoolDir), 'speaker-tests', `${new Date().toISOString().replace(/[:.]/g, '-')}-${noteId.slice(0, 8)}`), { selfUserId: s.discord?.userId });
+      } else if (joined) want.system = false; // the bot hears everyone separately: the mixed system audio would only repeat it
       const cap = this.platform.capture;
       for (const ch of ['mic', 'system']) {
         if (!want[ch]) continue;
@@ -186,6 +197,11 @@ class RecordingManager {
       a.draft = { requested: r.enabled, on: r.enabled, reason: r.reason || null };
       if (!r.enabled && r.reason && /load/.test(r.reason)) this.bus.publish('recording.warning', { message: `Live draft captions: ${r.reason}` });
     }).catch((e) => { if (this.active === a) { a.draft = { requested: false, on: false, reason: e.message }; this.bus.publish('recording.warning', { message: `Live draft captions: ${e.message}` }); } });
+  }
+
+  // Raw cosine from which two utterances are the same voice: the user's setting, else the one of the voice model in use.
+  sameVoiceThreshold() {
+    return sameVoiceThreshold(this.settings.get('speakerThreshold'), this.models?.speakerInstalled?.() ? this.models.speakerPath() : null);
   }
 
   // One online voice clusterer per channel, seeded with the speakers this note already has.
@@ -284,7 +300,7 @@ class RecordingManager {
     if (this.spoolDir && this.speakers && s.speakerDetection && (s.speakerDiarize || s.speakerRefine)) {
       try { a.spool[ch] = new Spool(this.spoolDir, a.noteId, ch); } catch { /* no disk: embeddings alone still work */ }
     }
-    if (a.spool[ch] && s.speakerDiarize && s.speakerPipeline === 'owned') this.followSpool(a, ch, s);
+    if (a.spool[ch] && s.speakerDiarize && s.speakerPipeline === 'owned' && !this.diarization.run) this.followSpool(a, ch, s); // an injected diarizer (tests, eval) is the one used
     return a.spool[ch];
   }
 
@@ -316,6 +332,7 @@ class RecordingManager {
 
   onPcm(a, ch, buf) {
     if (this.active !== a || a.paused || a.finalizing) return;
+    if (a.test && ch === 'system') { a.test.system(buf); return; } // a speaker test: the mixed sound only goes to disk
     if (ch === 'mic' && a.micMuted) buf = Buffer.alloc(buf.length);   // muted: what the microphone hears goes no further; the timeline carries on in silence
     const spool = this.spoolFor(a, ch);
     if (a.fed[ch] === 0) {
@@ -518,11 +535,12 @@ class RecordingManager {
     this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
     for (const src of Object.values(a.channels)) src.stop();
     this.leaveDiscord(a);
+    if (a.test) { try { const t = a.test.close(); this.bus.publish('recording.speaker-test', { noteId: a.noteId, ...t }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker test: ${e.message}` }); } }
     a.meet?.detach(); // nothing the meeting window shows after Stop belongs to this recording
     try { await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
     if (this.speakers) {
       const s = this.settings.all();
-      const threshold = s.speakerThreshold;
+      const threshold = this.sameVoiceThreshold();
       let diarized = [];
       // The capture is over, so the heavy listening happens now: who spoke when over the whole meeting, word by word.
       if (a.refs.length) {
@@ -579,7 +597,7 @@ class RecordingManager {
       const expected = told ? null : (joined || expectedSpeakers({ attendees, channel: ch }));
       if (told || expected) a.settled.add(ch); // the head count is known: the acoustic pass must not change how many speakers there are
       try {
-        const live = a.live?.[ch];
+        const live = a.live?.[ch]?.failed ? null : a.live?.[ch]; // a follower that failed to start: the one-shot below does the whole spool
         const run = live ? (o) => live.finish({ samples: spool.samples, numSpeakers: o.numSpeakers || 0, altEmbedding: o.altEmbedding || null })
           : s.speakerPipeline === 'owned' && !this.diarization.run ? diarizeOwned : this.diarization.run;
         const out = await diarizeChannel({
@@ -684,6 +702,7 @@ class RecordingManager {
   // detector), and a speaker named from the start, so no voice guessing is needed. Chunks of one person are handled in order.
   onDiscordAudio(a, { userId, name, pcm, ts }) {
     if (this.active !== a || a.paused || a.finalizing) return;
+    try { a.test?.person(userId, name, pcm, ts); } catch (e) { this.bus.publish('recording.warning', { message: `speaker test: ${e.message}` }); }
     const ch = `dc:${userId}`;
     let r = a.remote.get(ch);
     if (!r) {
@@ -723,7 +742,7 @@ class RecordingManager {
     for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } }
   }
 
-  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); a.meet?.detach(); this.closeSpools(a); }
+  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); try { a.test?.close(); } catch { /* best effort */ } a.meet?.detach(); this.closeSpools(a); }
 }
 
 module.exports = { RecordingManager, RecordingError };

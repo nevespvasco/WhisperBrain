@@ -1,5 +1,5 @@
 // Connect WhisperBrain to Google Calendar, Notion, Linear, Obsidian and webhooks. Tokens stay on this device.
-import { S, $, $$, api, t, esc, icon, fail, done, toast, modal, debounce, switchEl, field, confirmDialog } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, fail, done, toast, modal, debounce, switchEl, field, confirmDialog, go } from '../lib.js';
 import { openImport } from './transfer.js';
 
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); return S.settings; };
@@ -55,7 +55,10 @@ export async function render(main) {
         ${field('d-channel', t('Always join this voice channel (optional)'), `<input id="d-channel" value="${esc(ints.discord.channelId)}" inputmode="numeric" placeholder="${t('Channel ID, empty = the one you are in')}" autocomplete="off">`)}
         <label class="row between"><span class="small">${t('Join my call when I record')}</span>${switchEl('d-on', ints.discord.enabled)}</label>
         <div class="row"><button class="btn primary" data-act="d-save">${t('Save & test')}</button>${ints.discord.configured ? `<button class="btn ghost sm" data-act="d-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="d-status"></span></div>
-        <div class="small" id="d-result"></div>`)}
+        <div class="small" id="d-result"></div>
+        ${ints.discord.configured ? `<div class="card mt-s" style="padding:12px 14px"><div class="strong">${icon('mic')} ${t('Speaker test recording')}</div>
+          <div class="xsmall muted">${t('Helps tune who-is-who for your own calls. The bot hears each person on their own while the computer records the mixed sound of the same call; both are kept on this computer (not transcribed twice) so the mixed sound can be scored against who really spoke. Join a voice channel with 2 or more people, ask them first, talk normally for 5-10 minutes, then Stop.')}</div>
+          <div class="row mt-s"><button class="btn sm" data-act="d-speaker-test">${t('Start a speaker test')}</button></div></div>` : ''}`)}
 
       ${card('webhook', '#0ea5e9', 'webhook', t('Webhooks'), t('Send meetings anywhere: Zapier, Make, n8n, Slack, your own server'), ints.webhooks.length > 0, `
         <div class="stack tight">${ints.webhooks.map((w) => `<div class="row card" style="padding:10px 12px"><div class="grow"><div class="strong ellipsis">${esc(w.name)}</div><div class="xsmall muted ellipsis">${esc(w.url)}</div></div>${switchEl('', w.auto, t('Send automatically')).replace('id=""', `data-hook-auto="${w.id}"`)}<button class="btn ghost xs" data-hook-test="${w.id}">${t('Test')}</button><button class="btn ghost icon xs" data-hook-del="${w.id}" aria-label="${t('Remove')}">${icon('trash', 'sm')}</button></div>`).join('')}</div>
@@ -133,6 +136,12 @@ function bind(main, ints) {
         const bits = [`${t('Bot')}: ${esc(r.bot.name)}`];
         if (r.call) bits.push(`${esc(r.call.server)} › ${esc(r.call.channel)}`, `${t('heard')}: ${r.call.heard.length ? r.call.heard.map(esc).join(', ') : t('nobody')}`, r.call.dave ? t('end-to-end encryption: on') : t('end-to-end encryption: off'));
         $('#d-result').innerHTML = `${bits.join(' · ')}<br><a href="${esc(r.inviteUrl)}" target="_blank" rel="noopener noreferrer">${t('Invite link: add the bot to a server')}</a>`;
+      } else if (a === 'd-speaker-test') {
+        b.disabled = true;
+        try {
+          const r = await api('POST', '/api/recording/start', { speakerTest: true, title: t('Speaker test') });
+          go(`#/note/${r.noteId}?tab=transcript`);
+        } catch (e) { fail(e); } finally { b.disabled = false; }
       } else if (a === 'd-remove') { await save({ discord: { token: '', enabled: false, channelId: '' } }); render(main); }
       else if (a === 'o-save') {
         await save({ obsidian: { vaultPath: $('#o-path').value.trim(), folder: $('#o-folder').value.trim() || 'Meetings', transcript: $('#o-tr').checked, autoExport: $('#o-auto').checked } });

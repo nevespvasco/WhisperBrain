@@ -47,10 +47,14 @@ class LiveDiarizer {
     this.onOverlap = onOverlap;
     this.progress = { windows: 0, seconds: 0 };
     this.result = null;
+    this.failed = null; // why following the recording failed, if it did
     this.child.on('message', (m) => {
       if (m.t === 'overlap') this.onOverlap?.({ start: m.start, end: m.end });
       else if (m.t === 'progress') this.progress = { windows: m.windows, seconds: m.seconds };
       else if (m.t === 'warning') onWarning?.(m.message);
+      // the worker could not start following (a model or onnxruntime-node that does not load): say so now, not as a
+      // puzzling "not following a recording" at Stop; the after-Stop pass then runs the one-shot instead (manager.diarize)
+      else if (m.t === 'error' && !this.result) { this.failed = String(m.message || 'error').split('\n')[0]; onWarning?.(`speaker analysis while recording stopped: ${this.failed}`); }
     });
     this.child.on('error', () => {});
     this.child.send({ t: 'live', file, segmentation, embedding, threads, finishThreads, threshold: ownedThreshold, pollMs });

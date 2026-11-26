@@ -45,8 +45,8 @@ const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] :
 const CONFIGS = {
   online: { speakerRefine: false, speakerDiarize: false },
   refine: { speakerRefine: true, speakerDiarize: false },             // MFCC/F0 split, merge, reassign
-  diarize: { speakerRefine: false, speakerDiarize: true },            // pyannote segmentation + global clustering, per word
-  'diarize+refine': { speakerRefine: true, speakerDiarize: true },
+  diarize: { speakerRefine: false, speakerDiarize: true, speakerPipeline: 'sherpa' },            // pyannote segmentation + global clustering, per word
+  'diarize+refine': { speakerRefine: true, speakerDiarize: true, speakerPipeline: 'sherpa' },
   owned: { speakerRefine: false, speakerDiarize: true, speakerPipeline: 'owned' },          // WhisperBrain's own pipeline, windows computed while recording
   'owned+refine': { speakerRefine: true, speakerDiarize: true, speakerPipeline: 'owned' },
 };
@@ -59,7 +59,7 @@ async function play(rec, config, engine, models) {
   const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
   const voiceModel = byVoiceModelFile(models.speakerPath()); // the voice model in use tags and judges the prints (same as the app)
   if (voiceModel) speakers.useModel(voiceModel);
-  settings.update(Object.fromEntries(Object.entries({ asrModel: 'parakeet-tdt-0.6b-v3', echoDedupe: false, speakerCountHint: opt('--attendees', 0) > 0, ...config }).filter(([k]) => k in DEFAULTS)));
+  settings.update(Object.fromEntries(Object.entries({ asrModel: 'parakeet-tdt-0.6b-v3', echoDedupe: false, speakerCountHint: opt('--attendees', 0) > 0, ...(opt('--same') ? { speakerThreshold: Number(opt('--same')) } : {}), ...config }).filter(([k]) => k in DEFAULTS)));
   const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-eval-'));
   const diarization = {};
   if (opt('--threshold')) diarization.threshold = Number(opt('--threshold'));

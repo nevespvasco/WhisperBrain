@@ -51,9 +51,9 @@ class Importer {
       const pcm = await decodeAudio(buffer, filename, { engine: app.engine });
       bus.publish('import.progress', { noteId, stage: 'transcribe', progress: 0 });
       const segs = await transcribePcm(app.engine, pcm, { onProgress: (p) => bus.publish('import.progress', { noteId, stage: 'transcribe', progress: p }) });
-      const labelled = assignSpeakers(noteId, segs, app.speakers, { threshold: app.settings.get('speakerThreshold') });
+      const labelled = assignSpeakers(noteId, segs, app.speakers, { threshold: app.recording.sameVoiceThreshold() });
       app.notes.addSegments(noteId, labelled);
-      app.speakers.consolidate(noteId, app.settings.get('speakerThreshold'));
+      app.speakers.consolidate(noteId, app.recording.sameVoiceThreshold());
       app.speakers.autoMatch(noteId);
       const durationMs = Math.round((pcm.length / 2 / 16000) * 1000);
       const n = app.notes.get(noteId);

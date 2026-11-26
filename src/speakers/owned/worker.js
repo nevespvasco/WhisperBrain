@@ -83,6 +83,7 @@ async function oneShot(m) {
 
 // ---- live ----
 let live = null;
+let starting = null, startError = null; // startLive in progress, and why it failed
 
 async function startLive(m) {
   const sherpa = require('sherpa-onnx-node');
@@ -143,8 +144,12 @@ async function finishLive(m) {
 process.on('message', async (m) => {
   try {
     if (m.t === 'diarize') process.send({ t: 'diarized', ...(await oneShot(m)) });
-    else if (m.t === 'live') await startLive(m);
-    else if (m.t === 'finish') { if (!live) throw new Error('not following a recording'); process.send({ t: 'diarized', ...(await finishLive(m)) }); }
+    else if (m.t === 'live') { starting = startLive(m).catch((e) => { startError = e; throw e; }); await starting; }
+    else if (m.t === 'finish') {
+      if (!live && starting) await starting.catch(() => {}); // Stop came while the models were still loading
+      if (!live) throw startError || new Error('not following a recording');
+      process.send({ t: 'diarized', ...(await finishLive(m)) });
+    }
     else throw new Error(`unknown message ${m.t}`);
   } catch (e) { process.send({ t: 'error', message: String(e && e.stack || e) }); }
 });

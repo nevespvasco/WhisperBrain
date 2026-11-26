@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { Speakers } = require('../src/speakers/store');
-const { CAMPPLUS, RESNET34, LEGACY, byId, byFile } = require('../src/speakers/voice-models');
+const { CAMPPLUS, RESNET34, LEGACY, byId, byFile, sameVoiceThreshold } = require('../src/speakers/voice-models');
 const { cosine } = require('../src/speakers/cluster');
 const { Models } = require('../src/asr/models');
 const { open } = require('../src/core/db');
@@ -170,4 +170,29 @@ test('models: a download whose SHA-256 does not match is refused and removed', a
       assert.equal(m.speakerInstalled(), false);
     });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('same-voice threshold: each voice model has its own unless the user set one (CAM++ at 0.6 split a 3-person call into 18)', () => {
+  const { DEFAULTS, validateSetting } = require('../src/core/settings');
+  assert.equal(DEFAULTS.speakerThreshold, null);
+  assert.equal(DEFAULTS.speakerPipeline, 'owned');
+  assert.equal(sameVoiceThreshold(null, `/x/${CAMPPLUS.file}`), 0.5);
+  assert.equal(sameVoiceThreshold(null, `/x/${RESNET34.file}`), 0.6);
+  assert.equal(sameVoiceThreshold(null, null), LEGACY.same);   // no voice model installed
+  assert.equal(sameVoiceThreshold(0.7, `/x/${CAMPPLUS.file}`), 0.7); // the user's choice wins
+  assert.equal(validateSetting('speakerThreshold', null), null);
+  assert.equal(validateSetting('speakerThreshold', 2), 0.95);
+  assert.throws(() => validateSetting('speakerThreshold', 'high'), /number, or null/);
+});
+
+test('live diarizer: a worker that cannot start says why, at once and at Stop (not "not following a recording")', async () => {
+  const { LiveDiarizer } = require('../src/speakers/owned');
+  const warnings = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-live-'));
+  const file = path.join(dir, 'system.pcm');
+  fs.writeFileSync(file, Buffer.alloc(32000));
+  const d = new LiveDiarizer({ file, segmentation: path.join(dir, 'missing-seg.onnx'), embedding: path.join(dir, 'missing-voice.onnx'), onWarning: (m) => warnings.push(m), pollMs: 50 });
+  try {
+    await assert.rejects(d.finish({ samples: 16000, timeoutMs: 30000 }), (e) => !/not following a recording/.test(e.message));
+  } finally { d.stop(); fs.rmSync(dir, { recursive: true, force: true }); }
 });

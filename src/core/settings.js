@@ -29,10 +29,10 @@ const DEFAULTS = {
   micNoiseSuppression: 'auto',  // auto | on | off. Enhancement can raise word errors, so Linux leaves it off; macOS/Windows keep Chromium's default (on)
   micAutoGain: 'auto',          // auto | on | off, same meaning
   speakerDetection: true,       // tell voices apart ("Speaker 1", "Ana"…) with an on-device voice model
-  speakerThreshold: 0.6,        // cosine similarity needed to call two utterances the same voice
+  speakerThreshold: null,       // cosine similarity needed to call two utterances the same voice; null = the voice model's own (voice-models.js `same`: 0.6 ResNet34, 0.5 CAM++)
   speakerDiarize: true,         // after a recording, work out who spoke when over the whole meeting (speaker segmentation + global clustering) and relabel word by word
   speakerCountHint: false,       // use the calendar event's attendee list as the expected number of voices on the call when clustering speakers (small meetings only). Off: exactly right it takes AMI 18.1 -> 14.8 and libri-call 24.9 -> 17.9 WDER, one voice off it costs up to 6 points; see eval/README.md
-  speakerPipeline: 'sherpa',    // who-spoke-when after Stop: 'sherpa' (sherpa-onnx's diarization, recomputed at Stop) or 'owned' (WhisperBrain's own pipeline, src/speakers/owned: windows computed while recording, live overlap events, a few seconds at Stop); see eval/README.md
+  speakerPipeline: 'owned',     // who-spoke-when after Stop (default 'owned' since 2026-11-26: with CAM++, sherpa's clustering found 13-23 voices for 4, eval/bakeoff-results.md): 'sherpa' (sherpa-onnx's diarization, recomputed at Stop) or 'owned' (WhisperBrain's own pipeline, src/speakers/owned: windows computed while recording, live overlap events, a few seconds at Stop); see eval/README.md
   speakerRefine: true,          // after the diarization, also re-check speakers with pitch and timbre (MFCC split/merge/reassign): on AMI it merges over-split speakers (WDER 25.4 -> 18.1, 6 -> 4 speakers), neutral elsewhere; see eval/README.md
   speakerNamesFromTranscript: 'auto', // while recording and after, an AI reads the transcript and names voices from what people say ("I'm Maria", "Thanks, George"): auto = only when the AI server runs on this computer, on = always, off = never. The names are guesses that say so, and never save a voice print
   translation: {
@@ -180,7 +180,8 @@ function validate(key, value) {
     }
     return merged;
   }
-  if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
+  if (key === 'speakerThreshold') { if (value !== null && typeof value !== 'number') throw new Error('speakerThreshold must be a number, or null for the voice model\'s own'); }
+  else if (typeof value !== typeof def) throw new Error(`${key} must be a ${typeof def}`);
   if (key === 'consentPreset' && !CONSENT_PRESETS.includes(value)) throw new Error('consentPreset must be general, eu or us');
   if (key === 'retentionDays' && !(Number.isInteger(value) && value >= 0 && value <= 3650)) throw new Error('retentionDays must be a whole number of days from 0 (keep everything) to 3650');
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
@@ -188,7 +189,7 @@ function validate(key, value) {
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
   if (key === 'startPage' && !['home', 'meetings'].includes(value)) throw new Error('startPage must be home or meetings');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
-  if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
+  if (key === 'speakerThreshold') return value === null ? null : Math.max(0.3, Math.min(0.95, value));
   if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);
   if (key === 'speakerNamesFromTranscript' && !['auto', 'on', 'off'].includes(value)) throw new Error('speakerNamesFromTranscript must be auto, on or off');
   if (key === 'speakerPipeline' && !['sherpa', 'owned'].includes(value)) throw new Error('speakerPipeline must be sherpa or owned');
