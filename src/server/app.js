@@ -51,12 +51,14 @@ const { extractAssertions } = require('../brain/extract');
 const { Reminders } = require('../brain/reminders');
 const { Briefs } = require('../brain/brief');
 const { Inbox } = require('../brain/inbox');
+const { Actions, HANDLERS: ACTION_HANDLERS } = require('../brain/actions');
 const { backupTo, list: listBackups } = require('../core/backup');
+const gh = require('../connectors/github'), slackSvc = require('../connectors/slack'), discordSvc = require('../connectors/discord'), gmailSvc = require('../connectors/gmail'), pollSvc = require('../connectors/poll');
 const { ItemStore } = require('../items/store');
 const { SourceManager } = require('../connectors/manager');
 const { pdfToText } = require('../importers/pdf');
 
-function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy(), permissions = () => ({}) } = {}) {
+function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy(), permissions = () => ({}) } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
   fs.mkdirSync(dataDir, { recursive: true });
   const bus = new Bus();
@@ -86,7 +88,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings, briefings }, id) });
   const assistant = new AssistantService({ db: conn, notes, settings, bus, llm: scheduler, knowledge, briefings });
   assistant.attach();   // live help while recording (off until switched on in Settings → Assistant)
-  const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }) });
+  const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }), ...(connectorOptions.google || {}) });
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
@@ -151,7 +153,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
   const items = new ItemStore(conn, { bus });
-  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), watch: detect });
+  const connectorCtx = { settings, get google() { return google; }, get integrations() { return integrations; }, get app() { return self; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, sleep: connectorOptions.sleep };
+  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), watch: detect, services: { github: gh, slack: slackSvc, discord: discordSvc, gmail: gmailSvc, notion: pollSvc.notion, linear: pollSvc.linear }, ctx: connectorCtx });
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
@@ -165,7 +168,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   };
   ai.index = chunkIndex; ai.mayShare = mayShare;
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare });
-  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders });
+  const actions = new Actions({ db: conn, bus, handlers: ACTION_HANDLERS, deps: { settings, get integrations() { return integrations; } } });
+  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders, items, db: conn, actions });
   runner.register('index.sync', async () => {
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
@@ -253,7 +257,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk

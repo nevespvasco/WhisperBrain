@@ -524,6 +524,24 @@ const MIGRATIONS = [
   );
   CREATE INDEX reminders_due ON reminders(state, due_at);
   `,
+  // v20: actions that act outside this computer. An action is PROPOSED with its exact arguments and does nothing until a person approves
+  // it in the Inbox; what is sent is exactly what was shown. 'origin' says who proposed it (the person, later a rule).
+  `
+  CREATE TABLE actions (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'rejected', 'done', 'failed')),
+    origin TEXT NOT NULL DEFAULT 'user',
+    assertion_id TEXT REFERENCES assertions(id) ON DELETE SET NULL,
+    result TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+  );
+  CREATE INDEX actions_state ON actions(state);
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

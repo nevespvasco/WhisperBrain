@@ -92,7 +92,14 @@ Decisions, promises, Inbox, brief, MCP (Phase 3) and reminders (Phase 4):
 - `src/mcp` and `scripts/mcp-server.js`: a read-only MCP server (database opened read-only, no tool writes, nothing from a private source, only accepted promises and decisions).
 - Database backups to a folder, daily while the app runs (`src/core/backup.js`).
 
-Not built (they need accounts or tokens of the person, and could not be tested against the real services here): Gmail, Slack, GitHub and Discord connectors; incremental Google Calendar sync; Notion and Linear polling; actions the AI may take after approval; natural-language rules; a vault mode; the pre-meeting brief phrased by an AI (the facts-only brief is what exists). The connector contract (`SourceManager`, `ItemStore.upsert` by external id, tombstones, sync state on `sources`) is what each of them plugs into.
+Services and approved actions (Phases 4 and 5):
+- GitHub, Slack (your own app), Discord (your own bot, your own server), Gmail (read-only, incremental by `historyId`) and Notion/Linear polling plug into `SourceManager` as service sources (`src/connectors/*.js`): one item per issue, thread or channel-day, a cursor on the source, `Retry-After` handled, private by default. See `docs/services.md`.
+- Inbox signal "No reply yet" from e-mail items (you asked, nobody answered, 3 to 30 days). Deterministic, no AI.
+- `src/brain/actions.js` (migration v20): an action is proposed with its exact arguments, shown in the Inbox, and runs only when approved, once, with those arguments. One action exists: a Linear issue from an accepted promise.
+
+**Tested only against simulated servers** that follow each service's documented API: none of these connectors has talked to the real GitHub, Slack, Discord or Google, which needs the person's own accounts.
+
+Not built: incremental Google Calendar sync (the calendar re-reads its window and caches it; a sync-token cache would be a rewrite of that cache for little gain); natural-language rules (a safe version needs a model that turns a sentence into a structured rule, a preview of what it would do, and the same approval gate; none of that exists); a vault mode (locking the app with a passphrase needs encryption at rest, which node:sqlite does not offer); the pre-meeting brief phrased by an AI (the facts-only brief is what exists); a Discord data-package import.
 
 ## Order of work (Phase 1)
 

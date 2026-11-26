@@ -15,13 +15,23 @@ module.exports = function brainRoutes(add, app, { HttpError }) {
 
   // ---- sources ----
   r('GET', '/api/sources', async () => app.sources.view());
+  // the services that can be connected (GitHub, Slack, Discord, Gmail, Notion and Linear polling) and whether each has its token or sign-in
+  r('GET', '/api/services', async () => Object.values(app.sources.services).map((v) => ({ kind: v.kind, ready: !!v.ready(app.sources.ctx), everyMin: Math.round(v.every / 60000) })));
   r('POST', '/api/sources', async ({ body }) => {
+    const { service } = object(body);
+    if (service) return app.sources.addRemote({ kind: service, name: body.name, config: object(body.config || {}), sensitivity: body.sensitivity === 'normal' ? 'normal' : 'private' });
     const { path, flavour, name, sensitivity, exclude } = object(body);
     return app.sources.add({ path, flavour, name, sensitivity, exclude: Array.isArray(exclude) ? exclude.map(String) : [] });
   });
   // check a folder before adding it (is it readable, is it an Obsidian vault, how many notes)
   r('POST', '/api/sources/check', async ({ body }) => {
-    const { path, flavour } = object(body);
+    const { path, flavour, service } = object(body);
+    if (service) {
+      const svc = app.sources.services[service];
+      if (!svc) throw new HttpError(404, 'unknown service');
+      if (!svc.ready(app.sources.ctx)) throw new HttpError(412, `Connect ${service} first.`);
+      return svc.check(app.sources.ctx);
+    }
     const { FolderConnector } = require('../connectors/folder');
     return new FolderConnector({ source: { id: 'check', kind: flavour === 'obsidian' ? 'obsidian' : 'folder', config: { path } }, items: app.items }).check();
   });
@@ -55,6 +65,18 @@ module.exports = function brainRoutes(add, app, { HttpError }) {
 
   // ---- the Inbox, decisions and commitments, reminders, and the brief before a meeting ----
   r('GET', '/api/inbox', async () => ({ counts: app.inbox.counts(), cards: app.inbox.cards() }));
+  // actions that reach outside: proposed here, run only when approved in the Inbox, with exactly the arguments shown
+  r('GET', '/api/actions', async () => ({ kinds: app.actions.kinds(), pending: app.actions.pending(), recent: app.actions.recent(20) }));
+  r('POST', '/api/actions', async ({ body }) => {
+    const b = object(body);
+    const assertion = b.assertionId ? app.assertions.get(b.assertionId) : null;
+    if (b.assertionId && !assertion) throw new HttpError(404, 'promise not found');
+    if (assertion && assertion.state !== 'accepted') throw new HttpError(409, 'only a promise you accepted can be sent anywhere');
+    return app.actions.propose(String(b.kind || ''), { assertion, note: assertion?.noteId ? app.notes.get(assertion.noteId) : null }, { assertionId: assertion?.id || null });
+  });
+  r('POST', '/api/actions/:id/approve', async ({ params }) => app.actions.approve(params.id));
+  r('POST', '/api/actions/:id/reject', async ({ params }) => app.actions.reject(params.id));
+  r('POST', '/api/inbox/noreply/:id/dismiss', async ({ params }) => { app.inbox.dismissNoReply(params.id); return { ok: true }; });
   r('GET', '/api/assertions', async ({ query }) => app.assertions.list({ state: query.state ? String(query.state).split(',') : undefined, kind: query.kind || undefined, noteId: query.noteId || undefined, limit: Math.min(500, Number(query.limit) || 200) }));
   r('POST', '/api/assertions', async ({ body }) => {
     const b = object(body);

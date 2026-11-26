@@ -26,6 +26,18 @@ const card = (c) => {
       <div class="strong" style="margin:4px 0">${esc(c.text)}</div>
       <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="rdone">${t('Done')}</button><button class="btn sm" data-do="snooze">${t('Tomorrow')}</button><button class="btn sm ghost" data-do="rdismiss">${t('Dismiss')}</button></div></div>`;
   }
+  if (c.type === 'action') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="action"><div class="xsmall muted">${icon('external', 'sm')} ${t('Waiting for your approval')} · ${t('nothing has been sent')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.title)}</div>
+      <pre class="small" style="white-space:pre-wrap;margin:6px 0;padding:8px 10px;background:var(--sunken);border:1px solid var(--line);border-radius:10px">${esc(c.args.title || '')}${c.args.description ? `\n\n${esc(c.args.description)}` : ''}</pre>
+      <div class="xsmall muted">${t('This is exactly what will be sent.')}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve">${t('Approve and send')}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not send')}</button></div></div>`;
+  }
+  if (c.type === 'noreply') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="noreply"><div class="xsmall muted">${icon('mail', 'sm')} ${t('No reply yet')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.title)}</div><div class="small muted">${t('You asked {who} {n} days ago and nobody has answered.', { who: esc((c.to || []).join(', ') || t('them')), n: c.days })}</div>
+      <div class="row" style="gap:8px;margin-top:10px">${c.uri ? `<a class="btn sm primary" href="${esc(c.uri)}" target="_blank" rel="noopener noreferrer">${t('Open the thread')}</a>` : ''}<button class="btn sm" data-do="remind">${t('Remind me tomorrow')}</button><button class="btn sm ghost" data-do="nodismiss">${t('Not needed')}</button></div></div>`;
+  }
   if (c.type === 'merge') {
     return `<div class="card inbox-card" data-type="merge"><div class="xsmall muted">${icon('users', 'sm')} ${t('Same person?')}</div>
       <div class="strong" style="margin:4px 0">${esc(c.a.name)} · ${esc(c.b.name)}</div><div class="small muted">${t('Decide on the People page; nothing is merged unless you say so.')}</div>
@@ -55,6 +67,10 @@ export async function render(main) {
       else if (what === 'snooze') await api('POST', `/api/reminders/${id}/snooze`, { ms: 24 * 3600_000 });
       else if (what === 'later') { const d = new Date(); d.setDate(d.getDate() + 7); d.setHours(18, 0, 0, 0); await api('PATCH', `/api/assertions/${id}`, { dueAt: d.getTime() }); done(t('Moved a week')); }
       else if (what === 'edit') { await editDialog(id, type); }
+      else if (what === 'approve') { const r = await api('POST', `/api/actions/${id}/approve`); if (r.state === 'done') done(`${t('Sent')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be sent.'))); }
+      else if (what === 'reject-action') await api('POST', `/api/actions/${id}/reject`);
+      else if (what === 'nodismiss') await api('POST', `/api/inbox/noreply/${id}/dismiss`);
+      else if (what === 'remind') { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); await api('POST', '/api/reminders', { text: `${t('Follow up')}: ${el.querySelector('.strong')?.textContent || ''}`, dueAt: d.getTime() }); await api('POST', `/api/inbox/noreply/${id}/dismiss`); done(t('I will remind you tomorrow morning')); }
       await draw();
     } catch (e) { fail(e); }
   };

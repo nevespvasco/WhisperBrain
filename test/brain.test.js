@@ -215,3 +215,55 @@ test('the API: Inbox, accept, edit, create by hand, supersede, reminders, brief 
   app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: '' } });
   assert.equal((await call('POST', `/api/notes/${n.id}/assertions/extract`)).status, 412, 'no AI server: say so');
 });
+
+test('an action that reaches outside does nothing until a person approves it, and runs with exactly what was shown', async (t) => {
+  const app = await boot(t);
+  const calls = [];
+  app.integrations.linear = () => ({ createIssue: async (x) => { calls.push(x); return { identifier: 'ENG-9', url: 'https://linear.app/x/ENG-9' }; } });
+  const a = app.assertions.add({ kind: 'commitment', text: 'Send the contract to Rui', owner: 'Ana', dueText: 'by Friday', quote: "I'll send the contract to Rui by Friday", origin: 'ai' }).item;
+  assert.throws(() => app.actions.propose('linear.issue', { assertion: a }), /not connected/, 'Linear is not set up');
+  app.settings.update({ linear: { apiKey: 'lin_x', teamId: 'T1', teamName: 'Platform' } });
+  const p = app.actions.propose('linear.issue', { assertion: a }, { assertionId: a.id });
+  assert.equal(p.state, 'pending');
+  assert.equal(calls.length, 0, 'proposing sends nothing');
+  assert.match(p.title, /Create a Linear issue in Platform/);
+  assert.deepEqual([p.args.teamId, p.args.title], ['T1', 'Send the contract to Rui']);
+  assert.match(p.args.description, /Due: by Friday/);
+  assert.match(p.args.description, /> I'll send the contract to Rui by Friday/, 'the words it rests on go with it');
+  const card = app.inbox.cards().find((c) => c.type === 'action');
+  assert.deepEqual([card.id, card.args.title], [p.id, 'Send the contract to Rui'], 'it waits in the Inbox, with its arguments in plain view');
+  assert.equal(app.inbox.counts().actions, 1);
+  const done = await app.actions.approve(p.id);
+  assert.deepEqual([done.state, done.result.identifier], ['done', 'ENG-9']);
+  assert.deepEqual(calls, [{ teamId: 'T1', title: 'Send the contract to Rui', description: p.args.description }], 'exactly the arguments that were shown');
+  await assert.rejects(app.actions.approve(p.id), /already done/, 'once only');
+  assert.equal(app.inbox.counts().actions, 0);
+  // rejected means never; a failure is recorded, not hidden
+  const q = app.actions.propose('linear.issue', { assertion: a });
+  assert.equal(app.actions.reject(q.id).state, 'rejected');
+  assert.equal(calls.length, 1);
+  app.integrations.linear = () => ({ createIssue: async () => { throw new Error('Linear is down'); } });
+  const f = await app.actions.approve(app.actions.propose('linear.issue', { assertion: a }).id);
+  assert.deepEqual([f.state, f.error], ['failed', 'Linear is down']);
+});
+
+test('the actions API: only a promise you accepted can be proposed, and approving is a separate step', async (t) => {
+  const app = await boot(t);
+  const srv = createServer(app, { uiDir: path.join(ROOT, 'ui') });
+  const { port, token } = await srv.listen(0);
+  t.after(() => srv.close());
+  const call = async (method, p, body) => { const r = await fetch(`http://127.0.0.1:${port}${p}`, { method, headers: { Cookie: `wb_token=${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json().catch(() => null) }; };
+  app.settings.update({ linear: { apiKey: 'lin_x', teamId: 'T1', teamName: 'Platform' } });
+  let sent = 0;
+  app.integrations.linear = () => ({ createIssue: async () => { sent++; return { identifier: 'ENG-1', url: 'u' }; } });
+  const suggested = app.assertions.add({ kind: 'commitment', text: 'Not accepted yet', owner: 'Ana', origin: 'ai' }).item;
+  assert.equal((await call('POST', '/api/actions', { kind: 'linear.issue', assertionId: suggested.id })).status, 409, 'a suggestion nobody accepted is not sent anywhere');
+  app.assertions.decide(suggested.id, 'accept');
+  const p = await call('POST', '/api/actions', { kind: 'linear.issue', assertionId: suggested.id });
+  assert.equal(p.status, 200);
+  assert.equal(sent, 0);
+  assert.equal((await call('GET', '/api/actions')).body.pending.length, 1);
+  assert.equal((await call('POST', `/api/actions/${p.body.id}/approve`)).body.state, 'done');
+  assert.equal(sent, 1);
+  assert.equal((await call('POST', '/api/actions', { kind: 'nope', assertionId: suggested.id })).status, 400);
+});

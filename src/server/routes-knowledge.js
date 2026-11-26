@@ -188,7 +188,7 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     if (Object.keys(patch).length) app.settings.update({ google: { ...app.settings.get('google'), ...patch } });
     if (!app.settings.get('google').clientId) throw new HttpError(400, 'Add the OAuth client ID from Google Cloud first.');
     app.pendingGoogleAuth?.cancel?.();
-    const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined });
+    const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined, gmail: !!body.gmail });
     app.pendingGoogleAuth = auth;
     auth.done.then((r2) => { app.calendar.invalidate?.(); app.bus.publish('google.connected', { email: r2.email, calendars: r2.calendars?.length || 0 }); })
       .catch((e) => app.bus.publish('google.error', { message: e.message }))

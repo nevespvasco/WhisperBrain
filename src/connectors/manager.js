@@ -10,7 +10,10 @@ const LANE = 'sources';
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
 
 class SourceManager {
-  constructor({ items, runner, bus = null, pdfToText = null, watch = true, reconcileMs = RECONCILE_MS }) {
+  // services: { github, slack, ... } (src/connectors/*.js) and ctx: what they need to reach the world ({ settings, google, integrations, app, fetchImpl, bases, sleep })
+  constructor({ items, runner, bus = null, pdfToText = null, watch = true, reconcileMs = RECONCILE_MS, services = {}, ctx = {} }) {
+    this.services = services;
+    this.ctx = ctx;
     this.items = items;
     this.runner = runner;
     this.bus = bus;
@@ -23,7 +26,16 @@ class SourceManager {
     runner.register('source.sync', (payload) => this.sync(payload.sourceId), { lane: LANE });
   }
 
+  // a service source (GitHub, Slack, Discord, Gmail, Notion/Linear polling): scanned with the service's own sync
+  remote(source) {
+    const svc = source.config?.remote && this.services[source.kind];
+    if (!svc) return null;
+    return { svc, scan: () => svc.sync({ ...this.ctx, source: this.items.source(source.id) || source, items: this.items }) };
+  }
+
   connector(source) {
+    const rem = this.remote(source);
+    if (rem) return rem;
     if (!['folder', 'obsidian'].includes(source.kind) || !source.config?.path) return null;   // (imported meetings have no folder to read)
     const live = this.connectors.get(source.id);
     if (live) { live.source = source; return live; }
@@ -36,10 +48,13 @@ class SourceManager {
   start() {
     for (const s of this.items.sources()) if (s.enabled && this.connector(s)) { this.enqueueSync(s.id); this.watch(s); }
     if (this.reconcileMs > 0 && !this.timer) {
-      this.timer = setInterval(() => { for (const s of this.items.sources()) if (s.enabled && this.connector(s)) this.enqueueSync(s.id); }, this.reconcileMs);
+      this.timer = setInterval(() => { for (const s of this.items.sources()) if (s.enabled && this.connector(s) && this.due(s)) this.enqueueSync(s.id); }, this.reconcileMs);
       this.timer.unref?.();
     }
   }
+
+  // a folder is scanned on every round; a service only when its own interval has passed (they have rate limits)
+  due(s) { const svc = s.config?.remote && this.services[s.kind]; return !svc || !s.lastSyncAt || Date.now() - s.lastSyncAt >= svc.every; }
 
   stop() {
     clearInterval(this.timer); this.timer = null;
@@ -72,6 +87,17 @@ class SourceManager {
     return source;
   }
 
+  // A service: the token is in Settings (sealed); what is added here is what to read (repositories, channels, a mail search).
+  addRemote({ kind, name, config = {}, sensitivity = 'private' }) {
+    const svc = this.services[kind];
+    if (!svc) throw err(`unknown service "${kind}"`);
+    if (!svc.ready(this.ctx)) throw err(`Connect ${kind} first: its token or sign-in is missing.`, 412);
+    const checked = svc.validate(config);
+    const source = this.items.addSource({ kind, name: name || `${kind}`, mode: 'copy', sensitivity, config: { ...checked, remote: true } });
+    this.enqueueSync(source.id);
+    return source;
+  }
+
   // The scan, as a job. Progress is kept for the Sources page; the result is the job's result.
   async sync(sourceId) {
     const source = this.items.source(sourceId);
@@ -89,7 +115,7 @@ class SourceManager {
       this.progress.delete(sourceId);
       this.items.markSync(sourceId, { ok: false, error: e.message });
       this.bus?.publish('sources.changed', { id: sourceId });
-      throw Object.assign(e, { permanent: /does not exist|not a folder|No folder/.test(e.message) });
+      throw Object.assign(e, { permanent: e.permanent || e.code === 'unauthorized' || /does not exist|not a folder|No folder/.test(e.message) });
     }
   }
 

@@ -8,7 +8,7 @@ const { ftsRun } = require('../core/fts');
 
 const NATIVE = 'native';                                   // the recorder and the app's own meetings
 const MAX_TEXT = 400_000;                                  // derived text kept per item (pointer mode keeps the text for search, not the file)
-const KINDS = ['native', 'folder', 'obsidian', 'notion', 'linear'];
+const KINDS = ['native', 'folder', 'obsidian', 'notion', 'linear', 'github', 'slack', 'discord', 'gmail'];
 
 const newId = (prefix) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 32);
@@ -98,10 +98,11 @@ class ItemStore {
   // Create or update the item for (source, externalId). Returns { action: 'created' | 'updated' | 'unchanged' | 'revived', item }.
   // 'unchanged': the content hash is the same, so nothing is written (a tombstoned item that comes back is 'revived').
   // Derived text is capped: it is for finding the item, the original stays where it is (pointer mode).
-  upsert(sourceId, { externalId, kind = 'document', title = '', text = '', hash, uri = '', path = '', meta = {}, noteId = null, occurredAt } = {}) {
+  // metaInHash: what is in `meta` counts as content (a label, a state, who wrote last): a change to it updates the item even when the text is the same
+  upsert(sourceId, { externalId, kind = 'document', title = '', text = '', hash, uri = '', path = '', meta = {}, noteId = null, occurredAt, metaInHash = false } = {}) {
     if (externalId == null || externalId === '') throw new Error('an item needs an externalId');
     const clipped = String(text).slice(0, MAX_TEXT);
-    const h = hash || sha(`${title}\n${clipped}`);
+    const h = hash || sha(`${title}\n${clipped}${metaInHash ? `\n${JSON.stringify(meta)}` : ''}`);
     const t = this.now();
     const cur = this.db.prepare('SELECT * FROM items WHERE source_id = ? AND external_id = ?').get(sourceId, String(externalId));
     if (!cur) {
