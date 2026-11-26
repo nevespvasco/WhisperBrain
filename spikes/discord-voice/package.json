@@ -1,0 +1,21 @@
+{
+  "name": "discord-voice-spike",
+  "version": "1.0.0",
+  "description": "Throwaway spike: per-user Discord voice receive under DAVE",
+  "scripts": {
+    "start": "node bot.js",
+    "analyze": "node analyze.js",
+    "selftest": "node selftest.js"
+  },
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@discordjs/voice": "0.19.2",
+    "@snazzah/davey": "0.1.12",
+    "discord": {
+      "js": "14.28.1"
+    },
+    "discord.js": "^14.28.1",
+    "opusscript": "0.0.8"
+  }
+}

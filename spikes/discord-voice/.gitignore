@@ -1,0 +1,7 @@
+node_modules/
+# recorded call audio and logs: never commit
+out/
+*.wav
+*.pcm
+.env
+.env.*
