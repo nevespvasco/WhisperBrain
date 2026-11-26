@@ -339,6 +339,116 @@ const MIGRATIONS = [
   CREATE INDEX jobs_ready ON jobs(state, run_after);
   CREATE INDEX jobs_key ON jobs(kind, key);
   `,
+  // v16: sources and items (docs/adr/0001-brain-data-model.md). A source is somewhere material comes from (the recorder,
+  // an Obsidian vault, a folder, Notion...); `mode` says how much of it we keep: 'pointer' = path + hash + derived text only,
+  // the file stays the original; `cursor`/`last_sync_at`/`last_error` are its sync state. An item is one thing from one
+  // source; (source_id, external_id) is unique, so syncing again updates instead of duplicating; `deleted_at` is a tombstone.
+  // A meeting is an item of kind 'meeting' that points at its notes row (note_id) and keeps no text of its own.
+  // ai_runs: every call to an AI server, and whether it left this computer (the egress log).
+  `
+  CREATE TABLE sources (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    mode TEXT NOT NULL DEFAULT 'pointer' CHECK (mode IN ('pointer', 'excerpt', 'copy')),
+    sensitivity TEXT NOT NULL DEFAULT 'normal' CHECK (sensitivity IN ('normal', 'private')),
+    config TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    cursor TEXT,
+    last_sync_at INTEGER,
+    last_error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE items (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    external_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'document',
+    title TEXT NOT NULL DEFAULT '',
+    text TEXT NOT NULL DEFAULT '',
+    hash TEXT NOT NULL DEFAULT '',
+    uri TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    meta TEXT NOT NULL DEFAULT '{}',
+    note_id TEXT REFERENCES notes(id) ON DELETE CASCADE,
+    occurred_at INTEGER NOT NULL,
+    ingested_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    deleted_at INTEGER,
+    UNIQUE (source_id, external_id)
+  );
+  CREATE INDEX items_source ON items(source_id, deleted_at);
+  CREATE INDEX items_note ON items(note_id);
+  CREATE INDEX items_when ON items(occurred_at DESC);
+  CREATE VIRTUAL TABLE items_fts USING fts5(title, text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2');
+  CREATE TABLE ai_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    lane TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    host TEXT NOT NULL DEFAULT '',
+    local INTEGER NOT NULL DEFAULT 1,
+    chars_in INTEGER NOT NULL DEFAULT 0,
+    chars_out INTEGER NOT NULL DEFAULT 0,
+    ms INTEGER NOT NULL DEFAULT 0,
+    ok INTEGER NOT NULL DEFAULT 1,
+    error TEXT
+  );
+  CREATE INDEX ai_runs_at ON ai_runs(at DESC);
+  `,
+  // v17: people as entities (the same ADR). An entity is a person with identities (email, voice, name): a strong identifier
+  // (email, voice) decides who someone is, a name alone is weak. `key` is the URL key the People pages use. Merges are recorded
+  // so they can be undone; proposals ("same person?") are decided by a person and a rejected one is never proposed again.
+  // mentions: which meetings a person spoke in or was invited to.
+  `
+  CREATE TABLE entities (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL DEFAULT 'person',
+    name TEXT NOT NULL,
+    key TEXT NOT NULL UNIQUE,
+    merged_into TEXT REFERENCES entities(id),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE entity_identities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('name', 'email', 'voice')),
+    value TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (kind, value)
+  );
+  CREATE INDEX entity_identities_entity ON entity_identities(entity_id);
+  CREATE TABLE mentions (
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('speaker', 'attendee')),
+    talk_ms INTEGER NOT NULL DEFAULT 0,
+    at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_id, note_id, role)
+  );
+  CREATE INDEX mentions_note ON mentions(note_id);
+  CREATE TABLE entity_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    a_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    b_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL,
+    score REAL NOT NULL DEFAULT 0,
+    state TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open', 'accepted', 'rejected')),
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    UNIQUE (a_id, b_id)
+  );
+  CREATE TABLE entity_merges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    into_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    moved TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    undone_at INTEGER
+  );
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

@@ -12,14 +12,20 @@ class JobRunner {
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.running = false;
-    this.busy = false;
+    this.lanes = { main: { busy: false, current: null } };
+    this.laneOf = {};
     this.timer = null;
-    this.current = null;
   }
 
-  register(kind, fn) { this.handlers[kind] = fn; return this; }
+  // lane: handlers in different lanes run at the same time (one job at a time within a lane). The default lane is 'main'.
+  register(kind, fn, { lane = 'main' } = {}) {
+    this.handlers[kind] = fn;
+    this.laneOf[kind] = lane;
+    this.lanes[lane] ||= { busy: false, current: null };
+    return this;
+  }
 
-  kinds() { return Object.keys(this.handlers); }
+  kinds(lane = null) { return Object.keys(this.handlers).filter((k) => !lane || this.laneOf[k] === lane); }
 
   // Queue a job and make sure it runs soon (see JobQueue.enqueue for the options).
   enqueue(kind, payload, opts) {
@@ -41,33 +47,37 @@ class JobRunner {
     this.running = false;
     if (this.timer) this.clearTimer(this.timer);
     this.timer = null;
-    return this.current || Promise.resolve();
+    return Promise.all(Object.values(this.lanes).map((l) => l.current).filter(Boolean));
   }
 
   kick() {
-    if (!this.running || this.busy) return;
-    this.busy = true;
+    if (!this.running) return;
     if (this.timer) { this.clearTimer(this.timer); this.timer = null; }
-    setImmediate(() => this.loop());
+    for (const [name, lane] of Object.entries(this.lanes)) {
+      if (lane.busy) continue;
+      lane.busy = true;
+      setImmediate(() => this.loop(name));
+    }
   }
 
   // Resolves once nothing queued may run now (for tests and for a clean shutdown).
   async idle() {
-    while (this.busy || this.current) await new Promise((r) => setImmediate(r));
+    while (Object.values(this.lanes).some((l) => l.busy || l.current)) await new Promise((r) => setImmediate(r));
   }
 
-  async loop() {
+  async loop(name) {
+    const lane = this.lanes[name];
     try {
       while (this.running) {
         let job;
-        try { job = this.queue.claim(this.kinds()); } catch (e) { this.onError?.(null, e); break; }
+        try { job = this.queue.claim(this.kinds(name)); } catch (e) { this.onError?.(null, e); break; }
         if (!job) break;
-        this.current = this.runOne(job);
-        await this.current;
-        this.current = null;
+        lane.current = this.runOne(job);
+        await lane.current;
+        lane.current = null;
       }
     } finally {
-      this.busy = false;
+      lane.busy = false;
       this.schedule();
     }
   }

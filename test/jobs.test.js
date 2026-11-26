@@ -138,7 +138,7 @@ test('the work after a recording survives a quit in the middle and finishes at t
   const n = one.notes.create({ title: 'Budget review' });
   one.notes.addSegments(n.id, [{ speaker: 'me', text: 'We agreed the marketing budget for the spring campaign and the hiring plan.', startMs: 0, endMs: 4000, channel: 'mic' }]);
   one.bus.publish('recording.stopped', { noteId: n.id, durationMs: 4000 });
-  const first = one.jobs.claim();
+  const first = one.jobs.claim(['note.names']);
   assert.equal(first.kind, 'note.names');
   one.close();
   await one.settled;
@@ -151,9 +151,10 @@ test('the work after a recording survives a quit in the middle and finishes at t
   await two.ready;
   await until(() => seen.includes(n.id));
   await two.runner.idle();
-  const byKind = Object.fromEntries(two.jobs.list().map((j) => [j.kind, j]));
+  const chain = two.jobs.list().filter((j) => j.kind.startsWith('note.'));   // (the start-up jobs for items and people are not part of the chain)
+  const byKind = Object.fromEntries(chain.map((j) => [j.kind, j]));
   assert.deepEqual(Object.keys(byKind).sort(), ['note.insights', 'note.names', 'note.summarize']);
-  assert.ok(Object.values(byKind).every((j) => j.state === 'done'), JSON.stringify(two.jobs.list()));
+  assert.ok(chain.every((j) => j.state === 'done'), JSON.stringify(chain));
   assert.equal(byKind['note.names'].attempts, 2, 'the interrupted step ran again');
 });
 
@@ -171,15 +172,61 @@ test('the Activity API lists jobs with their meeting, and runs a failed one agai
   await app.runner.stop();
   const n = app.notes.create({ title: 'Weekly' });
   const j = app.jobs.enqueue('note.insights', { noteId: n.id }, { maxAttempts: 1 });
-  app.jobs.claim();
+  app.jobs.claim(['note.insights']);
   app.jobs.fail(j.id, new Error('AI server unreachable'));
   const list = await call('GET', '/api/jobs');
   assert.equal(list.status, 200);
   assert.equal(list.body.counts.failed, 1);
-  assert.deepEqual(list.body.jobs[0].note, { id: n.id, title: 'Weekly' });
-  assert.equal(list.body.jobs[0].error, 'AI server unreachable');
+  const mine = list.body.jobs.find((x) => x.id === j.id);
+  assert.deepEqual(mine.note, { id: n.id, title: 'Weekly' });
+  assert.equal(mine.error, 'AI server unreachable');
   const again = await call('POST', `/api/jobs/${j.id}/retry`);
   assert.equal(again.body.state, 'queued');
   assert.equal((await call('POST', `/api/jobs/${j.id}/retry`)).status, 409, 'a waiting job is not retried twice');
   assert.equal((await call('POST', '/api/jobs/99999/cancel')).status, 404);
+});
+
+test('jobs in different lanes run at the same time: a long scan does not hold up the other work', async () => {
+  const q = new JobQueue(open(':memory:'));
+  const r = new JobRunner({ queue: q });
+  const order = [];
+  let release;
+  const gate = new Promise((res) => { release = res; });
+  r.register('slow', async () => { order.push('slow:start'); await gate; order.push('slow:end'); }, { lane: 'sources' });
+  r.register('quick', async () => { order.push('quick'); });
+  r.enqueue('slow', {});
+  r.enqueue('quick', {});
+  r.start();
+  await new Promise((res) => setTimeout(res, 50));
+  assert.deepEqual([...order].sort(), ['quick', 'slow:start'], 'quick ran while slow was still running');
+  release();
+  await r.idle();
+  assert.equal(order.at(-1), 'slow:end');
+  await r.stop();
+});
+
+test('the AI-run ledger notes every call and whether it left this computer, without keeping any text', async (t) => {
+  const { createApp } = require('../src/server/app');
+  const { startFakeLlm } = require('./fake-llm');
+  const dataDir = tmpDir('wb-ledger-');
+  const app = createApp({ dataDir, version: 'test', platform: { id: 'fake', session: 'test', capture: { mic: 'renderer', system: 'renderer' }, async capabilities() { return { platform: 'fake', notes: [] }; }, async listMics() { return []; }, createMicSource() { return null; }, async createSystemSource() { return null; }, async micActivity() { return { supported: false, active: false, apps: [] }; }, async paste() { return { ok: false }; }, clipboard: null } });
+  const llm = await startFakeLlm(() => 'A short answer');
+  t.after(() => { llm.close(); app.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  await app.ready;
+  app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: llm.url, model: 'fake-model' } });
+  const secret = 'The quarterly numbers are confidential';
+  assert.equal(await app.scheduler.client('chat').complete([{ role: 'user', content: secret }]), 'A short answer');
+  let runs = app.aiRuns.list();
+  assert.equal(runs.length, 1);
+  assert.deepEqual([runs[0].lane, runs[0].model, runs[0].local, runs[0].ok, runs[0].charsIn, runs[0].charsOut], ['chat', 'fake-model', true, true, secret.length, 14]);
+  assert.ok(!JSON.stringify(app.db.prepare('SELECT * FROM ai_runs').all()).includes('quarterly'), 'the text itself is never kept');
+  // a server somewhere else: the call is recorded as one that left the computer, even though it fails here
+  app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: 'http://203.0.113.9:9/v1' } });
+  await assert.rejects(app.scheduler.client('background').complete([{ role: 'user', content: 'hello' }], { signal: AbortSignal.timeout(300) }));
+  runs = app.aiRuns.list();
+  assert.deepEqual([runs[0].lane, runs[0].host, runs[0].local, runs[0].ok], ['background', '203.0.113.9:9', false, false]);
+  assert.deepEqual([app.aiRuns.summary().total, app.aiRuns.summary().remote, app.aiRuns.summary().remoteChars], [2, 1, 5]);
+  const old = app.db.prepare('INSERT INTO ai_runs (at, lane) VALUES (?, ?)').run(Date.now() - 200 * 86400000, 'chat');
+  assert.equal(app.aiRuns.prune(), 1, 'old entries go');
+  assert.ok(old);
 });

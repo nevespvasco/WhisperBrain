@@ -11,13 +11,15 @@ const kp = require('./keyphrases');
 const TAG_COLORS = ['#7c5cff', '#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#ec4899', '#14b8a6', '#8b5cf6', '#f97316', '#64748b'];
 const LINK_KINDS = ['notion', 'linear', 'obsidian', 'url', 'webhook', 'calendar'];
 const clean = (s, n = 500) => String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
-const personKey = (name) => kp.fold(String(name || '').trim()).replace(/\s+/g, ' ');
+const { Entities, personKey } = require('../graph/entities');
 const safeSnippet = (s) => String(s || '');
 
 class Knowledge {
   constructor({ db, notes, settings, bus }) {
     Object.assign(this, { db, notes, settings, bus });
     this.corpus = null; // cached docFreq for offline topics
+    this.entities = new Entities({ db, settings, bus });   // people: identities, merges, mentions (src/graph/entities.js)
+    this.entities.attach();
     bus?.subscribe((e) => { if (['note.created', 'note.deleted', 'note.updated', 'recording.stopped'].includes(e.type)) this.corpus = null; });
   }
 
@@ -397,52 +399,22 @@ class Knowledge {
   removeLink(id) { return this.db.prepare('DELETE FROM note_links WHERE id = ?').run(id).changes > 0; }
 
   // ---------- people ----------
-  people({ q } = {}) {
-    const me = this.settings.get('userName');
-    const map = new Map();
-    const add = (name, { noteId, at, talkMs = 0, email = '' }) => {
-      const k = personKey(name);
-      if (!k || /^(speaker|orador|room speaker|them|me|unknown)( \d+)?$/.test(k)) return;
-      const p = map.get(k) || { key: k, name: name.trim(), emails: new Set(), notes: new Set(), talkMs: 0, lastAt: 0, isMe: !!me && personKey(me) === k };
-      if (email) p.emails.add(email.toLowerCase());
-      if (noteId) p.notes.add(noteId);
-      p.talkMs += talkMs;
-      p.lastAt = Math.max(p.lastAt, at || 0);
-      map.set(k, p);
-    };
-    for (const r of this.db.prepare(`SELECT ns.note_id AS noteId, n.created_at AS at, ns.speaker_id AS speakerId, ns.channel,
-        COALESCE(NULLIF(ns.name, ''), v.name, '') AS name,
-        (SELECT COALESCE(SUM(end_ms - start_ms), 0) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS talkMs
-      FROM note_speakers ns JOIN notes n ON n.id = ns.note_id LEFT JOIN voices v ON v.id = ns.voice_id`).all()) {
-      const name = r.name || (r.speakerId === 'm1' ? me : '');
-      if (name) add(name, r);
-    }
-    for (const n of this.db.prepare('SELECT id, attendees, created_at AS at FROM notes').all()) {
-      for (const a of JSON.parse(n.attendees || '[]')) add(a.name || (a.email || '').split('@')[0], { noteId: n.id, at: n.at, email: a.email || '' });
-    }
-    let list = [...map.values()].map((p) => ({ key: p.key, name: p.name, emails: [...p.emails], meetings: p.notes.size, talkMs: p.talkMs, lastAt: p.lastAt, isMe: p.isMe }));
-    if (q) { const f = personKey(q); list = list.filter((p) => p.key.includes(f) || p.emails.some((e) => e.includes(f))); }
-    return list.sort((a, b) => b.meetings - a.meetings || b.lastAt - a.lastAt);
-  }
+  // People are entities with identities (src/graph/entities.js); this keeps the shape the pages already read.
+  people({ q } = {}) { return this.entities.list({ q }); }
   person(key) {
-    const p = this.people().find((x) => x.key === personKey(key));
+    const id = this.entities.find(key);
+    const p = id && this.entities.list().find((x) => x.id === id);
     if (!p) return null;
-    const noteIds = new Set();
-    for (const r of this.db.prepare('SELECT ns.note_id AS id, COALESCE(NULLIF(ns.name, \'\'), v.name, \'\') AS name, ns.speaker_id AS sid FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id').all()) {
-      if (personKey(r.name || (r.sid === 'm1' && p.isMe ? p.name : '')) === p.key) noteIds.add(r.id);
-    }
-    for (const n of this.db.prepare('SELECT id, attendees FROM notes').all()) {
-      if (JSON.parse(n.attendees || '[]').some((a) => personKey(a.name || (a.email || '').split('@')[0]) === p.key || (a.email && p.emails.includes(a.email.toLowerCase())))) noteIds.add(n.id);
-    }
-    const notes = this.cards([...noteIds].map((id) => this.notes.get(id)).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt));
+    const names = this.entities.nameKeys(id);
+    const notes = this.cards(this.entities.noteIds(id).map((nid) => this.notes.get(nid)).filter(Boolean).sort((a, b) => b.createdAt - a.createdAt));
     const quotes = [];
     for (const n of notes.slice(0, 30)) {
-      for (const s of this.notes.segments(n.id)) if (personKey(this.label(s)) === p.key && words(s.text).length >= 5) quotes.push({ segmentId: s.id, noteId: n.id, noteTitle: n.title, at: n.createdAt, startMs: s.startMs, label: this.label(s), text: s.text });
+      for (const s of this.notes.segments(n.id)) if (names.has(personKey(this.label(s))) && words(s.text).length >= 5) quotes.push({ segmentId: s.id, noteId: n.id, noteTitle: n.title, at: n.createdAt, startMs: s.startMs, label: this.label(s), text: s.text });
     }
     const topics = new Map();
     for (const n of notes) for (const t of n.topics || []) { const e = topics.get(t.id) || { id: t.id, name: t.name, count: 0 }; e.count++; topics.set(t.id, e); }
     const actions = this.actionItems({ owner: p.name.split(' ')[0] }).filter((a) => personKey(a.owner).includes(personKey(p.name.split(' ')[0])));
-    return { ...p, notes, quotes: quotes.sort((a, b) => b.text.length - a.text.length).slice(0, 25).sort((a, b) => b.at - a.at || a.startMs - b.startMs), topics: [...topics.values()].sort((a, b) => b.count - a.count).slice(0, 15), actions };
+    return { ...p, ...this.entities.identities(id), notes, quotes: quotes.sort((a, b) => b.text.length - a.text.length).slice(0, 25).sort((a, b) => b.at - a.at || a.startMs - b.startMs), topics: [...topics.values()].sort((a, b) => b.count - a.count).slice(0, 15), actions };
   }
 
   // ---------- analytics ----------
@@ -535,16 +507,11 @@ class Knowledge {
       JOIN topics t ON t.id = a.topic_id WHERE a.note_id = ?`).all(noteId)) bump(r.id, 2 * r.w + 0.5, r.name);
     for (const r of this.db.prepare(`SELECT b.note_id AS id, t.name FROM note_tags a JOIN note_tags b ON b.tag_id = a.tag_id AND b.note_id <> a.note_id JOIN tags t ON t.id = a.tag_id WHERE a.note_id = ?`).all(noteId)) bump(r.id, 1, `#${r.name}`);
     const me = this.notes.get(noteId);
-    const mine = new Set(this.people().filter(() => true).map((p) => p.key));
     if (me) {
-      const names = new Set([...me.attendees.map((a) => personKey(a.name || a.email)), ...this.notes.segments(noteId).map((s) => personKey(this.label(s)))].filter((k) => k && mine.has(k)));
-      if (names.size) {
-        for (const n of this.notes.list({ limit: 400 })) {
-          if (n.id === noteId) continue;
-          const theirs = new Set(n.attendees.map((a) => personKey(a.name || a.email)));
-          for (const k of names) if (theirs.has(k)) bump(n.id, 0.6, n.attendees.find((a) => personKey(a.name || a.email) === k)?.name || k);
-        }
-      }
+      // meetings that have the same people in them: read from the mentions, not worked out from name strings
+      this.entities.refresh();
+      for (const r of this.db.prepare(`SELECT m2.note_id AS id, e.name FROM mentions m1 JOIN mentions m2 ON m2.entity_id = m1.entity_id AND m2.note_id <> m1.note_id
+        JOIN entities e ON e.id = m1.entity_id WHERE m1.note_id = ? AND m2.role = 'attendee' GROUP BY m2.note_id, m1.entity_id`).all(noteId)) bump(r.id, 0.6, r.name);
     }
     const ids = [...score.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, limit);
     return ids.map(([id, e]) => ({ ...this.cards([this.notes.get(id)].filter(Boolean))[0], reasons: [...e.why].slice(0, 4), score: Math.round(e.score * 100) / 100 })).filter((c) => c.id);

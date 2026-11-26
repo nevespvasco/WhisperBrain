@@ -42,6 +42,10 @@ const { TranscriptService } = require('../transcripts/service');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 const { JobQueue } = require('../jobs/queue');
 const { JobRunner } = require('../jobs/runner');
+const { AiRuns } = require('../audit/ai-runs');
+const { ItemStore } = require('../items/store');
+const { SourceManager } = require('../connectors/manager');
+const { pdfToText } = require('../importers/pdf');
 
 function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy(), permissions = () => ({}) } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
@@ -61,7 +65,8 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   const plat = platform || createPlatform({ clipboard });
   const llm = new LlmClient(() => settings.get('llm'));
   // One queue in front of the AI server for every feature: the live assistant first, then chat, summaries, translation, background work
-  const scheduler = new LlmScheduler(llm);
+  const aiRuns = new AiRuns(conn);
+  const scheduler = new LlmScheduler(llm, { onRun: (r) => aiRuns.record(r) });   // every AI call is noted (never its text): the egress log
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const briefings = new Briefings({ db: conn, bus });
   const ai = new AiService({ notes, templates, settings, llm: scheduler.client('chat'), bus, knowledge });
@@ -124,6 +129,18 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
   });
 
+  // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
+  // in its own lane, so a big vault being read never holds up the summary of a meeting.
+  const items = new ItemStore(conn, { bus });
+  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), watch: detect });
+  const tick = () => new Promise((r) => setImmediate(r));
+  runner.register('items.backfill', async () => { let n = 0, c; while ((c = items.backfillNotes(200))) { n += c; await tick(); } return { notes: n }; }, { lane: 'sources' });
+  runner.register('entities.backfill', async ({ after = 0 }) => { let cur = after; for (;;) { const next = knowledge.entities.backfillBatch(cur, 100); if (next == null) break; cur = next; await tick(); } return {}; }, { lane: 'sources' });
+  bus.subscribe((e) => {
+    if (e.type !== 'note.created' && e.type !== 'note.updated') return;
+    try { items.syncNote(e.data.id); } catch { /* the meeting is gone already */ }
+  });
+
   // Topics/glossary/action items for a note; never throws (it is background work).
   async function analyze(id, { local = false } = {}) {
     if (!settings.get('autoInsights') && !local) return null;
@@ -164,7 +181,12 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day
   const sweep = () => { try { account.applyRetention({ days: settings.get('retentionDays') }); } catch (e) { bus.publish('account.error', { message: `retention: ${e.message}` }); } };
   ready.then(sweep).catch(() => {});
-  ready.then(() => runner.start()).catch(() => {});   // after the secrets are open: the steps may call the AI server
+  ready.then(() => {   // after the secrets are open: the steps may call the AI server
+    runner.start();
+    runner.enqueue('items.backfill', {}, { key: 'once', maxAttempts: 2 });       // meetings made before items existed
+    runner.enqueue('entities.backfill', {}, { key: 'once', maxAttempts: 2 });    // people from speakers, attendees and voice prints
+    sources.start();
+  }).catch(() => {});
   // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
   const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
   ready.then(wantSemantic).catch(() => {});
@@ -179,7 +201,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, items, sources, aiRuns, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -215,7 +237,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
         vadInstalled: models.vadInstalled(), speakerModel: models.speakerInstalled() && models.segmentationInstalled(),
         speakerModelMB: (models.speakerInstalled() ? 0 : models.speaker.sizeMB) + (models.segmentationInstalled() ? 0 : models.segmentation.sizeMB),
         llmConfigured: !!settings.get('llm').baseUrl,
-        stats: { ...notes.stats(), ...knowledge.stats() },
+        stats: { ...notes.stats(), ...knowledge.stats(), documents: items.count() },
         sources: notes.sourceCounts(),
         detector: typeof detector.status === 'function' ? detector.status() : null,
         pdf: !!renderPdf,
@@ -225,6 +247,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     },
     close() {
       self.pendingGoogleAuth?.cancel?.();
+      sources.stop();
       runner.stop();   // takes no new job; one cut short by the closing database runs again at the next start
       detector.stop();
       assistant.close();

@@ -377,6 +377,7 @@ function createRoutes(app) {
   add('DELETE', '/api/calendar/sources/:id', async ({ params }) => { app.calendar.removeSource(params.id); return { ok: true }; });
   add('GET', '/api/calendar/current', async () => ({ event: await app.calendar.current() }));
 
+  require('./routes-brain')(add, app, { HttpError });   // before the knowledge routes: /api/people/proposals must not be read as a person's key
   require('./routes-knowledge')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-briefings')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-assistant')(add, app, { HttpError, noteOr404, readBody });
