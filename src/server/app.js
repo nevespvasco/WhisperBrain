@@ -40,6 +40,8 @@ const { loadPolicy } = require('../core/policy');
 const { buildSetup, which } = require('../platform/setup');
 const { TranscriptService } = require('../transcripts/service');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
+const { JobQueue } = require('../jobs/queue');
+const { JobRunner } = require('../jobs/runner');
 
 function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0', detect = false, openExternal = null, renderPdf = null, discordLibs = null, captureWindow = null, secretBox = null, policy = loadPolicy(), permissions = () => ({}) } = {}) {
   if (!dataDir) throw new Error('dataDir is required');
@@ -81,25 +83,45 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   // ...and the same while the meeting is still going, for the voices that have no name yet
   new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: () => settings.get('speakerDetection') && namesFromTranscriptAllowed(), userName: () => settings.get('userName') }).attach();
 
-  // When a recording ends: enhance automatically if asked, then fill the knowledge layer (topics, glossary,
-  // action items). Without auto-enhance, offline topics are still extracted so search and topics work.
-  bus.subscribe(async (e) => {
-    if (e.type !== 'recording.stopped') return;
-    const id = e.data.noteId;
-    if (!notes.get(id)) return;
+  // Background work lives in the jobs table (src/jobs), so quitting midway loses nothing: what was running is run again at the
+  // next start. When a recording ends: names from the conversation → the summary (if auto-enhance is on) → topics, glossary
+  // and action items. Each step is its own job and queues the next one; each is safe to run twice. Failures are reported as
+  // before (a warning or a "failed" event) and the chain goes on, exactly like the in-memory version it replaces.
+  const jobs = new JobQueue(conn, { bus });
+  const runner = new JobRunner({ queue: jobs, onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
+  const NEXT = { 'note.names': 'note.summarize', 'note.summarize': 'note.insights' };
+  const chain = (step, noteId, payload, enqueue) => { if (NEXT[step]) enqueue(NEXT[step], { noteId, ...payload }, { key: noteId }); };
+  runner.register('note.names', async ({ noteId }, { enqueue }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
     if (namesFromTranscriptAllowed()) {
-      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, id); if (r.named.length) notes.reindex(id); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
+      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
+    chain('note.names', noteId, {}, enqueue);
+    return null;
+  });
+  runner.register('note.summarize', async ({ noteId }, { enqueue }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
     if (settings.get('autoSummarize')) {
       try {
-        bus.publish('note.summarizing', { id });
-        await ai.summarize(id);
+        bus.publish('note.summarizing', { id: noteId });
+        await ai.summarize(noteId);
       } catch (err) {
-        bus.publish('note.summarize-failed', { id, message: err.message });
+        bus.publish('note.summarize-failed', { id: noteId, message: err.message });
       }
     }
-    await analyze(id, { local: !settings.get('autoSummarize') || !ai.configured() });
+    chain('note.summarize', noteId, { local: !settings.get('autoSummarize') || !ai.configured() }, enqueue);
+    return null;
+  });
+  runner.register('note.insights', async ({ noteId, local }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
+    await analyze(noteId, { local: !!local });
+    return null;
+  });
+  bus.subscribe((e) => {
+    if (e.type !== 'recording.stopped') return;
+    if (!notes.get(e.data.noteId)) return;
+    runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
   });
 
   // Topics/glossary/action items for a note; never throws (it is background work).
@@ -142,6 +164,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day
   const sweep = () => { try { account.applyRetention({ days: settings.get('retentionDays') }); } catch (e) { bus.publish('account.error', { message: `retention: ${e.message}` }); } };
   ready.then(sweep).catch(() => {});
+  ready.then(() => runner.start()).catch(() => {});   // after the secrets are open: the steps may call the AI server
   // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
   const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
   ready.then(wantSemantic).catch(() => {});
@@ -156,7 +179,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -202,6 +225,7 @@ function createApp({ dataDir, platform, modelsDir, clipboard, version = '0.0.0',
     },
     close() {
       self.pendingGoogleAuth?.cancel?.();
+      runner.stop();   // takes no new job; one cut short by the closing database runs again at the next start
       detector.stop();
       assistant.close();
       clearInterval(retentionTimer);

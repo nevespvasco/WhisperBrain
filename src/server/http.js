@@ -381,6 +381,7 @@ function createRoutes(app) {
   require('./routes-briefings')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-assistant')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-meet')(add, app, { HttpError });
+  require('./routes-jobs')(add, app, { HttpError });
 
   // events (SSE)
   add('GET', '/api/events', async ({ req, res }) => {

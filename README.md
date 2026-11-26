@@ -196,7 +196,7 @@ flowchart LR
 | **Import** | Audio and video (transcribed on-device); VTT/SRT (Zoom, Teams, Meet), TXT (Otter-style and others), Markdown with frontmatter, JSON (WhisperBrain, Whisper, AssemblyAI, Deepgram), DOCX, HTML, CSV; pasted text; drag and drop anywhere; Notion pages, Obsidian notes and Linear issues |
 | **Export & share** | Markdown, PDF, HTML, plain text, Obsidian Markdown (YAML + `[[links]]`), JSON, SRT, WebVTT; copy as rich text; email; print; bulk ZIP |
 | **Integrations** | Notion (pages into a page or database), Obsidian (vault folder, updated in place), Linear (an issue with the summary, or one per action item, with assignee matching), signed webhooks (Zapier, Make, n8n, your server); optional auto-export after enhancing. Setup: [docs/integrations.md](docs/integrations.md) |
-| **App** | Light and dark, English and Portuguese, responsive from phone width to wide desktop, collapsible sidebar, keyboard shortcuts. Local account, data overview, backups, saved voices, danger zone |
+| **App** | Light and dark, English and Portuguese, responsive from phone width to wide desktop, a four-door menu (Today, Ask, Library, Setup) with the Record button always on it, a compact mode, keyboard shortcuts, an Activity page for background work. Local account, data overview, backups, saved voices, danger zone |
 
 </details>
 

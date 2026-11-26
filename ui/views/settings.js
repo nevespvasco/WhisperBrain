@@ -5,8 +5,9 @@ import { listMicrophones } from '../capture.js';
 import { openExport } from './transfer.js';
 import * as meetPanel from './meet-panel.js';
 import { openSetup } from './setup.js';
+import { SETTINGS_SECTIONS } from '../nav.js';
 
-const SECTIONS = [['account', 'Account', 'user'], ['general', 'Appearance', 'sun'], ['meetings', 'Meetings & detection', 'video'], ['audio', 'Audio & transcription', 'mic'], ['ai', 'AI', 'sparkles'], ['translation', 'Translation', 'globe'], ['assistant', 'Assistant', 'wand'], ['templates', 'Templates', 'file'], ['dictation', 'Dictation', 'waves'], ['shortcuts', 'Shortcuts', 'bolt']];
+const SECTIONS = SETTINGS_SECTIONS;   // shared with the Setup door's panel (ui/nav.js)
 let modelListener = null; // the Audio section's download listener (see bind)
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); document.documentElement.dataset.theme = S.settings.theme; return S.settings; };
 const row = (title, sub, control) => `<div class="set-row"><div class="l"><b>${esc(title)}</b>${sub ? `<span>${sub}</span>` : ''}</div>${control}</div>`;
@@ -129,7 +130,8 @@ const SECTION = {
     return `<section class="panel"><div class="panel-head"><h3>${t('Appearance')}</h3></div>
       ${row(t('Language'), '', `<select id="set-lang"><option value="en" ${s.language === 'en' ? 'selected' : ''}>English</option><option value="pt" ${s.language === 'pt' ? 'selected' : ''}>Português</option></select>`)}
       ${row(t('Theme'), '', `<div class="seg-ctl" role="tablist">${[['system', t('System'), 'settings'], ['light', t('Light'), 'sun'], ['dark', t('Dark'), 'moon']].map(([v, l, ic]) => `<button type="button" role="tab" data-theme-v="${v}" aria-selected="${s.theme === v}">${icon(ic, 'sm')}${l}</button>`).join('')}</div>`)}
-      ${tog('set-collapsed', s.sidebarCollapsed, t('Compact sidebar'), t('Icons only; hover for names.'))}</section>`;
+      ${row(t('Start page'), t('What you see when you open the app.'), `<select id="set-start"><option value="home" ${s.startPage !== 'meetings' ? 'selected' : ''}>${t('Home')}</option><option value="meetings" ${s.startPage === 'meetings' ? 'selected' : ''}>${t('Meetings')}</option></select>`)}
+      ${tog('set-collapsed', s.sidebarCollapsed, t('Compact sidebar'), t('Only the four doors on the left; the list next to them is hidden.'))}</section>`;
   },
   async meetings() {
     const s = S.settings;
@@ -258,7 +260,7 @@ function bind(main, sec, body) {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
     'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
-    'set-collapsed': (v) => ({ sidebarCollapsed: v }),
+    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }),
     'tr-enabled': (v) => ({ translation: { enabled: v } }), 'tr-live': (v) => ({ translation: { live: v } }), 'tr-view': (v) => ({ translation: { view: v } }), 'tr-notes': (v) => ({ translation: { notesLanguage: v } }),
     'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
     'as-enabled': (v) => ({ assistant: { enabled: v } }), 'as-mode': (v) => ({ assistant: { mode: v } }), 'as-trigger': (v) => ({ assistant: { trigger: v } }), 'as-reveal': (v) => ({ assistant: { revealMs: Number(v) } }),

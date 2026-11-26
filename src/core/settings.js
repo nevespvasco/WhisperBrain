@@ -85,6 +85,7 @@ const DEFAULTS = {
   perAppCapture: true,          // capture only the meeting application's own audio when it can be told (Linux, macOS 14.2+, Windows with the helper); off = everything the computer plays
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
+  startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
   secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
   google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [] },
@@ -177,6 +178,7 @@ function validate(key, value) {
   if (key === 'secretStorage' && !['ask', 'plaintext', 'never'].includes(value)) throw new Error('secretStorage must be ask, plaintext or never');
   if (key === 'language' && !['en', 'pt'].includes(value)) throw new Error('language must be en or pt');
   if (key === 'theme' && !['system', 'light', 'dark'].includes(value)) throw new Error('invalid theme');
+  if (key === 'startPage' && !['home', 'meetings'].includes(value)) throw new Error('startPage must be home or meetings');
   if (key === 'asrThreads') return Math.max(1, Math.min(16, Math.round(value)));
   if (key === 'speakerThreshold') return Math.max(0.3, Math.min(0.95, value));
   if ((key === 'micNoiseSuppression' || key === 'micAutoGain') && !['auto', 'on', 'off'].includes(value)) throw new Error(`${key} must be auto, on or off`);

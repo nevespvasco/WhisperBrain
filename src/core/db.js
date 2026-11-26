@@ -316,6 +316,29 @@ const MIGRATIONS = [
   `
   UPDATE briefings SET kind = 'notes' WHERE kind IN ('resume', 'job');
   `,
+  // v15: durable background work (src/jobs, docs/adr/0001-brain-data-model.md). key deduplicates while a job is pending;
+  // lease_until marks a running job as abandoned once it passes (the app quit or crashed).
+  `
+  CREATE TABLE jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    key TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'running', 'done', 'failed', 'cancelled')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    run_after INTEGER NOT NULL DEFAULT 0,
+    lease_until INTEGER,
+    last_error TEXT,
+    result TEXT,
+    created_at INTEGER NOT NULL,
+    started_at INTEGER,
+    finished_at INTEGER,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX jobs_ready ON jobs(state, run_after);
+  CREATE INDEX jobs_key ON jobs(kind, key);
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
@@ -323,9 +346,23 @@ function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : {});
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  if (file !== ':memory:') backupBeforeMigrating(db, file);
   migrate(db);
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }
   return db;
+}
+
+// Before an existing database moves to a newer schema, a copy of it as it was is written next to it
+// (whisperbrain.sqlite.before-v15), once per schema version: the way back if an update goes wrong. A new, empty database has
+// nothing to keep. A copy that cannot be written stops the update: better an app that does not open than data at risk.
+function backupBeforeMigrating(db, file) {
+  const { user_version: current } = db.prepare('PRAGMA user_version').get();
+  if (current === 0 || current >= MIGRATIONS.length) return null;
+  const copy = `${file}.before-v${MIGRATIONS.length}`;
+  if (fs.existsSync(copy)) return copy;
+  db.exec(`VACUUM INTO '${copy.replaceAll("'", "''")}'`);
+  try { fs.chmodSync(copy, 0o600); } catch { /* not supported on this fs */ }
+  return copy;
 }
 
 function migrate(db) {
