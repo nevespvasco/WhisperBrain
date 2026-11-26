@@ -23,6 +23,9 @@ import * as sources from './views/sources.js';
 import * as documents from './views/documents.js';
 import * as inbox from './views/inbox.js';
 import * as promises from './views/promises.js';
+import * as review from './views/review.js';
+import * as projects from './views/projects.js';
+import * as rules from './views/rules.js';
 import { openBrief } from './brief.js';
 import { setupOnFirstRun } from './views/setup.js';
 import { DOORS, door, doorOf, isCurrent } from './nav.js';
@@ -52,7 +55,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents, inbox, promises,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents, inbox, promises, review, projects, project: projects, rules,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');
@@ -148,6 +151,7 @@ sidebar.addEventListener('click', async (e) => {
       const m = menu(el, [
         { label: t('Integrations'), icon: 'plug', href: '#/integrations' },
         { label: t('Settings'), icon: 'settings', href: '#/settings' },
+        ...(S.lock?.enabled ? ['sep', { label: t('Lock now'), icon: 'lock', run: async () => { await api('POST', '/api/lock/lock'); showLock(); } }] : []),
       ]);
       m.style.minWidth = `${el.offsetWidth}px`;
     }
@@ -307,11 +311,31 @@ window.addEventListener('drop', (e) => {
   openImport({ files: [...e.dataTransfer.files] });
 });
 
+// ---------- the app lock ----------
+// While locked the app answers only this screen. (It keeps recording if a recording was already running.)
+function showLock() {
+  if ($('#lockscreen')) return;
+  const el = document.createElement('div');
+  el.id = 'lockscreen';
+  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', t('Locked'));
+  el.innerHTML = `<form class="lock-card"><span class="logo">${icon('logo')}</span><h1>WhisperBrain</h1><p class="muted">${t('Locked. Enter your passphrase.')}</p>
+    <input type="password" id="lock-pass" autocomplete="current-password" aria-label="${t('Passphrase')}" autofocus><div class="small lock-err" id="lock-err" role="alert"></div>
+    <button class="btn primary" type="submit">${icon('lock', 'sm')} ${t('Unlock')}</button></form>`;
+  document.body.append(el);
+  const input = el.querySelector('#lock-pass'); input.focus();
+  el.querySelector('form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try { await api('POST', '/api/lock/unlock', { passphrase: input.value }); location.reload(); } catch (err) { el.querySelector('#lock-err').textContent = err.message; input.select(); }
+  });
+}
+window.addEventListener('wb:locked', showLock);
+
 // ---------- boot ----------
 async function boot() {
   try {
     [S.settings, S.state, S.templates, S.models] = await Promise.all([api('GET', '/api/settings'), api('GET', '/api/state'), api('GET', '/api/templates'), api('GET', '/api/models')]);
     S.detector = S.state.detector;
+    S.lock = await api('GET', '/api/lock').catch(() => null);
     applyTheme();
     await refreshCounts();
     syncRec(S.state.recording);
@@ -322,6 +346,7 @@ async function boot() {
     route();
     setupOnFirstRun();   // the first launch only, and only if something needs attention
   } catch (e) {
+    if (e instanceof ApiError && e.status === 423) { showLock(); return; }
     main.innerHTML = `<div class="page"><div class="banner warn mt">${icon('alert')}<div class="grow">${esc(e.message)} — ${e instanceof ApiError && e.status === 401 ? 'open the app from its launcher or the printed login URL.' : 'is the server running?'}</div></div></div>`;
   }
 }

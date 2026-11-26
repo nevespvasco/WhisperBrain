@@ -86,6 +86,8 @@ const DEFAULTS = {
   autoInsights: true,           // after enhancing, extract topics, glossary terms and action items
   sidebarCollapsed: false,
   backupDir: '',                 // a folder for backups of the database ('' = none); with one, a copy is made every day while the app runs (src/core/backup.js)
+  ocrLanguages: 'por+eng',        // tesseract languages for scanned PDFs, where pdftoppm and tesseract are installed (src/importers/ocr.js)
+  rerank: false,                 // let the AI server order the excerpts for a question by how well each answers it (one extra request per question)
   autoAssertions: true,          // after a meeting, look for decisions and commitments (each one a suggestion with its quote; nothing is accepted by itself)
   embeddingModel: '',            // an embedding model on the AI server (e.g. embeddinggemma): search by meaning as well as by words; '' = words only (src/search)
   startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)

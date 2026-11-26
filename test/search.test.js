@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
 const fs = require('node:fs');
+const path = require('node:path');
 const { createApp } = require('../src/server/app');
 const { chunkText, queryWords } = require('../src/search/index');
 const { startFakeLlm } = require('./fake-llm');
@@ -196,4 +197,20 @@ test('the retrieval evaluation counts what comes back and how high', async (t) =
   const r = await evaluate([{ q: 'preço plano', expect: ['Preço'] }, { q: 'contratações', expect: ['Equipa', 'Preço'] }, { q: 'nada disto existe', expect: ['Preço'] }], (q) => app.chunkIndex.search(q), { k: 3 });
   assert.deepEqual([r.cases, r.recallAtK, r.mrr], [3, 0.5, 0.667]);
   assert.deepEqual(r.rows.map((x) => x.firstRank), [1, 1, null]);
+});
+
+test('Portuguese: a hand-written corpus and questions, so a change to chunking or ranking that hurts pt-PT is noticed', async (t) => {
+  const { evaluate } = require('../src/search/eval');
+  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/eval-pt.json'), 'utf8'));
+  const app = await boot(t);
+  const src = folder(app);
+  fx.corpus.forEach((d, i) => app.items.upsert(src.id, { externalId: `d${i}`, title: d.title, text: d.text }));
+  app.chunkIndex.syncBatch(100);
+  const r = await evaluate(fx.questions, (q) => app.chunkIndex.search(q, { limit: 10 }), { k: 3 });
+  console.log(`      pt-PT, words only: recall@3 ${r.recallAtK}, MRR ${r.mrr} (${r.cases} questions); missed: ${r.rows.filter((x) => x.found < x.wanted).map((x) => x.q).join(' | ') || 'none'}`);
+  // a floor, not a target: this is the word index alone. Inflections ("contratar" for "contratações") are what a meaning index is for.
+  const hard = await evaluate(fx.hard, (q) => app.chunkIndex.search(q, { limit: 10 }), { k: 3 });
+  console.log(`      hard questions (few words in common): recall@3 ${hard.recallAtK} on ${hard.cases}: the part meaning search has to cover`);
+  assert.ok(r.recallAtK >= 0.8, `recall@3 fell to ${r.recallAtK}`);
+  assert.ok(r.mrr >= 0.7, `MRR fell to ${r.mrr}`);
 });

@@ -44,7 +44,9 @@ async function fakeGoogle() {
       }
       const m = /^\/cal\/calendars\/([^/]+)\/events$/.exec(u.pathname);
       if (m) {
-        const pages = g.events[decodeURIComponent(m[1])] || [[]];
+        if (g.failIncremental && u.searchParams.get('updatedMin')) return json(400, { error: { message: 'bad updatedMin' } });
+        let pages = g.events[decodeURIComponent(m[1])] || [[]];
+        if (u.searchParams.get('updatedMin')) pages = [pages.flat().filter((e) => e.updated && e.updated >= u.searchParams.get('updatedMin'))];
         const i = Number(u.searchParams.get('pageToken') || 0);
         return json(200, { items: pages[i], ...(i + 1 < pages.length && { nextPageToken: String(i + 1) }) });
       }
@@ -272,4 +274,41 @@ test('calendar: merges Google events with ICS, prefixed ids, provider/source, ca
   assert.deepEqual((await cal.events({ force: true })).events.map((e) => e.provider), ['ics']);
   cal.removeSource(cal.sources()[0].id);
   assert.equal(cal.hasSources(), false);
+});
+
+test('google: a refresh reads only what changed since the last look, applies cancellations, and falls back to the whole window on trouble', async (t) => {
+  const g = await fakeGoogle();
+  t.after(g.close);
+  const iso = (ms) => new Date(ms).toISOString();
+  const ev = (id, summary, at, extra = {}) => ({ id, iCalUID: `${id}@g`, summary, start: { dateTime: iso(at) }, end: { dateTime: iso(at + 3600000) }, ...extra });
+  g.events['me@example.com'] = [[ev('a', 'Standup', T0 + 3600000), ev('b', 'Review', T0 + 7200000)]];
+  const { gc, advance } = rig(g, { refreshToken: 'rt', accessToken: 'at', expiresAt: T0 + 86400000, calendars: [{ id: 'me@example.com', selected: true }] });
+  const window = { from: T0, to: T0 + 86400000 };
+  const first = await gc.events(window);
+  assert.deepEqual(first.map((e) => e.summary), ['Standup', 'Review']);
+  const reqs = () => g.apiReqs.filter((r) => r.path.endsWith('/events'));
+  assert.equal(reqs().length, 1);
+  assert.equal(reqs()[0].q.updatedMin, undefined, 'the first read is the whole window');
+  // a minute later: one event moved, one cancelled, one new
+  advance(120000);
+  const stamp = iso(T0 + 100000);
+  g.events['me@example.com'] = [[ev('a', 'Standup (moved)', T0 + 5400000, { updated: stamp }), { id: 'b', status: 'cancelled', updated: stamp }, ev('c', 'New one', T0 + 9000000, { updated: stamp }), ev('d', 'Untouched, not asked for', T0 + 10000000)]];
+  const second = await gc.events(window);
+  assert.equal(reqs().length, 2);
+  assert.ok(reqs()[1].q.updatedMin && reqs()[1].q.showDeleted === 'true', 'only what changed since the last look was asked for');
+  assert.deepEqual(second.map((e) => e.summary).sort(), ['New one', 'Standup (moved)'], 'moved applied, cancelled removed, new added, the rest as it was');
+  // a wider window needs the whole thing again
+  g.events['me@example.com'] = [[ev('a', 'Standup (moved)', T0 + 5400000), ev('c', 'New one', T0 + 9000000), ev('z', 'Next week', T0 + 3 * 86400000)]];
+  assert.equal((await gc.events({ from: T0, to: T0 + 5 * 86400000 })).length, 3);
+  assert.equal(reqs().at(-1).q.updatedMin, undefined);
+  // trouble with the incremental request: read the whole window again instead of failing
+  g.failIncremental = true;
+  advance(60000);
+  assert.equal((await gc.events({ from: T0, to: T0 + 5 * 86400000 })).length, 3);
+  // after twelve hours the whole window is read again
+  g.failIncremental = false; advance(13 * 3600000);
+  const before = reqs().length;
+  await gc.events({ from: T0, to: T0 + 5 * 86400000 });
+  assert.equal(reqs().at(-1).q.updatedMin, undefined);
+  assert.equal(reqs().length, before + 1);
 });

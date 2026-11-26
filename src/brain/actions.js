@@ -3,6 +3,9 @@
 // its exact arguments, shown in the Inbox as plain words, and only an explicit approval runs it, with exactly those arguments. A prompt
 // injected into an e-mail or a transcript can at most make a proposal that a person reads and rejects; there is no tool that skips this.
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const { postWebhook } = require('../integrations/webhook');
 
 const newId = () => `ac_${crypto.randomBytes(6).toString('hex')}`;
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
@@ -74,6 +77,47 @@ const HANDLERS = {
       const issue = await integrations.linear().createIssue({ teamId: args.teamId, title: args.title, description: args.description });
       return { identifier: issue.identifier, url: issue.url };
     },
+  },
+};
+
+const slug = (t) => String(t).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60) || 'promise';
+
+// a webhook you set up in Integrations (Zapier, Make, n8n, Slack, your own server): the promise as JSON. The secret stays in Settings.
+HANDLERS['webhook.post'] = {
+  label: 'Webhook',
+  ready: ({ settings }) => settings.get('webhooks').length > 0,
+  build({ assertion, note, webhookId }, { settings }) {
+    if (!assertion) throw err('an assertion is needed');
+    const hooks = settings.get('webhooks');
+    const hook = hooks.find((w) => w.id === webhookId) || hooks[0];
+    const host = (() => { try { return new URL(hook.url).host; } catch { return hook.url; } })();
+    return { title: `Send this ${assertion.kind} to “${hook.name}” (${host})`, args: { webhookId: hook.id, name: hook.name, host, payload: { event: 'promise.accepted', kind: assertion.kind, text: assertion.text, owner: assertion.owner?.name || '', to: assertion.to?.name || '', due: assertion.dueText || '', dueAt: assertion.dueAt || null, quote: assertion.quote || '', meeting: note?.title || '' } } };
+  },
+  async run(args, { settings }) {
+    const hook = settings.get('webhooks').find((w) => w.id === args.webhookId);
+    if (!hook) throw new Error('That webhook no longer exists.');
+    const r = await postWebhook({ url: hook.url, secret: hook.secret, payload: args.payload });
+    return { status: r.status };
+  },
+};
+
+// a note in your Obsidian vault (Promises/…): the promise, who owes it, when, and the words it came from. Never overwrites a file.
+HANDLERS['obsidian.note'] = {
+  label: 'Obsidian',
+  ready: ({ settings }) => !!settings.get('obsidian').vaultPath,
+  build({ assertion, note }) {
+    if (!assertion) throw err('an assertion is needed');
+    const rel = `Promises/${slug(assertion.text)}.md`;
+    const head = ['source: WhisperBrain', `kind: ${assertion.kind}`, assertion.owner?.name && `owner: ${assertion.owner.name}`, assertion.dueText && `due: ${assertion.dueText}`, note?.title && `meeting: ${note.title}`].filter(Boolean);
+    const md = `---\n${head.join('\n')}\n---\n\n# ${assertion.text}\n${assertion.quote ? `\n> ${assertion.quote}\n` : ''}`;
+    return { title: `Write the note “${rel}” in your Obsidian vault`, args: { relPath: rel, title: assertion.text.slice(0, 200), description: md } };
+  },
+  async run(args, { integrations }) {
+    const vault = integrations.obsidian();
+    const abs = vault.resolve(args.relPath);                 // confined to the vault
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, args.description, { flag: 'wx' });  // 'wx': refuses to overwrite a file that is there
+    return { path: abs };
   },
 };
 

@@ -12,7 +12,11 @@ Folders & vaults → **Connect a service**. Everything is **read-only**, the key
 
 **What the e-mail connector adds to the Inbox:** a thread where you wrote last, asked something, and nobody answered for 3 to 30 days ("No reply yet"). Nothing is sent: it can be opened, turned into a reminder, or dismissed.
 
-**Approved actions.** An action that reaches outside (today: a Linear issue made from a promise you accepted) is *proposed* and waits in the Inbox with its exact text. It runs only when you approve it, with exactly what you saw. Nothing the AI reads (an e-mail, a transcript) can run one; the MCP server has no tool that writes.
+**Discord data package.** Import the ZIP Discord sends when you request your data (Folders & vaults): the messages you wrote, one item per channel per day, private by default.
+
+**Scanned PDFs** are read by OCR where `pdftoppm` and `tesseract` are installed (setting `ocrLanguages`, default `por+eng`); otherwise they are kept as PDFs with no text and the note says what to install.
+
+**Approved actions.** An action that reaches outside (a Linear issue, a webhook you set up in Integrations, or a note written into your Obsidian vault, each made from a promise you accepted) is *proposed* and waits in the Inbox with its exact text. It runs only when you approve it, with exactly what you saw. Nothing the AI reads (an e-mail, a transcript) can run one; the MCP server has no tool that writes.
 
 ## What has and has not been tested
 

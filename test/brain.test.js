@@ -267,3 +267,210 @@ test('the actions API: only a promise you accepted can be proposed, and approvin
   assert.equal(sent, 1);
   assert.equal((await call('POST', '/api/actions', { kind: 'nope', assertionId: suggested.id })).status, 400);
 });
+
+test('a promise somebody else made to you gets a reminder to check with them', async (t) => {
+  const app = await boot(t);
+  app.settings.update({ userName: 'Ana' });
+  const n = meeting(app, 'One', [['Ana', 'hello there my friend'], ['Rui', 'hello to you too my friend']], { attendees: [{ name: 'Ana', email: 'ana@x.pt' }, { name: 'Rui', email: 'rui@x.pt' }] });
+  const due = Date.now() + 3 * 86400000;
+  const theirs = app.assertions.add({ kind: 'commitment', text: 'Send the pricing sheet', owner: 'Rui', dueAt: due, noteId: n.id, origin: 'user' }).item;
+  const mine = app.assertions.add({ kind: 'commitment', text: 'Review the contract', owner: 'Ana', dueAt: due, noteId: n.id, origin: 'user' }).item;
+  app.assertions.decide(theirs.id, 'accept'); app.assertions.decide(mine.id, 'accept');
+  assert.deepEqual(app.reminders.upcoming(7).map((r) => r.text).sort(), ['Check with Rui: Send the pricing sheet', 'Review the contract']);
+});
+
+test('the weekly review counts what happened that week, from facts, and lists what is late', async (t) => {
+  const { weekStart } = require('../src/brain/review');
+  const app = await boot(t);
+  app.settings.update({ userName: 'Ana' });
+  const mon = weekStart(Date.now());
+  const n = meeting(app, 'Planning', [['Ana', 'planning the quarter together now'], ['Rui', 'sounds good to me for the quarter']], { attendees: [{ name: 'Ana', email: 'a@x.pt' }, { name: 'Rui', email: 'r@x.pt' }], at: mon + 3600_000 });
+  app.notes.update(n.id, { startedAt: mon + 3600_000, endedAt: mon + 3600_000 + 45 * 60000 });
+  meeting(app, 'Old one', [['Ana', 'long ago in another week of the year']], { at: mon - 3 * 86400000 });
+  const d = app.assertions.add({ kind: 'decision', text: 'Ship in March', noteId: n.id, origin: 'user' }).item;
+  const k = app.assertions.add({ kind: 'commitment', text: 'Write the plan', owner: 'Ana', noteId: n.id, origin: 'user' }).item;
+  app.assertions.decide(k.id, 'done');
+  app.assertions.add({ kind: 'commitment', text: 'Late for me', owner: 'Ana', dueAt: Date.now() - 86400000, noteId: n.id, origin: 'user' });
+  app.assertions.add({ kind: 'commitment', text: 'Late for them', owner: 'Rui', dueAt: Date.now() - 86400000, noteId: n.id, origin: 'user' });
+  const r = app.reviews.build(0);
+  assert.deepEqual([r.meetings.length, r.minutes, r.decisions.map((x) => x.text), r.kept.map((x) => x.text)], [1, 45, ['Ship in March'], ['Write the plan']]);
+  assert.deepEqual(r.people.map((p) => p.name).sort(), ['Ana', 'Rui']);
+  assert.deepEqual([r.lateMine.map((x) => x.text), r.lateTheirs.map((x) => x.text)], [['Late for me'], ['Late for them']]);
+  assert.equal(app.reviews.build(1).meetings.length, 1, 'last week has the old meeting');
+  assert.ok(d.id);
+});
+
+test('a later decision that looks like an earlier one is offered as its replacement, never applied by itself', async (t) => {
+  const app = await boot(t);
+  const a = meeting(app, 'January', [['Ana', 'planning some words here for later']], { at: Date.now() - 40 * 86400000 });
+  const b = meeting(app, 'March', [['Ana', 'planning some other words there for later']], { at: Date.now() - 2 * 86400000 });
+  const old = app.assertions.add({ kind: 'decision', text: 'Keep the free tier for all new customers', noteId: a.id, origin: 'user' }).item;
+  const fresh = app.assertions.add({ kind: 'decision', text: 'Drop the free tier for all new customers from April', noteId: b.id, origin: 'user' }).item;
+  app.assertions.add({ kind: 'decision', text: 'Hire two engineers in the autumn', noteId: b.id, origin: 'user' });
+  const c = app.supersession.candidates();
+  assert.deepEqual([c.length, c[0].older.id, c[0].newer.id], [1, old.id, fresh.id], 'only the pair that is about the same thing');
+  assert.equal(app.assertions.get(old.id).state, 'accepted', 'nothing changed');
+  assert.equal(app.inbox.counts().supersede, 1);
+  app.supersession.reject(old.id, fresh.id);
+  assert.equal(app.supersession.candidates().length, 0, '"not related" is remembered');
+  app.db.exec("DELETE FROM index_meta WHERE key LIKE 'supersede:%'");
+  app.supersession.confirm(old.id, fresh.id);
+  assert.equal(app.assertions.get(old.id).state, 'superseded');
+  assert.equal(app.assertions.get(fresh.id).supersedes, old.id, 'with the way back');
+  assert.equal(app.supersession.candidates().length, 0);
+});
+
+test('projects: what mentions their words belongs to them, promises and decisions follow, and a quiet one with open promises is offered', async (t) => {
+  const app = await boot(t);
+  const orion1 = meeting(app, 'Orion kickoff', [['Ana', 'the orion launch plan and the budget for it']], { at: Date.now() - 40 * 86400000 });
+  meeting(app, 'Lunch plans', [['Ana', 'where shall we eat on friday afternoon']], { at: Date.now() - 2 * 86400000 });
+  const src = app.items.addSource({ kind: 'folder', name: 'V', config: { path: '/x' } });
+  app.items.upsert(src.id, { externalId: 'o.md', title: 'Orion notes', text: 'Orion needs a launch date and a budget.', occurredAt: Date.now() - 35 * 86400000 });
+  app.items.upsert(src.id, { externalId: 'z.md', title: 'Other', text: 'Nothing to do with it at all.' });
+  app.assertions.add({ kind: 'decision', text: 'Launch Orion in May', noteId: orion1.id, origin: 'user' });
+  const open = app.assertions.add({ kind: 'commitment', text: 'Write the Orion budget', owner: 'Ana', noteId: orion1.id, origin: 'user' }).item;
+  assert.throws(() => app.projects.create({ name: ' ' }), /needs a name/);
+  const p = app.projects.create({ name: 'Orion', keywords: 'orion, launch plan' });
+  const page = app.projects.page(p.id);
+  assert.deepEqual([page.meetings.map((m) => m.title), page.docs.map((d) => d.title), page.decisions.length, page.promises.length], [['Orion kickoff'], ['Orion notes'], 1, 1]);
+  assert.deepEqual([app.projects.summary()[0].meetings, app.projects.summary()[0].openPromises], [1, 1]);
+  const idle = app.inbox.cards().find((c) => c.type === 'idle');
+  assert.deepEqual([idle.name, idle.open, idle.days >= 21], ['Orion', 1, true], 'quiet for weeks, with a promise still open');
+  app.inbox.dismissIdle(p.id, page.lastAt);
+  assert.equal(app.inbox.cards().filter((c) => c.type === 'idle').length, 0);
+  app.assertions.decide(open.id, 'done');
+  app.projects.update(p.id, { keywords: ['orion'] });
+  assert.equal(app.projects.get(p.id).keywords[0], 'orion');
+  assert.throws(() => app.projects.update(p.id, { keywords: [] }), /at least one word/);
+  app.projects.update(p.id, { archived: true });
+  assert.equal(app.projects.summary().length, 0, 'archived projects are out of the list');
+  assert.equal(app.projects.remove(p.id), true);
+});
+
+test('an AI-phrased brief may only cite the facts it was given, and falls back to the facts when it cites nothing', async (t) => {
+  const { narrate, factsOf } = require('../src/brain/brief');
+  const app = await boot(t);
+  app.settings.update({ userName: 'Ana' });
+  const people = [{ name: 'Ana', email: 'ana@x.pt' }, { name: 'Rui Costa', email: 'rui@x.pt' }];
+  const old = meeting(app, 'Pricing review', [['Rui Costa', 'we decided things about the pricing today']], { attendees: people, at: Date.now() - 5 * 86400000 });
+  app.assertions.add({ kind: 'decision', text: 'Drop the free tier', noteId: old.id, origin: 'user' });
+  app.assertions.add({ kind: 'commitment', text: 'Send the pricing sheet', owner: 'Rui Costa', dueAt: Date.now() + 86400000, noteId: old.id, origin: 'user' });
+  const brief = await app.briefs.build({ title: 'Pricing', attendees: people });
+  const facts = factsOf(brief);
+  assert.ok(facts.length >= 3 && facts.every((f, i) => f.n === i + 1));
+  let seen = '';
+  await withLlm(t, app, (m) => { seen = m.at(-1).content; return 'You decided to drop the free tier [3] and Rui owes you the sheet [2], also something invented [42].'; });
+  const out = await narrate(app.scheduler.client('chat'), brief);
+  assert.ok(!out.text.includes('[42]'), 'a number that was not given is removed');
+  assert.match(out.text, /\[2\]/);
+  assert.match(seen, /<facts>[\s\S]*Decided: Drop the free tier/);
+  await withLlm(t, app, 'A nice summary with no citations at all.');
+  assert.equal(await narrate(app.scheduler.client('chat'), brief), null, 'an unsourced summary is not used');
+  assert.equal(await narrate(app.scheduler.client('chat'), { people: [], owe: [], waiting: [], decisions: [], related: [] }), null, 'nothing to phrase');
+});
+
+test('the reranker only reorders: a bad answer from the model leaves the index order, and nothing is added or dropped', async (t) => {
+  const app = await boot(t);
+  const src = app.items.addSource({ kind: 'folder', name: 'V', config: { path: '/x' } });
+  app.items.upsert(src.id, { externalId: 'a', title: 'A', text: 'The budget for next year was discussed briefly.' });
+  app.items.upsert(src.id, { externalId: 'b', title: 'B', text: 'The budget decision: we will cut the budget by ten percent.' });
+  app.items.upsert(src.id, { externalId: 'c', title: 'C', text: 'Budget lunch menu.' });
+  app.chunkIndex.syncBatch(50);
+  const plain = (await app.ai.excerpts('what was decided about the budget')).map((e) => e.title);
+  assert.equal(plain.length, 3);
+  app.settings.update({ rerank: true });
+  await withLlm(t, app, (m) => { const n = m.at(-1).content.split('\n').filter((l) => /^\[\d+\]/.test(l)); const best = n.findIndex((l) => l.includes('cut the budget')) + 1; return JSON.stringify({ scores: n.map((l, i) => ({ n: i + 1, score: i + 1 === best ? 9 : 1 })) }); });
+  const reranked = (await app.ai.excerpts('what was decided about the budget')).map((e) => e.title);
+  assert.equal(reranked[0], 'B', 'the excerpt that answers the question is first');
+  assert.deepEqual([...reranked].sort(), [...plain].sort(), 'the same excerpts, only in another order');
+  await withLlm(t, app, 'I cannot do that');
+  assert.deepEqual((await app.ai.excerpts('what was decided about the budget')).map((e) => e.title), plain, 'a useless reply changes nothing');
+});
+
+test('more actions, same gate: a webhook with the exact payload, and a note written into the vault that never overwrites', async (t) => {
+  const http = require('node:http');
+  const app = await boot(t);
+  const got = [];
+  const srv = http.createServer((req, res) => { let b = ''; req.on('data', (d) => { b += d; }); req.on('end', () => { got.push({ url: req.url, body: JSON.parse(b), sig: req.headers['x-whisperbrain-signature'] }); res.writeHead(200); res.end('ok'); }); });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  t.after(() => srv.close());
+  const vault = tmpDir('wb-vault-');
+  t.after(() => fs.rmSync(vault, { recursive: true, force: true }));
+  const a = app.assertions.add({ kind: 'commitment', text: 'Send the Orion budget to Rui', owner: 'Ana', dueText: 'by Friday', quote: 'I will send the Orion budget to Rui by Friday', origin: 'ai' }).item;
+  app.assertions.decide(a.id, 'accept');
+  assert.throws(() => app.actions.propose('webhook.post', { assertion: a }), /not connected/);
+  assert.throws(() => app.actions.propose('obsidian.note', { assertion: a }), /not connected/);
+  app.settings.update({ webhooks: [{ id: 'w1', name: 'My n8n', url: `http://127.0.0.1:${srv.address().port}/hook`, secret: 's3cret' }], obsidian: { ...app.settings.get('obsidian'), vaultPath: vault } });
+  const kinds = app.actions.kinds().filter((k) => k.ready).map((k) => k.kind).sort();
+  assert.deepEqual(kinds, ['obsidian.note', 'webhook.post']);
+  // webhook: shown with its host, the secret is never in the arguments, nothing is sent until approved
+  const w = app.actions.propose('webhook.post', { assertion: a, note: null }, { assertionId: a.id });
+  assert.match(w.title, /My n8n.? \(127\.0\.0\.1:\d+\)/);
+  assert.ok(!JSON.stringify(w.args).includes('s3cret'));
+  assert.equal(got.length, 0);
+  assert.equal((await app.actions.approve(w.id)).state, 'done');
+  assert.deepEqual([got[0].url, got[0].body.text, got[0].body.quote, !!got[0].sig], ['/hook', 'Send the Orion budget to Rui', 'I will send the Orion budget to Rui by Friday', true]);
+  // obsidian: a file in Promises/, confined to the vault, never overwritten
+  const o = app.actions.propose('obsidian.note', { assertion: a, note: null });
+  assert.equal(o.args.relPath, 'Promises/send-the-orion-budget-to-rui.md');
+  assert.equal(fs.existsSync(path.join(vault, 'Promises')), false, 'proposing writes nothing');
+  assert.equal((await app.actions.approve(o.id)).state, 'done');
+  const text = fs.readFileSync(path.join(vault, o.args.relPath), 'utf8');
+  assert.match(text, /^---\nsource: WhisperBrain\nkind: commitment\nowner: Ana\ndue: by Friday\n---\n\n# Send the Orion budget to Rui\n\n> I will send the Orion budget to Rui by Friday\n$/);
+  const again = await app.actions.approve(app.actions.propose('obsidian.note', { assertion: a }).id);
+  assert.equal(again.state, 'failed', 'an existing file is never overwritten');
+  assert.match(again.error, /EEXIST/);
+  const evil = app.actions.propose('obsidian.note', { assertion: { ...a, text: '../../etc/passwd' } });
+  assert.equal(evil.args.relPath, 'Promises/etc-passwd.md', 'a title cannot walk out of the folder');
+});
+
+test('rules in plain words: only a fixed structure is accepted, a rule can only propose, and acts once per promise', async (t) => {
+  const { validateSpec, explain } = require('../src/brain/rules');
+  const app = await boot(t);
+  app.settings.update({ userName: 'Ana', linear: { apiKey: 'k', teamId: 'T', teamName: 'Platform' } });
+  const sent = [];
+  app.integrations.linear = () => ({ createIssue: async (x) => { sent.push(x); return { identifier: 'E-1', url: 'u' }; } });
+  // the model's structure is checked in code
+  assert.throws(() => validateSpec({ when: 'promise.accepted', then: { action: 'send.email' } }), /can only/);
+  assert.throws(() => validateSpec({ when: 'file.deleted', then: { action: 'remind' } }), /start when/);
+  assert.throws(() => validateSpec({ when: 'decision.accepted', if: { owner: 'me' }, then: { action: 'remind' } }), /no owner/);
+  const spec = validateSpec({ when: 'promise.accepted', if: { owner: 'other', textContains: ['budget', 'orçamento'], evil: 'rm -rf' }, then: { action: 'propose.linear.issue', run: 'curl x' } });
+  assert.deepEqual(Object.keys(spec.if).sort(), ['meetingTitleContains', 'owner', 'textContains'], 'unknown fields are dropped');
+  assert.match(explain(spec), /somebody else owes you.*“budget” or “orçamento”.*propose a Linear issue.*without your approval/);
+  // the sentence is turned into a rule by the model, and shown with what it would have matched
+  const n = meeting(app, 'Planning', [['Rui', 'we talk about the budget today']], { attendees: [{ name: 'Ana', email: 'a@x.pt' }, { name: 'Rui', email: 'r@x.pt' }] });
+  const past = app.assertions.add({ kind: 'commitment', text: 'Send the Orion budget', owner: 'Rui', noteId: n.id, origin: 'ai' }).item;
+  app.assertions.add({ kind: 'commitment', text: 'Old budget promise from last month', owner: 'Rui', noteId: n.id, origin: 'user' });   // already accepted
+  await withLlm(t, app, JSON.stringify({ rule: { when: 'promise.accepted', if: { owner: 'other', textContains: ['budget'] }, then: { action: 'propose.linear.issue' } } }));
+  const parsed = await app.rules.parse(app.scheduler.client('chat'), 'when somebody promises me something about the budget, make a Linear issue');
+  assert.match(parsed.explain, /somebody else owes you/);
+  assert.deepEqual([app.rules.preview(parsed.spec).count, app.rules.preview(parsed.spec).examples[0].text], [1, 'Old budget promise from last month'], 'a dry run over what you already accepted');
+  assert.equal(app.actions.pending().length, 0, 'a dry run does nothing');
+  await withLlm(t, app, '{"error":"sending e-mail by itself is not something a rule can do"}');
+  await assert.rejects(app.rules.parse(app.scheduler.client('chat'), 'email my boss every promise'), /cannot be a rule/);
+  await withLlm(t, app, '{"rule":{"when":"promise.accepted","then":{"action":"delete.everything"}}}');
+  await assert.rejects(app.rules.parse(app.scheduler.client('chat'), 'x'), /can only/, 'a model that invents an action is refused');
+  // saved, it proposes when a matching promise is accepted, once, and the proposal waits for approval
+  const rule = app.rules.create('budget promises to Linear', parsed.spec);
+  app.assertions.decide(past.id, 'accept');
+  assert.equal(sent.length, 0, 'a rule never sends by itself');
+  const [p] = app.actions.pending();
+  assert.deepEqual([p.kind, p.origin, p.assertionId], ['linear.issue', 'rule', past.id]);
+  app.assertions.decide(past.id, 'reopen');
+  assert.equal(app.actions.pending().length, 1, 'once per promise');
+  const other = app.assertions.add({ kind: 'commitment', text: 'Book the room', owner: 'Rui', noteId: n.id, origin: 'ai' }).item;
+  const mine = app.assertions.add({ kind: 'commitment', text: 'My budget review', owner: 'Ana', noteId: n.id, origin: 'ai' }).item;
+  app.assertions.decide(other.id, 'accept'); app.assertions.decide(mine.id, 'accept');
+  assert.equal(app.actions.pending().length, 1, 'no match on the words, and no match on the owner');
+  assert.equal(app.rules.list()[0].runs, 1);
+  app.rules.setEnabled(rule.id, false);
+  const again = app.assertions.add({ kind: 'commitment', text: 'Another budget thing', owner: 'Rui', noteId: n.id, origin: 'ai' }).item;
+  app.assertions.decide(again.id, 'accept');
+  assert.equal(app.actions.pending().length, 1, 'a switched-off rule does nothing');
+  assert.equal(app.rules.remove(rule.id), true);
+  // a reminder rule: the day before it is due, local only
+  app.rules.create('remind me', { when: 'promise.accepted', if: { owner: 'any', hasDueDate: true }, then: { action: 'remind' } });
+  const dated = app.assertions.add({ kind: 'commitment', text: 'Dated thing', owner: 'Rui', dueAt: Date.now() + 5 * 86400000, noteId: n.id, origin: 'ai' }).item;
+  app.assertions.decide(dated.id, 'accept');
+  assert.ok(app.reminders.upcoming(7).some((r) => r.text === 'Tomorrow: Dated thing'));
+});

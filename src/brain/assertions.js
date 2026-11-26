@@ -26,6 +26,9 @@ class Assertions {
   // The person this app belongs to (their name from Settings), as an entity when they are one.
   meId() { const n = this.settings?.get('userName'); if (!n) return null; this.entities.refresh(); return this.entities.resolve({ name: n, create: false }); }
 
+  // a promise that is yours (you owe it), or one somebody else made to you; with no owner known it is treated as yours
+  isMine(a) { const me = this.meId(); return !a.owner?.id || !me || a.owner.id === me; }
+
   get(id) { return this.row(this.db.prepare('SELECT * FROM assertions WHERE id = ?').get(id)); }
 
   // Add one. Returns { created, item }: created is false when the same thing is already there for that meeting (in any state, so a
@@ -46,6 +49,7 @@ class Assertions {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, kind, body, key, ownerId, String(owner).slice(0, 80), toId, String(to).slice(0, 80), dueAt, String(dueText).slice(0, 80),
       state || (origin === 'user' ? 'accepted' : 'suggested'), origin, noteId, segmentId, startMs, String(quote).slice(0, 400), String(speaker).slice(0, 80), String(model).slice(0, 80), when, t, t, origin === 'user' ? t : null);
     this.bus?.publish('assertions.changed', { id });
+    if ((state || (origin === 'user' ? 'accepted' : 'suggested')) === 'accepted') this.bus?.publish('assertion.accepted', { id });   // one written by hand counts as accepted from the start
     return { created: true, item: this.get(id) };
   }
 
@@ -73,9 +77,10 @@ class Assertions {
     if (decision === 'done' && (a.kind !== 'commitment' || a.state !== 'accepted')) throw err('only an accepted commitment can be marked done', 409);
     const t = this.now();
     this.db.prepare('UPDATE assertions SET state = ?, decided_at = ?, updated_at = ? WHERE id = ?').run(next, t, t, id);
-    if (next === 'accepted' && a.kind === 'commitment' && a.dueAt) this.reminders?.forAssertion(this.get(id));
+    if (next === 'accepted' && a.kind === 'commitment' && a.dueAt) this.reminders?.forAssertion(this.get(id), { mine: this.isMine(this.get(id)) });
     if (next === 'done' || next === 'dismissed') this.reminders?.closeFor(id);
     this.bus?.publish('assertions.changed', { id });
+    if (next === 'accepted' && a.state !== 'accepted') this.bus?.publish('assertion.accepted', { id });
     return this.get(id);
   }
 
@@ -92,7 +97,7 @@ class Assertions {
     if (patch.dueText !== undefined) { sets.push('due_text = ?'); vals.push(String(patch.dueText).slice(0, 80)); }
     if (sets.length) this.db.prepare(`UPDATE assertions SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`).run(...vals, this.now(), id);
     const out = this.get(id);
-    if (out.state === 'accepted' && out.kind === 'commitment') this.reminders?.forAssertion(out);
+    if (out.state === 'accepted' && out.kind === 'commitment') this.reminders?.forAssertion(out, { mine: this.isMine(out) });
     this.bus?.publish('assertions.changed', { id });
     return out;
   }

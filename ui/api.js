@@ -12,6 +12,7 @@ export async function api(method, path, body) {
   const text = await res.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { /* not JSON */ }
+  if (res.status === 423) window.dispatchEvent(new Event('wb:locked'));   // the app lock closed: the lock screen takes over
   if (!res.ok) throw new ApiError(data?.error || res.statusText, res.status, data?.code);
   return data;
 }

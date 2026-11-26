@@ -21,14 +21,16 @@ class Reminders {
   get(id) { return this.db.prepare('SELECT * FROM reminders WHERE id = ?').get(id) && map(this.db.prepare('SELECT * FROM reminders WHERE id = ?').get(id)); }
 
   // one reminder per commitment, on the morning of the day it is due (not in the past: an overdue one is shown in the Inbox instead)
-  forAssertion(a) {
+  // mine = false: what somebody else promised you: the reminder is to check with them
+  forAssertion(a, { mine = true } = {}) {
     if (!a?.dueAt || a.kind !== 'commitment') return null;
+    const text = mine ? a.text : `Check with ${a.owner?.name || 'them'}: ${a.text}`;
     const day = new Date(a.dueAt); day.setHours(0, 0, 0, 0);
     const at = day.getTime() + MORNING_MS;
     const existing = this.db.prepare("SELECT id FROM reminders WHERE assertion_id = ? AND state = 'open'").get(a.id);
-    if (existing) { this.db.prepare('UPDATE reminders SET due_at = ?, text = ?, fired_at = NULL WHERE id = ?').run(at, a.text.slice(0, 300), existing.id); return this.get(existing.id); }
+    if (existing) { this.db.prepare('UPDATE reminders SET due_at = ?, text = ?, fired_at = NULL WHERE id = ?').run(at, text.slice(0, 300), existing.id); return this.get(existing.id); }
     if (at < this.now() - 86400000) return null;
-    return this.create({ text: a.text, dueAt: at, assertionId: a.id });
+    return this.create({ text, dueAt: at, assertionId: a.id });
   }
 
   closeFor(assertionId) { this.db.prepare("UPDATE reminders SET state = 'done' WHERE assertion_id = ? AND state = 'open'").run(assertionId); }

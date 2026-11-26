@@ -6,7 +6,7 @@ const DAY = 86_400_000;
 const NOREPLY_MIN_DAYS = 3, NOREPLY_MAX_DAYS = 30;
 
 class Inbox {
-  constructor({ notes, assertions, entities, reminders, items = null, db = null, actions = null, now = () => Date.now() }) { Object.assign(this, { notes, assertions, entities, reminders, items, db, actions, now }); }
+  constructor({ notes, assertions, entities, reminders, items = null, db = null, actions = null, supersession = null, projects = null, now = () => Date.now() }) { Object.assign(this, { notes, assertions, entities, reminders, items, db, actions, supersession, projects, now }); }
 
   dismissKey(itemId, lastAt) { return `dismiss:noreply:${itemId}:${lastAt}`; }
 
@@ -28,6 +28,8 @@ class Inbox {
     return out;
   }
 
+  dismissIdle(projectId, lastAt) { this.db.prepare('INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)').run(`dismiss:idle:${projectId}:${lastAt}`, '1'); }
+
   dismissNoReply(itemId) {
     const it = this.db.prepare('SELECT meta FROM items WHERE id = ?').get(itemId);
     if (!it) throw Object.assign(new Error('not found'), { status: 404 });
@@ -45,6 +47,8 @@ class Inbox {
     for (const a of open.overdueTheirs) out.push({ type: 'waiting', id: a.id, text: a.text, owner: a.owner.name || a.speaker, dueAt: a.dueAt, dueText: a.dueText, source: this.source(a) });
     for (const r of this.reminders.pending()) if (!r.assertionId || !open.overdueMine.some((a) => a.id === r.assertionId)) out.push({ type: 'reminder', id: r.id, text: r.text, dueAt: r.dueAt, assertionId: r.assertionId });
     for (const a of this.actions?.pending() || []) out.push({ type: 'action', id: a.id, kind: a.kind, title: a.title, args: a.args });
+    for (const c of this.supersession?.candidates(5) || []) out.push({ type: 'supersede', id: `${c.older.id}:${c.newer.id}`, older: { id: c.older.id, text: c.older.text, at: c.older.occurredAt }, newer: { id: c.newer.id, text: c.newer.text, at: c.newer.occurredAt }, shared: c.shared });
+    for (const p of this.projects?.idle((pr, last) => this.db.prepare('SELECT 1 FROM index_meta WHERE key = ?').get(`dismiss:idle:${pr.id}:${last}`)) || []) out.push({ type: 'idle', id: p.id, name: p.name, days: p.days, open: p.open, lastAt: p.lastAt });
     out.push(...this.noReply());
     for (const p of this.entities.proposals().slice(0, 5)) out.push({ type: 'merge', id: p.id, a: p.a, b: p.b, reason: p.reason });
     return out;
@@ -53,7 +57,7 @@ class Inbox {
   counts() {
     const c = this.cards();
     const by = (t) => c.filter((x) => x.type === t).length;
-    return { total: c.length, suggestions: by('suggestion'), overdue: by('overdue'), waiting: by('waiting'), reminders: by('reminder'), merges: by('merge'), noreply: by('noreply'), actions: by('action') };
+    return { total: c.length, suggestions: by('suggestion'), overdue: by('overdue'), waiting: by('waiting'), reminders: by('reminder'), merges: by('merge'), noreply: by('noreply'), actions: by('action'), supersede: by('supersede'), idle: by('idle') };
   }
 }
 

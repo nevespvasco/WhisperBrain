@@ -11,6 +11,7 @@ const { LANGUAGES, isLanguage } = require('../llm/languages');
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 const COOKIE = 'wb_token';
+const { mayPass } = require('../core/lock');
 const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
 
@@ -377,7 +378,7 @@ function createRoutes(app) {
   add('DELETE', '/api/calendar/sources/:id', async ({ params }) => { app.calendar.removeSource(params.id); return { ok: true }; });
   add('GET', '/api/calendar/current', async () => ({ event: await app.calendar.current() }));
 
-  require('./routes-brain')(add, app, { HttpError });   // before the knowledge routes: /api/people/proposals must not be read as a person's key
+  require('./routes-brain')(add, app, { HttpError, readBody });   // before the knowledge routes: /api/people/proposals must not be read as a person's key
   require('./routes-knowledge')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-briefings')(add, app, { HttpError, noteOr404, readBody });
   require('./routes-assistant')(add, app, { HttpError, noteOr404, readBody });
@@ -431,6 +432,11 @@ function createServer(app, { uiDir, token = crypto.randomBytes(24).toString('hex
 
   async function api(req, res, url) {
     const query = Object.fromEntries(url.searchParams);
+    // the app lock: while locked, nothing but the lock itself (and the audio of a recording already running) is answered
+    if (app.lock) {
+      if (app.lock.locked() && !mayPass(req.method, url.pathname)) throw new HttpError(423, 'The app is locked.', 'locked');
+      if (!/^\/api\/(events|lock)/.test(url.pathname)) app.lock.touch();
+    }
     for (const rt of routes) {
       if (rt.method !== req.method) continue;
       const m = rt.re.exec(url.pathname);

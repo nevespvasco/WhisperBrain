@@ -99,7 +99,25 @@ Services and approved actions (Phases 4 and 5):
 
 **Tested only against simulated servers** that follow each service's documented API: none of these connectors has talked to the real GitHub, Slack, Discord or Google, which needs the person's own accounts.
 
-Not built: incremental Google Calendar sync (the calendar re-reads its window and caches it; a sync-token cache would be a rewrite of that cache for little gain); natural-language rules (a safe version needs a model that turns a sentence into a structured rule, a preview of what it would do, and the same approval gate; none of that exists); a vault mode (locking the app with a passphrase needs encryption at rest, which node:sqlite does not offer); the pre-meeting brief phrased by an AI (the facts-only brief is what exists); a Discord data-package import.
+Built afterwards:
+- **Weekly review**, **projects** (a name and its words; meetings, notes, decisions and promises gathered by themselves; "quiet project" signal), **decision supersession candidates** (word overlap, confirmed by a person, never applied alone), reminders for what others owe you, a nightly maintenance job.
+- **AI-phrased brief**: the model phrases numbered facts and may cite only those; an uncited answer is not used. **Reranker** (optional, off by default): the model scores candidate excerpts; it only reorders.
+- **More approved actions**: a webhook (secret never in the arguments) and a note written into the vault (never overwrites, confined to the vault).
+- **Discord data package** import (JSON and CSV layouts), one item per channel per day.
+- **Google Calendar** refreshes only what changed (`updatedMin`), falling back to the whole window on any trouble.
+- **Rules in plain words** (migration v22): the model turns a sentence into a fixed structure that is validated in code, the person sees it in words with a dry run over their past promises, and a rule can only propose (the Inbox approval gate stays).
+- **App lock** (a lock screen with a scrypt-hashed passphrase kept outside the Settings API, wrong tries slowed, idle lock, a running recording keeps going). **It does not encrypt the data on disk**: use disk encryption for that.
+- **OCR for scanned PDFs** where `pdftoppm` and `tesseract` are installed (tested with stand-in tools; `tesseract` is not installed on the development machine).
+- A hand-written pt-PT corpus and questions as a regression floor for the word index.
+
+Still not built: a vault in the sense of encryption at rest (node:sqlite offers none); the connectors against the real services (needs the person's accounts); a measured choice of embedding model on the person's own Portuguese notes.
+
+## Merging with `feature/voice-intel` (checked by a dry run)
+
+The uncommitted changes of the voice branch were applied to this branch in a temporary worktree (`git apply --3way --check`, nothing kept): everything applies cleanly except two files.
+- **`ui/api.js`**: both branches edit the one long list of event names (`recording.overlap` on one side; `job.changed`, `sources.changed`, … on the other). Keep both sets.
+- **`src/core/db.js`**: both branches append a migration at the same position. The voice branch has a **v15** (three columns on `note_speakers`); this branch has v15 (jobs) to v22. Migrations are positional (`PRAGMA user_version`), so put the voice migration **first** (v15) and renumber this branch's to v16 to v23: a database that already ran the voice branch's v15 then goes on correctly, and a database at v14 runs them all in order. Nothing of this branch has run on a real database, so renumbering it is safe; do not renumber the other way round. Then update `test/briefings.test.js` and `test/jobs.test.js` if they name a version (they use `MIGRATIONS.length`), and the backup file name follows by itself (`.before-v<N>`).
+- The other files both branches touch (`src/core/settings.js`, `src/server/http.js`, `ui/i18n-pt.js`, `ui/styles.css`, `ui/views/settings.js`) apply cleanly.
 
 ## Order of work (Phase 1)
 

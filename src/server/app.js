@@ -51,6 +51,12 @@ const { extractAssertions } = require('../brain/extract');
 const { Reminders } = require('../brain/reminders');
 const { Briefs } = require('../brain/brief');
 const { Inbox } = require('../brain/inbox');
+const { Reviews } = require('../brain/review');
+const { Supersession } = require('../brain/supersede');
+const { Projects } = require('../brain/projects');
+const { Rules } = require('../brain/rules');
+const { AppLock } = require('../core/lock');
+const ocrTools = require('../importers/ocr');
 const { Actions, HANDLERS: ACTION_HANDLERS } = require('../brain/actions');
 const { backupTo, list: listBackups } = require('../core/backup');
 const gh = require('../connectors/github'), slackSvc = require('../connectors/slack'), discordSvc = require('../connectors/discord'), gmailSvc = require('../connectors/gmail'), pollSvc = require('../connectors/poll');
@@ -154,7 +160,10 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
   const items = new ItemStore(conn, { bus });
   const connectorCtx = { settings, get google() { return google; }, get integrations() { return integrations; }, get app() { return self; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, sleep: connectorOptions.sleep };
-  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), watch: detect, services: { github: gh, slack: slackSvc, discord: discordSvc, gmail: gmailSvc, notion: pollSvc.notion, linear: pollSvc.linear }, ctx: connectorCtx });
+  // OCR for scanned PDFs, only where pdftoppm and tesseract are installed (checked once, the first time a PDF has no text)
+  let ocrReady = null;
+  const ocr = async (buf) => { ocrReady ??= (connectorOptions.ocrExec ? { available: true } : await ocrTools.available()); if (!ocrReady.available) throw new Error(ocrReady.reason); return ocrTools.ocrPdf(buf, { lang: settings.get('ocrLanguages'), exec: connectorOptions.ocrExec }); };
+  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), ocr, watch: detect, services: { github: gh, slack: slackSvc, discord: discordSvc, gmail: gmailSvc, notion: pollSvc.notion, linear: pollSvc.linear }, ctx: connectorCtx });
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
@@ -168,8 +177,13 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   };
   ai.index = chunkIndex; ai.mayShare = mayShare;
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare });
+  const projects = new Projects({ db: conn, notes, items, assertions });
+  const supersession = new Supersession({ db: conn, assertions });
   const actions = new Actions({ db: conn, bus, handlers: ACTION_HANDLERS, deps: { settings, get integrations() { return integrations; } } });
-  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders, items, db: conn, actions });
+  const rules = new Rules({ db: conn, assertions, actions, reminders, notes, bus });
+  rules.attach();
+  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders, items, db: conn, actions, supersession, projects });
+  const reviews = new Reviews({ db: conn, notes, assertions, entities: knowledge.entities, items, inbox });
   runner.register('index.sync', async () => {
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
@@ -177,6 +191,16 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: mayShare }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
     return { indexed: total, embedded };
   }, { lane: 'sources' });
+  // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the
+  // database statistics are refreshed. Nothing here changes what you see except by removing what is long finished.
+  runner.register('maintenance', async () => {
+    const out = { jobs: jobs.prune(), aiRuns: aiRuns.prune(), pruned: 0 };
+    knowledge.entities.proposeMerges();
+    try { conn.exec('PRAGMA optimize'); } catch { /* busy: next time */ }
+    return out;
+  }, { lane: 'sources' });
+  const maintenanceTimer = detect ? setInterval(() => runner.enqueue('maintenance', {}, { key: 'daily', maxAttempts: 1 }), 86400000) : null;
+  maintenanceTimer?.unref();
   const wantIndex = () => { try { runner.enqueue('index.sync', {}, { key: 'all', runAfter: 1500, maxAttempts: 2 }); } catch { /* closing */ } };
   bus.subscribe((e) => {
     if (['sources.changed', 'note.insights', 'note.updated', 'speakers.updated', 'recording.stopped', 'transcript.removed', 'import.done'].includes(e.type)) wantIndex();
@@ -224,6 +248,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
     else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
   };
+  const lock = new AppLock({ db: conn, bus });
   const ready = settings.init();
   // Work that reads secrets (the extension's pairing token, the Discord token) starts once they are opened.
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day
@@ -236,6 +261,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     sources.start();
     wantIndex();
     reminders.start();
+    runner.enqueue('maintenance', {}, { key: 'daily', runAfter: 60_000, maxAttempts: 1 });
   }).catch(() => {});
   // Search by meaning is opt-in: the index is only built, and the extension only loaded, when it is on
   const wantSemantic = () => settings.get('semanticSearch') && !semantic.available && semantic.init().catch(() => {});
@@ -257,7 +283,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -306,6 +332,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
       sources.stop();
       reminders.stop();
       clearInterval(backupTimer);
+      clearInterval(maintenanceTimer);
       runner.stop();   // takes no new job; one cut short by the closing database runs again at the next start
       detector.stop();
       assistant.close();

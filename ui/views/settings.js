@@ -84,6 +84,30 @@ export async function render(main, { parts }) {
   else $('#secbody', main).innerHTML = html;
   if (again) main.scrollTop = y;
   bind(main, sec, $('#secbody', main));
+  if (sec === 'account') {
+    const lockBody = $('#lk-body', main);
+    const drawLock = async () => {
+      const st = await api('GET', '/api/lock');
+      $('#lk-state', main).textContent = st.enabled ? t('On') : t('Off');
+      const mins = `<select id="lk-min">${[[0, t('Never')], [5, '5 min'], [15, '15 min'], [60, '1 h']].map(([v, l]) => `<option value="${v}" ${st.minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+      lockBody.innerHTML = st.enabled
+        ? `<div class="stack">${field('lk-cur', t('Current passphrase'), '<input id="lk-cur" type="password" autocomplete="current-password">')}${field('lk-new', t('New passphrase (to change it)'), '<input id="lk-new" type="password" autocomplete="new-password">')}${field('lk-min', t('Lock after'), mins)}
+          <div class="row"><button class="btn" data-lk="change">${t('Change')}</button><button class="btn" data-lk="now">${icon('lock', 'sm')} ${t('Lock now')}</button><button class="btn ghost" data-lk="off">${t('Turn off')}</button><span class="small" id="lk-msg"></span></div></div>`
+        : `<div class="stack">${field('lk-new', t('Passphrase'), '<input id="lk-new" type="password" autocomplete="new-password" placeholder="≥ 8">')}${field('lk-min', t('Lock after'), mins)}<div class="row"><button class="btn primary" data-lk="on">${t('Turn on')}</button><span class="small" id="lk-msg"></span></div></div>`;
+    };
+    drawLock().catch(() => {});
+    lockBody.onclick = async (e) => {
+      const b = e.target.closest('[data-lk]'); if (!b) return;
+      const v = (id) => $(`#${id}`, lockBody)?.value || '', msg = (m, bad) => { const el = $('#lk-msg', lockBody); el.style.color = bad ? 'var(--danger)' : 'var(--ok)'; el.textContent = m; };
+      try {
+        if (b.dataset.lk === 'on') { await api('POST', '/api/lock/enable', { passphrase: v('lk-new'), minutes: Number(v('lk-min')) }); S.lock = { enabled: true }; done(t('App lock is on')); }
+        else if (b.dataset.lk === 'change') { if (v('lk-new')) await api('POST', '/api/lock/enable', { passphrase: v('lk-new'), current: v('lk-cur'), minutes: Number(v('lk-min')) }); else await api('POST', '/api/lock/minutes', { passphrase: v('lk-cur'), minutes: Number(v('lk-min')) }); done(t('Saved')); }
+        else if (b.dataset.lk === 'off') { await api('POST', '/api/lock/disable', { passphrase: v('lk-cur') }); S.lock = { enabled: false }; done(t('App lock is off')); }
+        else if (b.dataset.lk === 'now') { await api('POST', '/api/lock/lock'); location.reload(); return; }
+        await drawLock();
+      } catch (err) { msg(err.message, true); }
+    };
+  }
   if (sec === 'account') api('GET', '/api/backup').then((b) => {
     const badge = $('#bk-state', main), detail = $('#bk-detail', main); if (!badge || !detail) return;
     badge.textContent = b.dir ? t('On') : t('Off');
@@ -125,6 +149,9 @@ const SECTION = {
         <div class="small mt-s">${t('Data')}: <code>${esc(acc.dataDir)}</code> · ${mb(acc.sizes.dataBytes)}<br>${t('Speech models')}: <code>${esc(acc.modelsDir)}</code> · ${mb(acc.sizes.modelBytes)} · v${esc(S.state?.version || '')}</div>
         <div class="row wrap mt-s"><button class="btn" data-act="exp-json">${icon('download', 'sm')} ${t('Full backup (JSON)')}</button><button class="btn" data-act="exp-md">${icon('download', 'sm')} ${t('All notes (Markdown)')}</button><button class="btn" data-act="exp-more">${icon('share', 'sm')} ${t('More export options…')}</button></div>
       </section>
+      <section class="panel"><div class="panel-head"><h3>${icon('lock')} ${t('App lock')}</h3><span class="badge" id="lk-state"></span></div>
+        <p class="hint" style="margin-top:0">${t('A passphrase that locks the app when you open it and after a while without use. This is a lock screen: it keeps someone at your open computer out, but it does not encrypt the files on disk. For that, use your computer’s disk encryption (FileVault, BitLocker, LUKS).')}</p>
+        <div id="lk-body"></div></section>
       <section class="panel"><div class="panel-head"><h3>${t('Backups')}</h3><span class="badge" id="bk-state"></span></div>
         <p class="hint" style="margin-top:0">${t('A copy of the whole database in a folder you choose, once a day while the app runs, keeping the last ten. It holds your meetings, notes read from folders, people and promises. It does not hold the original files of your folders and vaults, the speech models, or the key that opens saved API keys.')}</p>
         ${field('bk-dir', t('Backup folder'), `<input id="bk-dir" value="${esc(s.backupDir || '')}" placeholder="/home/you/Backups/WhisperBrain" autocomplete="off" spellcheck="false">`, t('Leave empty for no automatic backups.'))}
@@ -206,6 +233,7 @@ const SECTION = {
       <section class="panel"><div class="panel-head"><h3>${t('Search by meaning')}</h3><span class="badge" id="ix-state"></span></div>
         <p class="hint" style="margin-top:0">${t('Name an embedding model and search finds notes by what they mean, not only by the words in them. For Ollama: pull one (for example embeddinggemma or qwen3-embedding) and type its name. Leave it empty to search by words only. Your notes are sent to this server to be turned into numbers, so private folders are only used when the server is on this computer.')}</p>
         ${field('llm-embed', t('Embedding model'), `<input id="llm-embed" value="${esc(S.settings.embeddingModel || '')}" placeholder="embeddinggemma" autocomplete="off" spellcheck="false">`)}
+        ${tog('set-rerank', S.settings.rerank, t('Let the AI order the excerpts'), t('For each question, the AI server rates which excerpts answer it best before they are used. One extra request per question; it only changes the order.'))}
         <div class="small muted" id="ix-detail"></div></section>`;
   },
   // Translation (src/llm/translate.js): off until switched on. The languages chosen are the ones a meeting offers, in this order; the
@@ -279,7 +307,7 @@ function bind(main, sec, body) {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
     'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
-    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }),
+    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }), 'set-rerank': (v) => ({ rerank: v }),
     'tr-enabled': (v) => ({ translation: { enabled: v } }), 'tr-live': (v) => ({ translation: { live: v } }), 'tr-view': (v) => ({ translation: { view: v } }), 'tr-notes': (v) => ({ translation: { notesLanguage: v } }),
     'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
     'as-enabled': (v) => ({ assistant: { enabled: v } }), 'as-mode': (v) => ({ assistant: { mode: v } }), 'as-trigger': (v) => ({ assistant: { trigger: v } }), 'as-reveal': (v) => ({ assistant: { revealMs: Number(v) } }),

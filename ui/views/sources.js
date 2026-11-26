@@ -49,7 +49,9 @@ export async function render(main) {
       </section>
       <section class="panel mb"><div class="panel-head"><h3>${icon('plug')} ${t('Connect a service')}</h3></div>
         <div class="small muted" style="margin-bottom:10px">${t('Mail and chat are private by default: only an AI on this computer may ever read them. Everything is read-only, and the keys stay on this computer.')}</div>
-        <div class="stack tight">${services.filter((v) => SERVICES[v.kind]).map((v) => serviceCard(v, folders)).join('')}</div></section>
+        <div class="stack tight">${services.filter((v) => SERVICES[v.kind]).map((v) => serviceCard(v, folders)).join('')}</div>
+        <div class="card mt-s" style="padding:12px 14px"><div class="strong">${icon('users')} ${t('Discord data package')}</div><div class="xsmall muted">${t('Discord → Settings → Privacy & Safety → Request all of my data. Import the ZIP it sends you: the messages you wrote, one item per channel per day.')}</div>
+          <div class="row mt-s"><input type="file" accept=".zip" data-discord-pkg></div><div class="small mt-s" id="dpk-msg"></div></div></section>
       ${folders.length ? `<div class="stack loose">${folders.map(card).join('')}</div>` : `<section class="panel">${empty('folder', t('No folders yet'), t('Add your Obsidian vault or any folder of notes, and everything in it becomes searchable here and in the search (Ctrl K).'))}</section>`}
       ${meetings.length ? `<section class="panel mt"><div class="panel-head"><h3>${icon('video')} ${t('Meetings by origin')}</h3><a class="link" href="#/meetings">${t('Go to Meetings')} ${icon('chevright', 'sm')}</a></div>
         <div class="stack tight">${meetings.map((s) => `<div class="row between small"><span>${esc(label(s))}</span><span class="muted">${s.items} ${s.items === 1 ? t('meeting') : t('meetings')}</span></div>`).join('')}</div></section>` : ''}
@@ -112,6 +114,12 @@ export async function render(main) {
     if (act === 'add') { try { await api('POST', '/api/sources', { service: kind, name: d.name, config }); draft.svc = null; done(t('Added. Reading…')); return draw(); } catch (e) { return say(e.message, true); } }
   };
   main.onchange = async (e) => {
+    if (e.target.matches('[data-discord-pkg]')) {
+      const f = e.target.files[0]; if (!f) return;
+      const msg = main.querySelector('#dpk-msg'); msg.textContent = t('Reading…');
+      try { const r = await api('POST', '/api/sources/discord-export', f); msg.style.color = 'var(--ok)'; msg.textContent = t('{n} channels imported.', { n: r.channels }); window.dispatchEvent(new Event('wb:refresh')); setTimeout(() => draw().catch(() => {}), 800); } catch (err) { msg.style.color = 'var(--danger)'; msg.textContent = err.message; }
+      return;
+    }
     const sens = e.target.closest('[data-sens]');
     if (e.target.id === 'src-kind') { draft.flavour = e.target.value; draft.check = null; return draw(); }
     if (sens) { try { await api('PATCH', `/api/sources/${sens.dataset.sens}`, { sensitivity: e.target.value }); done(t('Saved')); } catch (err) { fail(err); } }

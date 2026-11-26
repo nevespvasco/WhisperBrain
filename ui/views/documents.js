@@ -45,7 +45,7 @@ async function detail(main, id) {
       <div class="note-actions">${it.uri ? `<a class="btn primary" href="${esc(it.uri)}">${icon('external', 'sm')} ${t('Open in Obsidian')}</a>` : ''}</div></div>
     <div class="banner small mb">${icon('info')}<div class="grow">${t('This is a copy of the text so it can be searched. The original stays where it is, and nothing here changes it.')}</div></div>
     ${(m.tags || []).length || (m.links || []).length ? `<div class="chips mb">${(m.tags || []).map((x) => `<span class="chip">#${esc(x)}</span>`).join('')}${(m.links || []).slice(0, 12).map((x) => `<span class="chip">[[${esc(x)}]]</span>`).join('')}</div>` : ''}
-    <section class="panel">${body ? (md ? `<div class="md">${renderMarkdown(body)}</div>` : `<pre style="white-space:pre-wrap;margin:0;font:inherit">${esc(body)}</pre>`) : `<div class="small muted">${m.unreadable ? t('This PDF has no text that could be read (a scanned PDF needs OCR first).') : t('Empty.')}</div>`}
+    <section class="panel">${body ? (md ? `<div class="md">${renderMarkdown(body)}</div>` : `<pre style="white-space:pre-wrap;margin:0;font:inherit">${esc(body)}</pre>`) : `<div class="small muted">${m.unreadable ? t('This PDF has no text that could be read. A scanned PDF can be read if pdftoppm and tesseract are installed on this computer.') : t('Empty.')}</div>`}
       ${it.text.length > 40000 ? `<div class="xsmall muted mt-s">${t('Only the start is shown.')}</div>` : ''}</section></div>`;
   main.onclick = (e) => { if (e.target.closest('[data-act="back"]')) history.length > 1 ? history.back() : go('#/documents'); };
 }

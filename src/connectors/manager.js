@@ -11,13 +11,14 @@ const err = (message, status = 400) => Object.assign(new Error(message), { statu
 
 class SourceManager {
   // services: { github, slack, ... } (src/connectors/*.js) and ctx: what they need to reach the world ({ settings, google, integrations, app, fetchImpl, bases, sleep })
-  constructor({ items, runner, bus = null, pdfToText = null, watch = true, reconcileMs = RECONCILE_MS, services = {}, ctx = {} }) {
+  constructor({ items, runner, bus = null, pdfToText = null, ocr = null, watch = true, reconcileMs = RECONCILE_MS, services = {}, ctx = {} }) {
     this.services = services;
     this.ctx = ctx;
     this.items = items;
     this.runner = runner;
     this.bus = bus;
     this.pdfToText = pdfToText;
+    this.ocr = ocr;
     this.watchOn = watch;
     this.reconcileMs = reconcileMs;
     this.connectors = new Map();   // source id -> FolderConnector (only while it is enabled)
@@ -39,7 +40,7 @@ class SourceManager {
     if (!['folder', 'obsidian'].includes(source.kind) || !source.config?.path) return null;   // (imported meetings have no folder to read)
     const live = this.connectors.get(source.id);
     if (live) { live.source = source; return live; }
-    const c = new FolderConnector({ source, items: this.items, pdfToText: this.pdfToText });
+    const c = new FolderConnector({ source, items: this.items, pdfToText: this.pdfToText, ocr: this.ocr });
     this.connectors.set(source.id, c);
     return c;
   }

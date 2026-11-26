@@ -8,6 +8,7 @@ const { meetingUrl } = require('./ics');
 const SCOPE = 'https://www.googleapis.com/auth/calendar.readonly openid email';
 const SCOPE_GMAIL = `${SCOPE} https://www.googleapis.com/auth/gmail.readonly`;   // only when the person chose to connect mail too
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
+const INCREMENTAL_MAX_AGE_MS = 12 * 3600_000;
 const STATUS = { accepted: 'ACCEPTED', declined: 'DECLINED', tentative: 'TENTATIVE', needsAction: 'NEEDS-ACTION' };
 
 const b64url = (buf) => Buffer.from(buf).toString('base64url');
@@ -60,6 +61,7 @@ class GoogleCalendar {
     Object.assign(this, { getConfig, saveConfig, authBase, tokenUrl, revokeUrl, apiBase, gmailBase, now, authTimeoutMs });
     this.fetch = fetchImpl;
     this.refreshing = null;
+    this.windows = new Map();   // calendar id -> what is known of its window (calendarItems)
   }
 
   config() { return { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], ...(this.getConfig() || {}) }; }
@@ -198,6 +200,27 @@ class GoogleCalendar {
     return calendars;
   }
 
+  // The raw events of one calendar for a window. The first time (or for a wider window, or after twelve hours) the whole window is read; after
+  // that only what changed since the last look is asked for (updatedMin, cancelled ones included) and applied to what is already known, so
+  // a refresh of a busy calendar is a few events, not all of them. Any trouble with that falls back to reading the whole window again.
+  async calendarItems(calId, from, to) {
+    const path = `/calendars/${encodeURIComponent(calId)}/events`;
+    const c = this.windows.get(calId);
+    if (c && c.from <= from && c.to >= to && this.now() - c.fullAt < INCREMENTAL_MAX_AGE_MS) {
+      try {
+        const changed = await this.paginate(path, { singleEvents: 'true', timeMin: new Date(c.from).toISOString(), timeMax: new Date(c.to).toISOString(), updatedMin: new Date(c.syncedAt - 60_000).toISOString(), showDeleted: 'true', maxResults: 250 });
+        for (const it of changed) { if (it.status === 'cancelled') c.items.delete(it.id); else c.items.set(it.id, it); }
+        c.syncedAt = this.now();
+        return [...c.items.values()];
+      } catch (e) { if (e.code === 'google-auth') throw e; this.windows.delete(calId); }
+    }
+    const w = c ? { from: Math.min(c.from, from), to: Math.max(c.to, to) } : { from, to };
+    const syncedAt = this.now();
+    const items = await this.paginate(path, { singleEvents: 'true', orderBy: 'startTime', timeMin: new Date(w.from).toISOString(), timeMax: new Date(w.to).toISOString(), maxResults: 250 });
+    this.windows.set(calId, { ...w, items: new Map(items.map((it) => [it.id, it])), syncedAt, fullAt: syncedAt });
+    return items;
+  }
+
   // Events of the selected calendars overlapping [from, to), sorted like expand().
   async events({ from, to }) {
     let cals = this.config().calendars;
@@ -205,9 +228,7 @@ class GoogleCalendar {
     const out = [];
     const seen = new Set();
     for (const cal of cals.filter((c) => c.selected)) {
-      const items = await this.paginate(`/calendars/${encodeURIComponent(cal.id)}/events`, {
-        singleEvents: 'true', orderBy: 'startTime', timeMin: new Date(from).toISOString(), timeMax: new Date(to).toISOString(), maxResults: 250,
-      });
+      const items = await this.calendarItems(cal.id, from, to);
       for (const it of items) {
         const ev = toEvent(it, cal);
         if (!ev || ev.end <= from || ev.start >= to) continue;
@@ -224,6 +245,7 @@ class GoogleCalendar {
     const c = this.config();
     const token = c.refreshToken || c.accessToken;
     if (token) await this.postForm(this.revokeUrl, { token }).catch(() => {});
+    this.windows.clear();
     this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false });
   }
 }

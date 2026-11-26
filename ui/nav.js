@@ -19,6 +19,7 @@ export const DOORS = [
       L('#/', 'Home', 'home', ['home']),
       L('#/inbox', 'Inbox', 'inbox', ['inbox'], { count: 'inbox' }),
       L('#/promises', 'Promises', 'check', ['promises']),
+      L('#/review', 'Weekly review', 'clock', ['review']),
       L('#/calendar', 'Calendar', 'calendar', ['calendar']),
       L('#/actions', 'Action items', 'list', ['actions'], { count: 'openActions' }),
     ] }],
@@ -42,6 +43,7 @@ export const DOORS = [
       { special: 'tags' },
       { label: 'Knowledge', links: [
         L('#/people', 'People', 'users', ['people', 'person']),
+        L('#/projects', 'Projects', 'layers', ['projects', 'project']),
         L('#/topics', 'Topics', 'network', ['topics', 'topic'], { count: 'topics' }),
         L('#/glossary', 'Glossary', 'book', ['glossary', 'term'], { count: 'glossary' }),
         L('#/briefings', 'Briefings', 'doc', ['briefings']),
@@ -52,7 +54,7 @@ export const DOORS = [
     id: 'setup', label: 'Setup', icon: 'settings', href: '#/integrations',
     hint: 'Connect your tools and choose how WhisperBrain works.',
     sections: [
-      { links: [L('#/sources', 'Folders & vaults', 'folder', ['sources'], { count: 'sources' }), L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/activity', 'Activity', 'refresh', ['activity'])] },
+      { links: [L('#/sources', 'Folders & vaults', 'folder', ['sources'], { count: 'sources' }), L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/activity', 'Activity', 'refresh', ['activity']), L('#/rules', 'Rules', 'wand', ['rules'])] },
       { label: 'Settings', links: SETTINGS_SECTIONS.map(([id, label, icon]) => L(`#/settings/${id}`, label, icon, ['settings'], { section: id })) },
     ],
   },

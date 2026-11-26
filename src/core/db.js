@@ -542,6 +542,38 @@ const MIGRATIONS = [
   );
   CREATE INDEX actions_state ON actions(state);
   `,
+  // v21: projects. A project is a name with the words that belong to it (and optionally a space). What belongs to it is worked out when it is
+  // looked at (meetings, notes and promises that mention those words or sit in that space), so nothing has to be filed by hand.
+  `
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    keywords TEXT NOT NULL DEFAULT '[]',
+    space_id TEXT REFERENCES folders(id) ON DELETE SET NULL,
+    archived INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
+  // v22: rules. A rule is a sentence the person wrote and the structured form it was understood as (checked in code against a fixed set of
+  // triggers, conditions and actions). A rule can only PROPOSE: it never sends anything by itself, every proposal waits in the Inbox for approval.
+  // rule_runs makes a rule act once per promise or decision.
+  `
+  CREATE TABLE rules (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    spec TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE rule_runs (
+    rule_id TEXT NOT NULL REFERENCES rules(id) ON DELETE CASCADE,
+    assertion_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (rule_id, assertion_id)
+  );
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

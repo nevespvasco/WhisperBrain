@@ -246,3 +246,35 @@ test('a private source only ever reaches an AI server on this computer', () => {
   const items = [{ sourceId: 'a', id: 1 }, { sourceId: 'b', id: 2 }];
   assert.deepEqual(visibleToAi(items, new Map([['a', normal], ['b', priv]]), remote).map((i) => i.id), [1]);
 });
+
+test('a scanned PDF is read by OCR where the tools exist; without them it is kept as a PDF with no text, and says so', async () => {
+  const { ocrPdf, available } = require('../src/importers/ocr');
+  const fsx = require('node:fs'), pathx = require('node:path');
+  const dir = tmpDir('wb-ocr-t-');
+  // stand-ins for pdftoppm and tesseract
+  const calls = [];
+  const exec = async (cmd, args) => {
+    calls.push(cmd);
+    if (cmd === 'pdftoppm') { const prefix = args.at(-1); for (const n of [1, 2]) fsx.writeFileSync(`${prefix}-${n}.png`, 'x'); return { stdout: '' }; }
+    if (cmd === 'tesseract') return { stdout: `text of ${pathx.basename(args[0])} in ${args[args.indexOf('-l') + 1]}\n` };
+    throw new Error('unexpected');
+  };
+  assert.equal(await ocrPdf(Buffer.from('%PDF-fake'), { exec, lang: 'por+eng' }), 'text of p-1.png in por+eng\n\ntext of p-2.png in por+eng');
+  assert.deepEqual(calls, ['pdftoppm', 'tesseract', 'tesseract']);
+  assert.deepEqual(await available(async () => ({ stdout: '' })), { available: true, reason: '' });
+  const missing = await available(async (cmd) => { if (cmd === 'tesseract') throw Object.assign(new Error('x'), { code: 'ENOENT' }); return { stdout: '' }; });
+  assert.deepEqual(missing, { available: false, reason: 'tesseract is not installed' });
+  // through the folder connector: a PDF with no text layer
+  const st = new ItemStore(open(':memory:'));
+  write(dir, 'scan.pdf', '%PDF-1.4 fake');
+  const noText = async () => ({ text: '' });
+  const withOcr = st.addSource({ kind: 'folder', name: 'A', config: { path: dir } });
+  await new FolderConnector({ source: withOcr, items: st, pdfToText: noText, ocr: async () => 'Recognised words from the scan' }).scan();
+  const it = st.byExternal(withOcr.id, 'scan.pdf');
+  assert.deepEqual([it.text, it.meta.ocr], ['Recognised words from the scan', true]);
+  assert.equal(st.list({ q: 'recognised' }).length, 1, 'and it is searchable');
+  const without = st.addSource({ kind: 'folder', name: 'B', config: { path: dir } });
+  await new FolderConnector({ source: without, items: st, pdfToText: noText, ocr: async () => { throw new Error('tesseract is not installed'); } }).scan();
+  assert.deepEqual([st.byExternal(without.id, 'scan.pdf').text, st.byExternal(without.id, 'scan.pdf').meta.needsOcr], ['', true]);
+  fsx.rmSync(dir, { recursive: true, force: true });
+});

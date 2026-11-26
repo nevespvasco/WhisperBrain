@@ -25,10 +25,11 @@ const toRel = (root, p) => path.relative(root, p).split(path.sep).join('/');
 
 class FolderConnector {
   // source: { id, kind: 'folder' | 'obsidian', config: { path, exclude?: [dir names] } }. items: the ItemStore.
-  constructor({ source, items, pdfToText = null, now = () => Date.now() }) {
+  constructor({ source, items, pdfToText = null, ocr = null, now = () => Date.now() }) {
     this.source = source;
     this.items = items;
     this.pdfToText = pdfToText;
+    this.ocr = ocr;                    // async (buffer) -> text, for a PDF whose pages are pictures; null when this computer cannot
     this.now = now;
     this.watcher = null;
   }
@@ -88,7 +89,9 @@ class FolderConnector {
       const buf = fs.readFileSync(abs);
       let text = '';
       try { text = (await this.pdfToText(buf)).text || ''; } catch { return { ...common, kind: 'document', title: base, text: '', hash: sha(buf), meta: { ...common.meta, unreadable: true } }; }
-      return { ...common, kind: 'document', title: base, text, hash: sha(buf) };
+      let ocred = false;
+      if (!text.trim() && this.ocr) { try { text = await this.ocr(buf); ocred = !!text.trim(); } catch { /* no OCR: it stays a PDF without text */ } }
+      return { ...common, kind: 'document', title: base, text, hash: sha(buf), meta: { ...common.meta, ...(ocred ? { ocr: true } : !text.trim() ? { unreadable: true, needsOcr: true } : {}) } };
     }
     if (st.size > MAX_TEXT_FILE) return null;
     const buf = fs.readFileSync(abs);

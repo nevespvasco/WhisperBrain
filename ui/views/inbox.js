@@ -33,6 +33,17 @@ const card = (c) => {
       <div class="xsmall muted">${t('This is exactly what will be sent.')}</div>
       <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve">${t('Approve and send')}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not send')}</button></div></div>`;
   }
+  if (c.type === 'supersede') {
+    return `<div class="card inbox-card" data-id="${esc(c.id)}" data-type="supersede"><div class="xsmall muted">${icon('merge', 'sm')} ${t('Does this replace an earlier decision?')}</div>
+      <div class="small" style="margin:6px 0"><span class="muted">${day(c.older.at)}</span> <s>${esc(c.older.text)}</s></div><div class="small"><span class="muted">${day(c.newer.at)}</span> <b>${esc(c.newer.text)}</b></div>
+      <div class="xsmall muted" style="margin-top:4px">${t('Words in common')}: ${esc(c.shared.join(', '))}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="sup-yes">${t('Yes, it replaces it')}</button><button class="btn sm ghost" data-do="sup-no">${t('Not related')}</button></div></div>`;
+  }
+  if (c.type === 'idle') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="idle"><div class="xsmall muted">${icon('layers', 'sm')} ${t('Quiet project')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.name)}</div><div class="small muted">${t('Nothing new for {n} days, and {m} promises are still open.', { n: c.days, m: c.open })}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><a class="btn sm primary" href="#/project/${c.id}">${t('Open the project')}</a><button class="btn sm ghost" data-do="idle-no">${t('Not needed')}</button></div></div>`;
+  }
   if (c.type === 'noreply') {
     return `<div class="card inbox-card" data-id="${c.id}" data-type="noreply"><div class="xsmall muted">${icon('mail', 'sm')} ${t('No reply yet')}</div>
       <div class="strong" style="margin:4px 0">${esc(c.title)}</div><div class="small muted">${t('You asked {who} {n} days ago and nobody has answered.', { who: esc((c.to || []).join(', ') || t('them')), n: c.days })}</div>
@@ -69,6 +80,8 @@ export async function render(main) {
       else if (what === 'edit') { await editDialog(id, type); }
       else if (what === 'approve') { const r = await api('POST', `/api/actions/${id}/approve`); if (r.state === 'done') done(`${t('Sent')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be sent.'))); }
       else if (what === 'reject-action') await api('POST', `/api/actions/${id}/reject`);
+      else if (what === 'sup-yes' || what === 'sup-no') { const [o, n] = id.split(':'); await api('POST', `/api/inbox/supersede/${o}/${n}/${what === 'sup-yes' ? 'confirm' : 'reject'}`); }
+      else if (what === 'idle-no') await api('POST', `/api/inbox/idle/${id}/dismiss`);
       else if (what === 'nodismiss') await api('POST', `/api/inbox/noreply/${id}/dismiss`);
       else if (what === 'remind') { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); await api('POST', '/api/reminders', { text: `${t('Follow up')}: ${el.querySelector('.strong')?.textContent || ''}`, dueAt: d.getTime() }); await api('POST', `/api/inbox/noreply/${id}/dismiss`); done(t('I will remind you tomorrow morning')); }
       await draw();

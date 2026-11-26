@@ -281,3 +281,35 @@ test('the Inbox notices an e-mail you asked something in that nobody answered, a
   thread('waiting', now - 4 * day, { lastFromMe: true, lastAsksSomething: true });                 // you wrote again: a new situation
   assert.equal(app.inbox.cards().filter((c) => c.type === 'noreply').length, 1);
 });
+
+test('Discord data package: the messages you wrote, in JSON or the older CSV layout, one item per channel per day, again without duplicates', async (t) => {
+  const { zip } = require('../src/core/zip-writer');
+  const { createServer } = require('../src/server/http');
+  const path = require('node:path');
+  const { ROOT } = require('./helpers');
+  const { csv } = require('../src/connectors/discord-export');
+  assert.deepEqual(csv('ID,Timestamp,Contents\n1,2026-11-25 10:00:00,"hello, ""world""\nsecond line"\n2,2026-11-25 10:01:00,plain'), [['ID', 'Timestamp', 'Contents'], ['1', '2026-11-25 10:00:00', 'hello, "world"\nsecond line'], ['2', '2026-11-25 10:01:00', 'plain']]);
+  const w = await fakeWorld(); t.after(() => w.close());
+  const app = await boot(t, w);
+  const srv = createServer(app, { uiDir: path.join(ROOT, 'ui') });
+  const { port, token } = await srv.listen(0);
+  t.after(() => srv.close());
+  const pkg = zip([
+    { name: 'messages/index.json', data: JSON.stringify({ 111: 'general', 222: 'Direct Message with rui' }) },
+    { name: 'messages/c111/messages.json', data: JSON.stringify([{ ID: '9', Timestamp: '2026-11-25T10:00:00+00:00', Contents: 'I will send the sheet tomorrow', Attachments: '' }, { ID: '10', Timestamp: '2026-11-25T11:00:00+00:00', Contents: '', Attachments: 'https://cdn/x.png' }]) },
+    { name: 'messages/c222/messages.csv', data: 'ID,Timestamp,Contents,Attachments\n7,2026-11-24 09:00:00,Thanks Rui,\n' },
+  ]);
+  const send = (body) => fetch(`http://127.0.0.1:${port}/api/sources/discord-export`, { method: 'POST', headers: { Cookie: `wb_token=${token}`, 'Content-Type': 'application/octet-stream' }, body }).then(async (r) => ({ status: r.status, body: await r.json() }));
+  const r1 = await send(pkg);
+  assert.deepEqual([r1.status, r1.body.channels, r1.body.created], [200, 2, 2]);
+  const src = app.items.source(r1.body.source);
+  assert.equal(src.sensitivity, 'private');
+  const day = app.items.byExternal(src.id, '111:2026-11-25');
+  assert.equal(day.title, '#general · 2026-11-25');
+  assert.match(day.text, /you: I will send the sheet tomorrow\n\[11:00\] you: \[attachment\]/);
+  assert.equal(app.items.byExternal(src.id, '222:2026-11-24').title, '#DM: rui · 2026-11-24');
+  const r2 = await send(pkg);
+  assert.deepEqual([r2.body.created, r2.body.unchanged, r2.body.source], [0, 2, r1.body.source], 'again: the same items, nothing duplicated');
+  assert.equal((await send(Buffer.from('not a zip'))).status >= 400, true);
+  assert.equal((await send(zip([{ name: 'readme.txt', data: 'x' }]))).status, 400);
+});

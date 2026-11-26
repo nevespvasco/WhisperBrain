@@ -1,0 +1,158 @@
+{
+  "note": "A small Portuguese (pt-PT) corpus and questions, written by hand, to catch regressions in how search treats accents, inflection and everyday phrasing. It is NOT the person's own data: build a set from your own notes for a real measurement (scripts/retrieval-eval.js).",
+  "corpus": [
+    {
+      "title": "Reunião de preço",
+      "text": "Decidimos acabar com o plano gratuito a partir de janeiro. O preço do plano pago passa de 19 para 29 euros. A Ana vai enviar a nova tabela de preços ao Rui até sexta-feira."
+    },
+    {
+      "title": "Plano de contratações",
+      "text": "Vamos contratar dois engenheiros no segundo trimestre. O orçamento para as contratações ainda precisa de aprovação financeira. O Rui trata do anúncio das vagas."
+    },
+    {
+      "title": "Lançamento da aplicação móvel",
+      "text": "A aplicação móvel será lançada em março, depois da revisão jurídica do contrato com o fornecedor de pagamentos. Falta a aprovação do departamento jurídico."
+    },
+    {
+      "title": "Notas de produto",
+      "text": "Os clientes pedem o modo offline. A equipa de produto quer priorizar a sincronização antes de novas funcionalidades. Ficou decidido adiar o painel de estatísticas."
+    },
+    {
+      "title": "Férias e ausências",
+      "text": "A Marta estará de férias em agosto. A Ana cobre o suporte nessas semanas. Convém avisar os clientes com antecedência."
+    },
+    {
+      "title": "Reunião com a Acme",
+      "text": "A Acme quer um desconto de volume e um contrato anual. Ficou combinado enviar uma proposta revista até ao fim do mês."
+    },
+    {
+      "title": "Retrospetiva do trimestre",
+      "text": "Correu bem a migração da base de dados. Correu mal a comunicação entre as equipas. Acordámos reuniões semanais curtas e um canal único para incidentes."
+    },
+    {
+      "title": "Segurança e privacidade",
+      "text": "Os dados dos clientes ficam no computador de cada pessoa. Não enviamos áudio para a nuvem. A política de retenção apaga reuniões antigas ao fim de um ano."
+    },
+    {
+      "title": "Orçamento de marketing",
+      "text": "O orçamento de marketing para a primavera foi reduzido em dez por cento. Priorizar conteúdos próprios em vez de anúncios pagos."
+    },
+    {
+      "title": "Lista de leituras",
+      "text": "Livros e artigos para novembro: gestão de produto, escrita clara, entrevistas com utilizadores."
+    }
+  ],
+  "questions": [
+    {
+      "q": "O que ficou decidido sobre o plano gratuito?",
+      "expect": [
+        "Reunião de preço"
+      ]
+    },
+    {
+      "q": "quanto custa agora o plano pago",
+      "expect": [
+        "Reunião de preço"
+      ]
+    },
+    {
+      "q": "quem vai enviar a tabela de precos",
+      "expect": [
+        "Reunião de preço"
+      ]
+    },
+    {
+      "q": "quando vamos contratar engenheiros",
+      "expect": [
+        "Plano de contratações"
+      ]
+    },
+    {
+      "q": "orcamento das contratacoes",
+      "expect": [
+        "Plano de contratações"
+      ]
+    },
+    {
+      "q": "quando é o lançamento da aplicação móvel",
+      "expect": [
+        "Lançamento da aplicação móvel"
+      ]
+    },
+    {
+      "q": "falta aprovação jurídica do contrato",
+      "expect": [
+        "Lançamento da aplicação móvel"
+      ]
+    },
+    {
+      "q": "o que pedem os clientes",
+      "expect": [
+        "Notas de produto"
+      ]
+    },
+    {
+      "q": "quem cobre o suporte quando a Marta sai",
+      "expect": [
+        "Férias e ausências"
+      ]
+    },
+    {
+      "q": "proposta revista para a Acme",
+      "expect": [
+        "Reunião com a Acme"
+      ]
+    },
+    {
+      "q": "o que correu mal no trimestre",
+      "expect": [
+        "Retrospetiva do trimestre"
+      ]
+    },
+    {
+      "q": "enviamos o áudio para a nuvem?",
+      "expect": [
+        "Segurança e privacidade"
+      ]
+    },
+    {
+      "q": "retenção de reuniões antigas",
+      "expect": [
+        "Segurança e privacidade"
+      ]
+    },
+    {
+      "q": "orçamento de marketing da primavera",
+      "expect": [
+        "Orçamento de marketing"
+      ]
+    },
+    {
+      "q": "o que vamos ler em novembro",
+      "expect": [
+        "Lista de leituras"
+      ]
+    }
+  ],
+  "hard": [
+    {
+      "q": "quanto vamos gastar com publicidade",
+      "expect": [
+        "Orçamento de marketing"
+      ]
+    },
+    {
+      "q": "quando é que a equipa de suporte fica reduzida",
+      "expect": [
+        "Férias e ausências"
+      ]
+    },
+    {
+      "q": "os dados pessoais ficam na máquina local",
+      "expect": [
+        "Segurança e privacidade"
+      ]
+    }
+  ],
+  "hardNote": "Questions with almost no word in common with the answer. The word index is expected to miss some; they are reported, not asserted, and are what an embedding model is for."
+}
