@@ -9,13 +9,15 @@ const { SignalError } = require('./protocol');
 const DEFAULT_PORT = 47631;
 const MAX_BODY = 256 * 1024;
 const MAX_MESSAGES = 200;
+const MAX_AUDIO = 128 * 1024;   // one chunk of the tab's audio: a few hundred ms of 16 kHz mono, not a file
 // Only extensions may call, never a web page: a page knowing the token is not enough.
 const EXTENSION_ORIGIN = /^(?:chrome|moz|ms-browser)-extension:\/\/[\w-]+$/;
 
 const safeEqual = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 
 // getToken(): the pairing secret ('' = refuse everything). info(): { version, recording } for the hello reply.
-function createIntake({ hub, getToken, info = () => ({}) }) {
+// onAudio({ pcm, endMs }) -> { ok, reason? }: the call's browser tab streaming its audio (16 kHz mono s16le) for the recording in progress.
+function createIntake({ hub, getToken, info = () => ({}), onAudio = null }) {
   let port = 0;
   const hostOk = (h) => h === `127.0.0.1:${port}` || h === `localhost:${port}`;
 
@@ -23,7 +25,7 @@ function createIntake({ hub, getToken, info = () => ({}) }) {
     const o = req.headers.origin;
     if (o && EXTENSION_ORIGIN.test(o)) {
       res.setHeader('Access-Control-Allow-Origin', o);
-      res.setHeader('Access-Control-Allow-Headers', 'content-type, x-wb-signal-token, x-wb-source');
+      res.setHeader('Access-Control-Allow-Headers', 'content-type, x-wb-signal-token, x-wb-source, x-wb-end');
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
       res.setHeader('Access-Control-Max-Age', '600');
       res.setHeader('Vary', 'Origin');
@@ -37,6 +39,13 @@ function createIntake({ hub, getToken, info = () => ({}) }) {
     let n = 0;
     for await (const c of req) { n += c.length; if (n > MAX_BODY) throw Object.assign(new Error('request too large'), { status: 413 }); chunks.push(c); }
     try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { throw Object.assign(new Error('invalid JSON'), { status: 400 }); }
+  }
+
+  async function raw(req) {
+    const chunks = [];
+    let n = 0;
+    for await (const c of req) { n += c.length; if (n > MAX_AUDIO) throw Object.assign(new Error('audio chunk too large'), { status: 413 }); chunks.push(c); }
+    return Buffer.concat(chunks);
   }
 
   async function handle(req, res) {
@@ -60,6 +69,15 @@ function createIntake({ hub, getToken, info = () => ({}) }) {
         let accepted = 0, rejected = 0;
         for (const m of list) { try { hub.ingest(m, { source, kind: 'extension' }); accepted++; } catch (e) { if (e instanceof SignalError) rejected++; else throw e; } }
         return send(res, 200, { accepted, rejected, ...info() });
+      }
+      if (req.method === 'POST' && url.pathname === '/meet/audio') {
+        if (!onAudio) return send(res, 404, { error: 'not found' });
+        if (!info().recording) return send(res, 409, { error: 'no recording is on' });
+        const pcm = await raw(req);
+        if (!pcm.length || pcm.length % 2) return send(res, 400, { error: 'audio is 16-bit samples' });
+        const endMs = Number(req.headers['x-wb-end']);
+        const r = onAudio({ pcm, endMs: Number.isFinite(endMs) && endMs > 0 ? endMs : Date.now() }) || { ok: false, reason: 'refused' };
+        return send(res, r.ok ? 200 : 409, r.ok ? { ok: true } : { error: r.reason === 'not recording' ? 'no recording is on' : r.reason });
       }
       return send(res, 404, { error: 'not found' });
     } catch (e) {

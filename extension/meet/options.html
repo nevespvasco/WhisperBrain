@@ -27,6 +27,12 @@
     <small>In WhisperBrain: Settings → Meetings → Browser extension → Copy pairing code.</small>
     <button id="save">Pair</button>
   </div>
+  <div class="card" id="tabcard">
+    <label>This tab's audio</label>
+    <div id="tabstate" class="muted">Open this popup on the call's tab while WhisperBrain is recording.</div>
+    <small>Records only this tab as the other people's voices: music, notifications and other calls on this computer stay out. You keep hearing the call. Chrome only allows this when you press the button.</small>
+    <button id="tabgo">Record only this tab's audio</button> <button id="tabstop" class="quiet" hidden>Stop</button>
+  </div>
   <div class="card">
     <label>Pages to read</label>
     <div id="plats"></div>
@@ -40,4 +46,4 @@
     <small>If names stop arriving after a platform changes its page, a corrected set of selectors for it goes here (JSON). It is merged over the built-in one. The built-in ones for Teams, Zoom and Discord have not been checked against a real call yet.</small>
     <button id="saveSel" class="quiet">Save selectors</button> <button id="clearSel" class="quiet">Use the built-in</button>
   </div>
-</main><script src="selectors.js"></script><script src="options.js"></script></body></html>
+</main><script src="selectors.js"></script><script src="options.js"></script><script src="optionstab.js"></script></body></html>

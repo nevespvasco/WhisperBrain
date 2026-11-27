@@ -4,7 +4,7 @@
   "description": "Tells the WhisperBrain app, on this computer only, who is on your call (Google Meet, Teams, Zoom or Discord in the browser) and who is speaking, so it can name the voices in your transcript.",
   "version": "0.1.0",
   "minimum_chrome_version": "110",
-  "permissions": ["storage", "alarms"],
+  "permissions": ["storage", "alarms", "activeTab", "tabCapture", "offscreen"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [

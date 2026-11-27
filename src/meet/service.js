@@ -15,7 +15,7 @@ class MeetService {
   // platformId: 'linux' | 'darwin' | 'win32'. roots: where the accessibility helper may be (see a11y-source.js).
   // dataDir: where your own selectors files live (meet-selectors.json for Google Meet, <platform>-selectors.json for the others).
   // platforms: the registry of meeting platforms (platforms.js).
-  constructor({ settings, bus, version = '0.0.0', isRecording = () => false, platforms = PLATFORMS, hub = new SignalHub({ platforms }), platformId = process.platform, roots = [], dataDir = null, spawn = undefined, llm = null, captureWindow = null }) {
+  constructor({ settings, bus, version = '0.0.0', isRecording = () => false, platforms = PLATFORMS, hub = new SignalHub({ platforms }), platformId = process.platform, roots = [], dataDir = null, spawn = undefined, llm = null, captureWindow = null, onTabAudio = null }) {
     Object.assign(this, { settings, bus, version, hub, platformId, platforms });
     this.spec = helperSpec(platformId, { roots });
     this.userSelectors = dataDir ? path.join(dataDir, 'meet-selectors.json') : null;
@@ -24,7 +24,7 @@ class MeetService {
     this.launcher = launcher; // replaceable: a test must not write to the real home folder
     // last resort: look at the meeting window (needs a way to capture it, which only the desktop app has, and a vision model)
     this.vision = new VisionSource({ hub, llm, capture: captureWindow, userName: () => this.settings.get('userName') });
-    this.intake = createIntake({ hub, getToken: () => this.settings.get('meet').token, info: () => ({ version: this.version, recording: isRecording() }) });
+    this.intake = createIntake({ hub, getToken: () => this.settings.get('meet').token, info: () => ({ version: this.version, recording: isRecording() }), onAudio: onTabAudio });
     this.listening = false;
     this.error = '';
     this.queue = Promise.resolve();

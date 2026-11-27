@@ -97,7 +97,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const translator = new Translator({ notes, settings, llm: scheduler.client('translation'), bus });
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
-  const meet = new MeetService({ settings, bus, version, llm: scheduler.client('background'), captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
+  const meet = new MeetService({ settings, bus, version, llm: scheduler.client('background'), captureWindow, isRecording: () => recording.status().active, onTabAudio: (c) => recording.acceptTabAudio(c), platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
   // Discord's local RPC: which call the person is in, who is in it and who speaks (no bot). Its saved tokens come back through settings.
   const discordRpc = new DiscordRpc({ getConfig: () => settings.get('discordRpc'), saveTokens: (tk) => settings.update({ discordRpc: { ...settings.get('discordRpc'), ...tk } }) });
   const discordRpcSource = new DiscordRpcSource({ hub: meet.hub, rpc: discordRpc });

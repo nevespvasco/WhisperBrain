@@ -55,13 +55,13 @@ test('extension differ: everything it says is something the app accepts', () => 
 test('extension: the manifest asks for no more than it needs', () => {
   const m = JSON.parse(fs.readFileSync(path.join(ROOT, 'extension/meet/manifest.json'), 'utf8'));
   assert.equal(m.manifest_version, 3);
-  assert.deepEqual(m.permissions.sort(), ['alarms', 'storage']);
+  assert.deepEqual(m.permissions.sort(), ['activeTab', 'alarms', 'offscreen', 'storage', 'tabCapture'], 'tabCapture and offscreen for the call\'s tab, activeTab so it is only ever the tab the person pressed the button on');
   assert.deepEqual(m.host_permissions.sort(), ['http://127.0.0.1/*', 'http://localhost/*'], 'only this computer');
   const { PLATFORMS } = require('../src/meet/platforms');
   assert.deepEqual([...m.content_scripts[0].matches].sort(), PLATFORMS.list().flatMap((p) => p.extension?.matches || []).sort(), 'only the pages of the platforms it serves');
   assert.ok(m.content_scripts[0].matches.every((x) => /^https:\/\/[a-z.*]+\.?[a-z]+\.[a-z]+\/[a-z]+\/\*$|^https:\/\/[\w.-]+\/\*$|^https:\/\/\*\.zoom\.us\/wc\/\*$/.test(x)), 'no wide patterns: each is one site (Zoom: its web client only)');
   assert.ok(!JSON.stringify(m).includes('<all_urls>'));
-  for (const f of ['background.js', 'content.js', 'reader.js', 'selectors.js', 'options.html', 'options.js']) assert.ok(fs.existsSync(path.join(ROOT, 'extension/meet', f)), f);
+  for (const f of ['background.js', 'content.js', 'reader.js', 'selectors.js', 'options.html', 'options.js', 'optionstab.js', 'offscreen.html', 'offscreen.js', 'tabaudio.js']) assert.ok(fs.existsSync(path.join(ROOT, 'extension/meet', f)), f);
 });
 
 // ---- live: a real browser, the real extension ----

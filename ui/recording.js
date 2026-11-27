@@ -187,6 +187,7 @@ export function recEvents({ renderTopbar }) {
     'recording.level': (d) => { S.level = { mic: d.mic, system: d.system }; if (S.rec.active) renderRecbar(); },
     'recording.warning': (d) => toast(d.message, { error: true }),
     // a speaker test recording kept both versions of the call on disk; say where, and what to do with it
+    'recording.tab-audio': (d) => toast(d.state === 'on' ? t('Recording only the call\'s browser tab as the other people') : d.state === 'back' ? t('The call\'s tab is back: recording only it again') : t(d.message || 'The call\'s tab stopped sending audio'), { ok: d.state !== 'lost' }),
     'recording.speaker-test': (d) => toast(t('Speaker test saved ({n} people, {m} min of mixed sound). Folder: {dir}. Turn it into a test with: node eval/discord-test.js "<folder>"', { n: (d.people || []).length, m: Math.round((d.systemSeconds || 0) / 6) / 10, dir: d.dir }), { ok: true, sticky: true }),
     // two or more people at once (the owned speaker pipeline sees it while recording): a short-lived chip in the bar
     'recording.overlap': (d) => { if (S.rec.active && S.rec.noteId === d.noteId) { S.rec.overlapAt = Date.now(); renderRecbar(); setTimeout(() => { if (S.rec.active) renderRecbar(); }, OVERLAP_CHIP_MS + 50); } },

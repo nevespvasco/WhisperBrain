@@ -56,7 +56,30 @@ async function hello() {
   return state;
 }
 
+// ---- the call's tab as the "Them" channel (src/meet/intake.js /meet/audio) ----
+// Chrome allows a tab to be captured only after a user action: the person presses the button in this extension's popup on the call's tab.
+let tabAudio = { on: false, tabId: null, detail: '' };
+async function hasOffscreen() { const c = await chrome.runtime.getContexts({ contextTypes: ['OFFSCREEN_DOCUMENT'] }); return c.length > 0; }
+async function startTabAudio(tabId) {
+  const p = await pairing();
+  if (!p) throw new Error('paste the pairing code first');
+  const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
+  if (!(await hasOffscreen())) await chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['USER_MEDIA'], justification: 'Keeps playing the call tab while sending its audio to the WhisperBrain app on this computer.' });
+  const r = await chrome.runtime.sendMessage({ target: 'offscreen', type: 'start', streamId, base: p.base, token: p.token });
+  if (!r || !r.ok) throw new Error((r && r.error) || 'the browser would not capture the tab');
+  tabAudio = { on: true, tabId, detail: 'sending this tab\'s audio' };
+}
+async function stopTabAudio(detail = '') {
+  try { if (await hasOffscreen()) { await chrome.runtime.sendMessage({ target: 'offscreen', type: 'stop' }); await chrome.offscreen.closeDocument(); } } catch (e) { /* already closed */ }
+  tabAudio = { on: false, tabId: null, detail };
+}
+chrome.tabs.onRemoved.addListener((id) => { if (tabAudio.on && tabAudio.tabId === id) stopTabAudio('the tab was closed'); });
+
 chrome.runtime.onMessage.addListener((m, _sender, reply) => {
+  if (m && m.type === 'tab-audio-start') { startTabAudio(m.tabId).then(() => reply({ ok: true, ...tabAudio }), (e) => { tabAudio = { on: false, tabId: null, detail: e.message }; reply({ ok: false, ...tabAudio }); }); return true; }
+  if (m && m.type === 'tab-audio-stop') { stopTabAudio('stopped').then(() => reply({ ok: true, ...tabAudio })); return true; }
+  if (m && m.type === 'tab-audio-status') { reply(tabAudio); return false; }
+  if (m && (m.type === 'tab-audio-ended' || m.type === 'tab-audio-refused')) { stopTabAudio(m.type === 'tab-audio-refused' ? 'the app is not recording' : 'the tab stopped'); return false; }
   if (m && Array.isArray(m.signals)) {
     const at = Date.now();
     for (const msg of m.signals) queue.push({ at, msg });

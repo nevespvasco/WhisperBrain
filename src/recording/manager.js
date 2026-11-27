@@ -29,6 +29,9 @@ const DRAFT_ECHO_WAIT_MS = 700;   // a mic draft needs this much audio before th
 
 const SPEAKER = { mic: 'me', system: 'them' };
 const REMOTE_GAP_MS = 60;        // a person on Discord is silent between sentences (nothing is sent): gaps longer than this are filled with silence so times stay true
+// the call's browser tab as the system channel: a chunk may be this far from where the clock says before it is padded or trimmed,
+// and the stream is lost when nothing came for TAB_LOST_MS; the computer's own audio is kept TAB_RING_MS to fill the gap
+const TAB_SLACK_MS = 250, TAB_MAX_PAD_MS = 10000, TAB_LOST_MS = 3000, TAB_RING_MS = 8000;
 const LEARN_MS = 10000;          // a voice is remembered from the call's names only when one name was highlighted this long over it...
 const LEARN_SHARE = 0.85;        // ...and held this share of everything highlighted over it
 const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and reopened instead (an hour of silence is not fed to the recognizer)
@@ -72,6 +75,7 @@ class RecordingManager {
       draft: a.draft ? { on: a.draft.on, reason: a.draft.reason || null } : { on: false, reason: null },
       discord: a.discord ? { ...a.discord.info, people: [...a.remote.values()].map((r) => r.name) } : null,
       speakerTest: !!a.test,
+      tab: a.tab ? { live: a.tab.live, gap: a.tab.gapStart !== null, chunks: a.tab.chunks, tabOnly: a.tab.tabOnly } : null,
     };
   }
 
@@ -261,7 +265,7 @@ class RecordingManager {
       this.bus.publish('recording.system-capture', { noteId: a.noteId, ...c });
       if (c.reason) { a.warnings.push(`${ch}: ${c.reason}`); this.bus.publish('recording.warning', { message: `${ch}: ${c.reason}` }); }
     });
-    src.on('pcm', (buf) => this.onPcm(a, ch, buf));
+    src.on('pcm', (buf) => this.onSourcePcm(a, ch, buf));
     src.on('error', (e) => {
       this.bus.publish('recording.warning', { message: `${ch}: ${e.message}` });
     });
@@ -280,6 +284,91 @@ class RecordingManager {
       }
       this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
     });
+  }
+
+  // What a capture source hands over. While the call's browser tab is streaming (see acceptTabAudio) the system source is NOT the
+  // "Them" channel: what it hears is kept for a few seconds and goes in only if the tab stream is lost.
+  onSourcePcm(a, ch, buf) {
+    if (ch === 'system' && a.tab?.live) {
+      a.tab.ring.push({ buf, endWall: Date.now() });
+      let ms = 0, i = a.tab.ring.length;
+      while (i-- > 0) { ms += a.tab.ring[i].buf.length / 32; if (ms > TAB_RING_MS) break; }
+      if (i > 0) a.tab.ring.splice(0, i);
+      return;
+    }
+    this.onPcm(a, ch, buf);
+  }
+
+  // ---- the call's browser tab as the "Them" channel (extension/meet/tabaudio.js → src/meet/intake.js → here) ----
+  // chunk: { pcm: 16 kHz mono s16le, endMs: when it ended, ms since the epoch (this computer's clock, the extension's too) }.
+  // -> { ok } | { ok: false, reason }. While the stream lasts it is the system channel; if it stops (tab closed, extension reloaded)
+  // the computer's own capture, which was kept running, takes over without losing a second, and the gap is marked.
+  acceptTabAudio({ pcm, endMs }) {
+    const a = this.active;
+    if (!a || a.finalizing) return { ok: false, reason: 'not recording' };
+    if (!pcm?.length || pcm.length % 2) return { ok: false, reason: 'not audio' };
+    if (a.paused) return { ok: true, paused: true };
+    const tab = a.tab ||= { live: false, lastAt: 0, ring: [], gapStart: null, chunks: 0, timer: null, tabOnly: false };
+    if (!tab.live) this.tabStart(a, tab);
+    tab.lastAt = Date.now();
+    tab.chunks++;
+    this.feedAligned(a, this.timelineAt(a, endMs - pcm.length / 32), pcm);
+    return { ok: true };
+  }
+
+  timelineAt(a, wallMs) { return a.accMs + (wallMs - a.resumedAt); }
+
+  tabStart(a, tab) {
+    const back = tab.gapStart !== null;
+    if (!a.channels.system) {      // no system capture in this recording: the tab stream makes the channel
+      const push = new PushSource();
+      this.attach(a, 'system', push);
+      push.start();
+      tab.tabOnly = true;
+    }
+    tab.live = true;
+    tab.ring = [];
+    if (back) { this.tabGapEnds(a, tab); this.bus.publish('recording.tab-audio', { noteId: a.noteId, state: 'back' }); }
+    else this.bus.publish('recording.tab-audio', { noteId: a.noteId, state: 'on' });
+    if (!tab.timer) { tab.timer = setInterval(() => this.tabWatch(a), 1000); tab.timer.unref?.(); }
+  }
+
+  // Audio for the system channel that starts at startMs of the timeline: silence fills what was not heard, what was already heard
+  // is not heard twice, so the channel always follows the clock the microphone and the meeting window follow.
+  feedAligned(a, startMs, pcm) {
+    const ch = 'system';
+    const expected = a.fed[ch] > 0 ? a.epoch[ch] + a.fed[ch] / 16 : startMs;
+    const d = startMs - expected;
+    if (d > TAB_SLACK_MS) this.onPcm(a, ch, Buffer.alloc(Math.round(Math.min(d, TAB_MAX_PAD_MS) * 16) * 2));
+    else if (d < -TAB_SLACK_MS) {
+      const cut = Math.round(-d * 16) * 2;
+      if (cut >= pcm.length) return;
+      pcm = pcm.subarray(cut);
+    }
+    this.onPcm(a, ch, pcm);
+  }
+
+  // every second: has the stream stopped?
+  tabWatch(a) {
+    const tab = a?.tab;
+    if (!tab?.live || this.active !== a) return;
+    if (a.paused) { tab.lastAt = Date.now(); return; }
+    if (Date.now() - tab.lastAt < TAB_LOST_MS) return;
+    tab.live = false;
+    tab.gapStart = this.elapsed(a) - (Date.now() - tab.lastAt);
+    for (const { buf, endWall } of tab.ring) this.feedAligned(a, this.timelineAt(a, endWall - buf.length / 32), buf);   // what the computer heard meanwhile
+    tab.ring = [];
+    const message = tab.tabOnly ? 'The call\'s tab stopped sending audio: nothing is recorded as "Them" until it does.' : 'The call\'s tab stopped sending audio: recording everything this computer plays instead.';
+    a.warnings.push(`system: ${message}`);
+    this.bus.publish('recording.tab-audio', { noteId: a.noteId, state: 'lost', message });
+    this.bus.publish('recording.warning', { message });
+  }
+
+  // the stretch of the timeline the tab stream did not cover is a record of the note (evidence), so it can be told later
+  tabGapEnds(a, tab) {
+    const t0 = Math.max(0, tab.gapStart), t1 = Math.max(t0, this.elapsed(a));
+    tab.gapStart = null;
+    try { this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'tab', key: 'tab-gap', name: '', t0, t1, weight: 0, meta: { reason: 'the call\'s tab stopped sending audio; the computer\'s own capture covered it' } }]); } catch { /* a record, never a reason to lose audio */ }
   }
 
   // Audio arriving from the renderer capture bridge (macOS/Windows).
@@ -534,6 +623,7 @@ class RecordingManager {
     a.stage = 'transcribing';
     this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
     for (const src of Object.values(a.channels)) src.stop();
+    this.closeTab(a);
     this.leaveDiscord(a);
     if (a.test) { try { const t = a.test.close(); this.bus.publish('recording.speaker-test', { noteId: a.noteId, ...t }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker test: ${e.message}` }); } }
     a.meet?.detach(); // nothing the meeting window shows after Stop belongs to this recording
@@ -743,7 +833,15 @@ class RecordingManager {
     for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } }
   }
 
-  teardown(a) { for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); try { a.test?.close(); } catch { /* best effort */ } a.meet?.detach(); this.closeSpools(a); }
+  closeTab(a) {
+    const tab = a.tab;
+    if (!tab) return;
+    clearInterval(tab.timer); tab.timer = null;
+    if (tab.gapStart !== null) this.tabGapEnds(a, tab);
+    tab.live = false;
+  }
+
+  teardown(a) { this.closeTab(a); for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); try { a.test?.close(); } catch { /* best effort */ } a.meet?.detach(); this.closeSpools(a); }
 }
 
 module.exports = { RecordingManager, RecordingError };

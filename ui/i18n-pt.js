@@ -1550,4 +1550,8 @@ export const PT = {
   'Discord app (local connection)': 'App do Discord (ligação local)',
   'Asks the Discord app on this computer which call you are in, who is in it and who speaks. Nobody joins the call.': 'Pergunta à app do Discord neste computador em que chamada está, quem está nela e quem fala. Ninguém entra na chamada.',
   'Platform account': 'Conta da plataforma',
+  'Recording only the call\'s browser tab as the other people': 'A gravar só o separador da chamada como as outras pessoas',
+  'The call\'s tab is back: recording only it again': 'O separador da chamada voltou: a gravar só esse outra vez',
+  'The call\'s tab stopped sending audio': 'O separador da chamada deixou de enviar áudio',
+  'The call\'s tab stopped sending audio: recording everything this computer plays instead.': 'O separador da chamada deixou de enviar áudio: a gravar tudo o que este computador toca.',
 };

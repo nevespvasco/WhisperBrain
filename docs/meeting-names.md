@@ -93,3 +93,15 @@ CI compiles the macOS helper and loads the Windows one on every push (`native` j
 - Merging voices requires that they do not sound clearly different (cosine ≥ 0.25 and pitch within 4 semitones) *and* never speak at the same time; a highlight alone never merges two voices.
 - Two people speaking at once say nothing: the highlight is only used when exactly one person is shown.
 - The other program's window is read only while a recording is on.
+
+## Recording only the call's browser tab (the "Them" channel)
+
+For calls held in a browser tab, the extension can send **only that tab's audio** as the "Them" channel: other tabs, music, notifications and a second call in another app stay out. A browser is one process for all its tabs, which is why the computer's output (or one browser process) cannot do this.
+
+1. Pair the extension (above), start a recording in WhisperBrain, open the call's tab.
+2. Click the extension's button on that tab and press *Record only this tab's audio*. Chrome only allows capturing a tab after a user action, so it cannot be automatic.
+3. The extension captures the tab in an offscreen document and **keeps playing it** (a captured tab is otherwise muted), and sends 16 kHz mono audio to the app over the paired loopback door (`POST /meet/audio`, refused unless paired and a recording is on).
+
+In the app (`src/recording/manager.js`): the stream is the system channel for that recording instead of the computer's own capture. Mic and system stay separate channels end to end. Each chunk is stamped with when it ended (same computer, same clock), so it is padded with silence or trimmed to follow the recording's clock and the transcript, speaker turns and meeting signals stay in step. The echo checks read the same channel, so the tab stream is their far-end reference (a cleaner one). If the stream stops (tab closed, extension reloaded) the computer's own capture, which keeps running underneath, takes over **without losing a second** and the gap is marked (an evidence row `tab-gap` and a warning); when the tab streams again it goes back to it.
+
+**Not verified:** the browser side (tabCapture, the offscreen document, playback) needs a person and a real browser and has not been run; it is checked by reading, by `node --check` and by the pure parts (`extension/meet/tabaudio.js`, tested). Everything from the door inwards is tested with a fake extension (`test/tab-audio.test.js`). Checklist: Linux with Chrome/Brave/Edge, then macOS and Windows; that the call stays audible; a second tab playing music is absent from the transcript; echo with speakers.
