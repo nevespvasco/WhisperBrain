@@ -38,6 +38,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const launcher = ['/usr/libexec/at-spi-bus-launcher', '/usr/lib/at-spi2-core/at-spi-bus-launcher'].find((p) => fs.existsSync(p));
   run(launcher, ['--launch-immediately']);
   await sleep(1500);
+  // A desktop session switches "toolkit accessibility" on (org.a11y.Status.IsEnabled) and recent Chrome only registers with AT-SPI when it
+  // is on; Chrome still exposes the page itself only with --force-renderer-accessibility (or a screen reader). On CI there is no desktop.
+  if (process.env.CI) {
+    const set = cp.spawnSync('dbus-send', ['--session', '--print-reply', '--dest=org.a11y.Bus', '/org/a11y/bus', 'org.freedesktop.DBus.Properties.Set', 'string:org.a11y.Status', 'string:IsEnabled', 'variant:boolean:true'], { encoding: 'utf8', timeout: 5000 });
+    diag.isEnabled = { status: set.status, stderr: String(set.stderr || set.error?.message || '').slice(-200) };
+  }
   run(WB_BROWSER, [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', ...(process.env.CI ? ['--no-sandbox'] : []), ...(WB_FLAG === '1' ? ['--force-renderer-accessibility'] : []), url]);
   await sleep(6000);
 
