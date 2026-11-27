@@ -30,9 +30,23 @@ esses essas aquele aquela aqueles aquelas isto isso aquilo aqui ali lá cá agor
 todo toda todos todas algum alguma alguns algumas nenhum nenhuma outro outra outros outras qual quais quem cada coisa
 coisas tipo pronto ok okay pá acho achas sei sabes portanto aliás afinal claro exato exatamente certo vez vezes dia dias
 semana semanas mês meses ano anos hora horas minuto minutos gente pessoal ah eh hum olá obrigado obrigada tá ta né
+bro bruh dude mate buddy man men woman girl boy lol lmao haha hahaha wow damn shit fuck fucking crap omg wtf yo sup huh
+nah yep yup nope cheers sorry welcome sir mam dear mano mana cara meu mano pah bué bue fixe fogo caramba puto porra
+merda carago pois pronto olha olhe ouve epá eá ya yá tás estás tou estou sabes percebes basicamente tipo
+`.split(/\s+/).filter(Boolean));
+
+// Words that are real but say nothing about a subject: a topic can never be only these.
+const GENERIC = new Set(`
+meeting meetings call calls chat chats conversation conversations discussion discussions update updates talk plan plans
+problem problems issue issues work works stuff topic topics idea ideas project projects task tasks team teams company
+thing things case cases way option options result results change changes item items info information note notes
+reunião reuniões chamada chamadas conversa conversas discussão discussões atualização atualizações plano planos
+problema problemas trabalho trabalhos assunto assuntos ideia ideias projeto projetos tarefa tarefas equipa equipas
+empresa caso casos opção opções resultado resultados mudança mudanças informação informações nota notas
 `.split(/\s+/).filter(Boolean));
 
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu;
+const CONTRACTION = /['’](?:t|re|ll|ve|m|d)$|n['’]t$/i;
 const fold = (s) => s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
 
 // Phrase key used to match the same topic across meetings ("Pricing models" ≈ "pricing model").
@@ -65,6 +79,7 @@ function candidates(text) {
       run = [];
     };
     for (const tok of toks) {
+      if (CONTRACTION.test(tok)) { flush(); continue; } // don't, we're, I'll, it's … are never topics
       const w = tok.replace(/['’]s$/i, '');
       if (STOP.has(fold(w)) || /^\d+$/.test(w)) flush(); else run.push(w);
     }
@@ -80,19 +95,41 @@ function docFreq(texts) {
   return { df, docs: texts.length };
 }
 
+// Is this a name someone could file several meetings under ("Frontend", "Hiring plan", "Filmes"), as opposed to a word
+// that was merely said ("Bro", "Don't", "Yeah", "Meeting")? Used for every automatic topic, from the LLM or offline.
+function isTopicName(name) {
+  const n = String(name || '').replace(/\s+/g, ' ').trim().replace(/^[#\-*•\s]+/, '');
+  if (n.length < 3 || n.length > 40 || /[.!?;:,"“”()\[\]{}<>@\/\\]/.test(n)) return false;
+  const words = n.match(WORD) || [];
+  if (!words.length || words.length > 4 || words.join('').length < n.replace(/[\s'’\-]/g, '').length) return false;
+  if (words.some((w) => CONTRACTION.test(w))) return false;
+  const f = words.map((w) => fold(w.replace(/['’]s$/i, '')));
+  if (f.every((w) => STOP.has(w) || GENERIC.has(w) || /^\d+$/.test(w))) return false; // nothing but filler
+  if (STOP.has(f[0]) || STOP.has(f[f.length - 1])) return false;                       // "the pricing", "pricing of"
+  if (words.length === 1) {
+    const w = words[0];
+    if (/^\p{Lu}{2,6}$/u.test(w)) return true;                                          // API, CRM, KPI
+    if (w.length < 5) return false;                                                     // bro, yeah, stuff, dont
+  }
+  return !/^\d/.test(n);
+}
+
 // Best topics for one text. `corpus` is the docFreq of all meetings (including this one).
-function extract(text, corpus = { df: new Map(), docs: 1 }, { max = 6 } = {}) {
+// `strict` is for topics (few, real subjects); the default is the permissive vocabulary used for briefing terms / ASR hotwords.
+function extract(text, corpus = { df: new Map(), docs: 1 }, { max = 6, strict = false } = {}) {
   const cands = candidates(text);
   const scored = [];
   for (const [key, e] of cands) {
     const multi = e.n > 1;
-    if (e.count < 2 && !(multi && e.caps)) continue;
+    // a subject is something the meeting kept coming back to: a lone word must be said 3+ times, a phrase twice
+    if (e.count < (strict && !multi ? 3 : 2) && !(multi && e.caps)) continue;
     const df = corpus.df.get(key) || 1;
     const idf = Math.log(1 + (corpus.docs + 1) / df);
     // in a single-meeting corpus every phrase is "rare": frequency and length carry the score
     let score = Math.log(1 + e.count) * idf * (multi ? 1.6 + 0.2 * e.n : 1) * (e.caps ? 1.3 : 1);
     if (corpus.docs > 3 && df / corpus.docs > 0.6) score *= 0.3; // in most meetings: not a topic, just vocabulary
     const form = [...e.forms.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    if (strict && (!isTopicName(form) || GENERIC.has(fold(form)))) continue;
     scored.push({ key, name: tidy(form), score, count: e.count });
   }
   scored.sort((a, b) => b.score - a.score);
@@ -100,6 +137,7 @@ function extract(text, corpus = { df: new Map(), docs: 1 }, { max = 6 } = {}) {
   const picked = [];
   for (const s of scored) {
     if (picked.some((p) => p.key.includes(s.key) || s.key.includes(p.key))) continue;
+    if (strict && picked.length && s.score < picked[0].score * 0.35) break; // far weaker than the best: noise, not a second subject
     picked.push(s);
     if (picked.length >= max) break;
   }
@@ -109,4 +147,4 @@ function extract(text, corpus = { df: new Map(), docs: 1 }, { max = 6 } = {}) {
 
 const tidy = (s) => (/^\p{Ll}/u.test(s) ? s[0].toUpperCase() + s.slice(1) : s);
 
-module.exports = { STOP, phraseKey, candidates, docFreq, extract, fold };
+module.exports = { STOP, GENERIC, isTopicName, phraseKey, candidates, docFreq, extract, fold };

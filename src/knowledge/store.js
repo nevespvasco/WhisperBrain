@@ -20,7 +20,22 @@ class Knowledge {
     this.corpus = null; // cached docFreq for offline topics
     this.entities = new Entities({ db, settings, bus });   // people: identities, merges, mentions (src/graph/entities.js)
     this.entities.attach();
+    try { this.pruneJunkTopics(); } catch { /* best effort */ }
     bus?.subscribe((e) => { if (['note.created', 'note.deleted', 'note.updated', 'recording.stopped'].includes(e.type)) this.corpus = null; });
+  }
+
+  // Drop automatic topics that are not real subjects ("Bro", "Don't"), left behind by older, looser extraction.
+  // Pinned topics and topics the user attached by hand stay.
+  pruneJunkTopics() {
+    const bad = this.db.prepare('SELECT id, name FROM topics WHERE pinned = 0').all().filter((t) => !kp.isTopicName(t.name)).map((t) => t.id);
+    if (!bad.length) return 0;
+    tx(this.db, () => {
+      for (const id of bad) {
+        this.db.prepare('DELETE FROM note_topics WHERE topic_id = ? AND auto = 1').run(id);
+        this.db.prepare('DELETE FROM topics WHERE id = ? AND id NOT IN (SELECT topic_id FROM note_topics)').run(id);
+      }
+    });
+    return bad.length;
   }
 
   changed(what, data = {}) { this.bus?.publish('knowledge.changed', { what, ...data }); }
@@ -192,6 +207,7 @@ class Knowledge {
       const ins = this.db.prepare(`INSERT INTO note_topics(note_id, topic_id, weight, summary, auto) VALUES(?, ?, ?, ?, ?)
         ON CONFLICT(note_id, topic_id) DO UPDATE SET weight = MAX(weight, excluded.weight), summary = CASE WHEN excluded.summary <> '' THEN excluded.summary ELSE summary END`);
       for (const it of (list || []).slice(0, 12)) {
+        if (auto && !kp.isTopicName(typeof it === 'string' ? it : it?.name)) continue; // automatic topics must be real subjects
         const t = this.upsertTopic(typeof it === 'string' ? it : it.name);
         if (!t) continue;
         ins.run(noteId, t.id, Math.max(0.05, Math.min(1, Number(it.weight) || 1)), clean(it.summary, 600), auto ? 1 : 0);
@@ -305,14 +321,14 @@ class Knowledge {
   }
 
   // Offline topics for one meeting (used when no LLM is configured, and for imported meetings).
-  localTopics(noteId, { max = 6 } = {}) {
+  localTopics(noteId, { max = 4 } = {}) {
     const n = this.notes.get(noteId);
     if (!n) return [];
     const text = noteText(this.notes, n);
     if (!this.corpus) this.corpus = kp.docFreq(this.notes.list({ limit: 2000 }).map((x) => noteText(this.notes, x)));
     const userWords = new Set(words(this.settings.get('userName') || ''));
     const speakerNames = new Set([...this.notes.segments(noteId).map((s) => kp.phraseKey(s.label)), kp.phraseKey(n.title)]);
-    return kp.extract(text, this.corpus, { max: max + 4 })
+    return kp.extract(text, this.corpus, { max: max + 4, strict: true })
       .filter((t) => !speakerNames.has(t.key) && !userWords.has(t.key) && !/^(speaker|orador|room speaker)\b/.test(t.key)).slice(0, max);
   }
   autoTopics(noteId) { return this.setNoteTopics(noteId, this.localTopics(noteId)); }

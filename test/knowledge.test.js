@@ -75,6 +75,24 @@ test('keyphrases: multi-word subjects beat filler words, and plural/singular sha
   assert.equal(kp.phraseKey('Pricing Models'), kp.phraseKey('pricing model'));
 });
 
+test('topics are real subjects: chatter, contractions and vague words never become topics, old junk is pruned', (t) => {
+  for (const bad of ['Bro', "Don't", 'Yeah', 'Meeting', 'Update', 'The pricing', "Let's go", 'dont']) assert.ok(!kp.isTopicName(bad), bad);
+  for (const good of ['Frontend', 'Filmes', 'Hiring plan', 'API', 'Machine learning']) assert.ok(kp.isTopicName(good), good);
+  const text = "Bro, don't do that bro. Bro I told you. The frontend is slow, frontend build and the frontend tests. Filmes de terror, filmes antigos, filmes.";
+  const names = kp.extract(text, undefined, { strict: true, max: 4 }).map((x) => x.name.toLowerCase());
+  assert.ok(!names.includes('bro') && !names.some((n) => n.includes("don't")), names.join());
+  assert.ok(names.includes('frontend') && names.includes('filmes'));
+  const app = boot(t);
+  const k = app.knowledge;
+  const a = meeting(app, 'Chat', [['Ana', 'hello']]);
+  app.db.prepare("INSERT INTO topics(id, name, key, created_at, updated_at) VALUES('x1', 'Bro', 'bro', 1, 1), ('x2', 'Frontend', 'frontend', 1, 1)").run();
+  app.db.prepare("INSERT INTO note_topics(note_id, topic_id, weight, auto) VALUES(?, 'x1', 1, 1), (?, 'x2', 1, 1)").run(a.id, a.id);
+  assert.equal(k.pruneJunkTopics(), 1);
+  assert.deepEqual(k.noteTopics(a.id).map((x) => x.name), ['Frontend']);
+  k.setNoteTopics(a.id, [{ name: 'Bro' }, { name: 'Hiring' }]);
+  assert.deepEqual(k.noteTopics(a.id).map((x) => x.name), ['Hiring'], 'automatic topics are filtered, even from an LLM');
+});
+
 test('insights parser tolerates fences, chatter and trailing commas; checklist parsing finds owners', () => {
   const r = ins.parseInsights('Sure!\n```json\n{"overview":"ok","topics":[{"name":"Pricing","summary":"s"},],"actionItems":[{"text":"Do it","owner":"Ana","due":"2026-12-01"},"Plain"],"glossary":[{"term":"ARR","definition":"Annual"}],}\n```');
   assert.equal(r.overview, 'ok');
