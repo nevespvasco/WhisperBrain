@@ -49,7 +49,8 @@ const { JobRunner } = require('../jobs/runner');
 const { AiRuns } = require('../audit/ai-runs');
 const { ChunkIndex } = require('../search/index');
 const { LlmEmbedder } = require('../search/embedder');
-const { mayReachAi } = require('../items/policy');
+const { can } = require('../access/grants');
+const { AccessLog } = require('../access/log');
 const { Assertions } = require('../brain/assertions');
 const { extractAssertions } = require('../brain/extract');
 const { Reminders } = require('../brain/reminders');
@@ -91,6 +92,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const llm = new LlmClient(() => settings.get('llm'));
   // One queue in front of the AI server for every feature: the live assistant first, then chat, summaries, translation, background work
   const aiRuns = new AiRuns(conn);
+  const accessLog = new AccessLog(conn);
   const scheduler = new LlmScheduler(llm, { onRun: (r) => aiRuns.record(r) });   // every AI call is noted (never its text): the egress log
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const briefings = new Briefings({ db: conn, bus });
@@ -165,6 +167,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   runner.register('note.assertions', async ({ noteId }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     if (!ai.configured()) return { skipped: 'no AI server' };
+    if (!mayShare('note', noteId)) return { added: 0, dropped: 0, windows: 0, skipped: 'local-only' };   // kept on this computer
     return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId);
   });
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
@@ -180,13 +183,20 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
   const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel') });
   const chunkIndex = new ChunkIndex({ db: conn, notes, items, embedder });
-  // what may be shown to the AI server in use: a private source only to a server on this computer
+  account.chunkIndex = chunkIndex; account.dbFile = path.join(dataDir, 'whisperbrain.sqlite');
+  // What may be shown to the AI server in use (src/access/grants.js): an item by its own and its source's grant, a meeting by the
+  // source it came from (the recorder, or a Notion / Linear / Obsidian import, which a person can keep on this computer too).
+  // A meeting not yet filed under a source is the recorder's. Anything unknown is not shared.
   const mayShare = (kind, id) => {
-    if (kind !== 'item') return true;
+    const llmConfig = settings.get('llm');
+    if (kind === 'note') { const src = items.sourceOfNote(id); return src ? can(src, 'ai.remote', { llmConfig }) : !!notes.get(id); }
+    if (kind !== 'item') return false;
     const it = items.item(id);
-    return !!it && mayReachAi(items.source(it.sourceId), settings.get('llm'));
+    return !!it && can(items.source(it.sourceId), 'ai.remote', { item: it, llmConfig });
   };
-  ai.index = chunkIndex; ai.mayShare = mayShare;
+  ai.index = chunkIndex; ai.mayShare = mayShare; translator.mayShare = mayShare;
+  // Access was narrowed or revoked: what was read is forgotten from the search index now, not at the next scheduled pass.
+  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare });
   const projects = new Projects({ db: conn, notes, items, assertions });
   const supersession = new Supersession({ db: conn, assertions });
@@ -205,7 +215,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the
   // database statistics are refreshed. Nothing here changes what you see except by removing what is long finished.
   runner.register('maintenance', async () => {
-    const out = { jobs: jobs.prune(), aiRuns: aiRuns.prune(), pruned: 0 };
+    const out = { jobs: jobs.prune(), aiRuns: aiRuns.prune(), accessLog: accessLog.prune(), actionsExpired: actions.expire(), pruned: 0 };
     knowledge.entities.proposeMerges();
     try { conn.exec('PRAGMA optimize'); } catch { /* busy: next time */ }
     return out;
@@ -299,7 +309,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, accessLog, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, discordRpc, discordRpcSource, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
@@ -346,6 +356,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     },
     close() {
       self.pendingGoogleAuth?.cancel?.();
+      lock.close();   // the MCP server sees the app as locked while it is closed
       sources.stop();
       reminders.stop();
       clearInterval(backupTimer);

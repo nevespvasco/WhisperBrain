@@ -10,16 +10,18 @@ const charsOf = (messages) => (messages || []).reduce((n, m) => n + (typeof m.co
 class AiRuns {
   constructor(db, { now = () => Date.now(), keepDays = 90 } = {}) { this.db = db; this.now = now; this.keepMs = keepDays * 86_400_000; }
 
-  record({ lane, config, messages, charsOut = 0, ms = 0, ok = true, error = null }) {
+  // sources: the ids of the sources whose material the call carried (which mail, chat or folder left for which server)
+  record({ lane, config, messages, charsOut = 0, ms = 0, ok = true, error = null, sources = null }) {
     const url = config?.baseUrl || '';
+    const ids = Array.isArray(sources) ? [...new Set(sources.filter(Boolean).map(String))].slice(0, 30).join(',') : '';
     try {
-      this.db.prepare('INSERT INTO ai_runs (at, lane, model, host, local, chars_in, chars_out, ms, ok, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(this.now(), String(lane), String(config?.model || ''), hostOf(url), isLocalUrl(url) ? 1 : 0, charsOf(messages), charsOut, Math.round(ms), ok ? 1 : 0, error ? String(error).slice(0, 300) : null);
+      this.db.prepare('INSERT INTO ai_runs (at, lane, model, host, local, chars_in, chars_out, ms, ok, error, source_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(this.now(), String(lane), String(config?.model || ''), hostOf(url), isLocalUrl(url) ? 1 : 0, charsOf(messages), charsOut, Math.round(ms), ok ? 1 : 0, error ? String(error).slice(0, 300) : null, ids);
     } catch { /* the ledger must never break an AI call (a closed database, for one) */ }
   }
 
   list(limit = 100) {
-    return this.db.prepare('SELECT * FROM ai_runs ORDER BY id DESC LIMIT ?').all(limit).map((r) => ({ id: r.id, at: r.at, lane: r.lane, model: r.model, host: r.host, local: !!r.local, charsIn: r.chars_in, charsOut: r.chars_out, ms: r.ms, ok: !!r.ok, error: r.error }));
+    return this.db.prepare('SELECT * FROM ai_runs ORDER BY id DESC LIMIT ?').all(limit).map((r) => ({ id: r.id, at: r.at, lane: r.lane, model: r.model, host: r.host, local: !!r.local, charsIn: r.chars_in, charsOut: r.chars_out, ms: r.ms, ok: !!r.ok, error: r.error, sources: r.source_ids ? r.source_ids.split(',') : [] }));
   }
 
   // { total, remote, remoteChars, since } for the last `days` days

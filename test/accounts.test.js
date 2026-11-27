@@ -44,8 +44,8 @@ test('migration: the account identity kind is added, the copy of the database is
   const file = path.join(dir, 'a.db');
   const old = new DatabaseSync(file);
   old.exec('PRAGMA foreign_keys = ON');
-  for (const m of MIGRATIONS.slice(0, MIGRATIONS.length - 1)) old.exec(m);
-  old.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+  for (const m of MIGRATIONS.slice(0, 24)) old.exec(m);                  // v24: the schema just before the account kind (v25)
+  old.exec('PRAGMA user_version = 24');
   old.exec("INSERT INTO entities (id, kind, name, key, created_at, updated_at) VALUES ('e1', 'person', 'Ana Silva', 'ana silva', 1, 1)");
   old.exec("INSERT INTO entity_identities (entity_id, kind, value, created_at) VALUES ('e1', 'name', 'ana silva', 1), ('e1', 'email', 'ana@acme.io', 1)");
   assert.throws(() => old.exec("INSERT INTO entity_identities (entity_id, kind, value, created_at) VALUES ('e1', 'account', 'discord:1', 1)"), /CHECK/, 'before: the kind is refused');

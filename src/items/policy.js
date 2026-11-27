@@ -1,16 +1,12 @@
 'use strict';
-// Per-source sensitivity, decided in one place. A source marked 'private' (mail, chat, anything the person would not paste into a
-// website) may only be shown to an AI server that runs on this computer; 'normal' material may go to a server the person chose.
-// Everything that hands items to an AI goes through this check (retrieval and briefs, from Phase 2).
-const { isLocalUrl } = require('../core/policy');
+// Kept for older callers: whether a source's material may be shown to an AI server is now decided by its access grant
+// (src/access/grants.js, op 'ai.remote'). A source kept 'local' (mail, chat, anything the person would not paste into a website)
+// may only reach an AI server on this computer; 'any' may go to a server the person chose.
+const { can } = require('../access/grants');
 
-function mayReachAi(source, llmConfig) {
-  if (!source) return false;
-  if (source.sensitivity !== 'private') return true;
-  return isLocalUrl(llmConfig?.baseUrl);
-}
+const mayReachAi = (source, llmConfig, item = null) => !!source && can(source, 'ai.remote', { item, llmConfig: llmConfig || {} });
 
 // the items of a list that this AI server may see
-const visibleToAi = (items, sourcesById, llmConfig) => items.filter((it) => mayReachAi(sourcesById.get(it.sourceId), llmConfig));
+const visibleToAi = (items, sourcesById, llmConfig) => items.filter((it) => mayReachAi(sourcesById.get(it.sourceId), llmConfig, it));
 
 module.exports = { mayReachAi, visibleToAi };

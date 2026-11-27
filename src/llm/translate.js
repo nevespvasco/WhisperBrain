@@ -95,7 +95,11 @@ class Translator {
   }
 
   // Translate every line of a note that has no translation into `lang` yet. -> { total, done, failed }
+  // mayShare(kind, id): set by the app from the access grants; a meeting kept on this computer is never sent to a remote server
+  shareable(noteId) { return this.mayShare ? this.mayShare('note', noteId) : true; }
+
   async translateNote(noteId, lang, { signal, onProgress } = {}) {
+    if (!this.shareable(noteId)) throw Object.assign(new Error('This meeting comes from a source you keep on this computer, and the AI server is not on this computer.'), { status: 409, code: 'local-only' });
     const todo = this.pending(noteId, lang);
     const stats = { total: todo.length, done: 0, failed: 0 };
     if (!todo.length) return stats;
@@ -140,7 +144,7 @@ class Translator {
 
   async translateSummary(noteId, lang, { signal } = {}) {
     const note = this.notes.get(noteId);
-    if (!note?.summary?.trim()) return null;
+    if (!note?.summary?.trim() || !this.shareable(noteId)) return null;
     const fresh = this.summaryTranslation(noteId, lang);
     if (fresh) return fresh;
     const text = (await this.oneAtATime(() => this.llm.complete(translateSummaryMessages({ language: lang, text: note.summary }), { temperature: 0.1, signal }))).trim();
@@ -203,7 +207,7 @@ class Translator {
 
   hear(noteId, segment) {
     const lang = this.liveLanguage();
-    if (!lang || !segment || !needsTranslation(segment.text)) return;
+    if (!lang || !segment || !needsTranslation(segment.text) || !this.shareable(noteId)) return;
     this.queue.push({ noteId, id: segment.id, text: segment.text, lang });
     while (this.queue.length > LIVE_BACKLOG) this.queue.shift();   // the AI is behind the talk: the oldest wait for Stop
     this.pumping ||= this.pump().finally(() => { this.pumping = null; });

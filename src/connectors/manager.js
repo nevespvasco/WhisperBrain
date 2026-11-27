@@ -75,26 +75,27 @@ class SourceManager {
   }
 
   // path: a folder on this computer. flavour: 'obsidian' (a vault: skips its .obsidian folder, links notes back to Obsidian) or 'folder'.
-  add({ path: dir, flavour = 'folder', name, sensitivity = 'normal', exclude = [] } = {}) {
+  add({ path: dir, flavour = 'folder', name, sensitivity = 'normal', exclude = [], grant = {} } = {}) {
     const kind = flavour === 'obsidian' ? 'obsidian' : 'folder';
     let root;
     try { root = fs.realpathSync(path.resolve(String(dir || ''))); } catch { throw err(`The folder does not exist: ${dir}`); }
     if (!fs.statSync(root).isDirectory()) throw err(`This is not a folder: ${root}`);
     const twin = this.items.sources().find((s) => ['folder', 'obsidian'].includes(s.kind) && s.config.path === root);
     if (twin) throw err('This folder is already a source.', 409);
-    const source = this.items.addSource({ kind, name: name || path.basename(root), mode: 'pointer', sensitivity, config: { path: root, exclude } });
+    const source = this.items.addSource({ kind, name: name || path.basename(root), mode: 'pointer', sensitivity, config: { path: root, exclude }, grant });
     this.watch(source);
     this.enqueueSync(source.id);
     return source;
   }
 
   // A service: the token is in Settings (sealed); what is added here is what to read (repositories, channels, a mail search).
-  addRemote({ kind, name, config = {}, sensitivity = 'private' }) {
+  // grant: what the person chose in the access sheet (src/access/grants.js); a service reads the part it is given unless told otherwise
+  addRemote({ kind, name, config = {}, sensitivity = 'private', grant = {} }) {
     const svc = this.services[kind];
     if (!svc) throw err(`unknown service "${kind}"`);
     if (!svc.ready(this.ctx)) throw err(`Connect ${kind} first: its token or sign-in is missing.`, 412);
     const checked = svc.validate(config);
-    const source = this.items.addSource({ kind, name: name || `${kind}`, mode: 'copy', sensitivity, config: { ...checked, remote: true } });
+    const source = this.items.addSource({ kind, name: name || `${kind}`, mode: 'copy', sensitivity, config: { ...checked, remote: true }, grant: { readLevel: 'part', ...grant } });
     this.enqueueSync(source.id);
     return source;
   }
@@ -103,6 +104,7 @@ class SourceManager {
   async sync(sourceId) {
     const source = this.items.source(sourceId);
     if (!source || !source.enabled) return { skipped: true };
+    if (source.readLevel === 'none' || (source.expiresAt != null && source.expiresAt <= Date.now())) return { skipped: true, reason: 'access' };   // nothing may be read now
     const c = this.connector(source);
     if (!c) return { skipped: true };
     try {

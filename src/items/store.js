@@ -5,6 +5,7 @@
 // A meeting is an item of kind 'meeting' pointing at its notes row; it holds no text of its own.
 const crypto = require('node:crypto');
 const { ftsRun } = require('../core/fts');
+const { grantColumns, grantOf } = require('../access/grants');
 
 const NATIVE = 'native';                                   // the recorder and the app's own meetings
 const MAX_TEXT = 400_000;                                  // derived text kept per item (pointer mode keeps the text for search, not the file)
@@ -17,25 +18,95 @@ const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d
 const srcRow = (r) => !r ? null : ({
   id: r.id, kind: r.kind, name: r.name, mode: r.mode, sensitivity: r.sensitivity, config: parse(r.config, {}), enabled: !!r.enabled,
   cursor: r.cursor, lastSyncAt: r.last_sync_at, lastError: r.last_error, createdAt: r.created_at, updatedAt: r.updated_at,
+  // the access grant (src/access/grants.js)
+  readLevel: r.read_level || 'all', filter: parse(r.filter, {}), actions: parse(r.actions, []), autoActions: parse(r.auto_actions, []),
+  aiReach: r.ai_reach || (r.sensitivity === 'private' ? 'local' : 'any'), liveSearch: !!r.live_search, mcp: !!r.mcp, retentionDays: r.retention_days ?? 7, expiresAt: r.expires_at ?? null,
 });
 const itemRow = (r) => !r ? null : ({
   id: r.id, sourceId: r.source_id, externalId: r.external_id, kind: r.kind, title: r.title, text: r.text, hash: r.hash, uri: r.uri, path: r.path,
   meta: parse(r.meta, {}), noteId: r.note_id, occurredAt: r.occurred_at, ingestedAt: r.ingested_at, updatedAt: r.updated_at, deletedAt: r.deleted_at,
+  aiReach: r.ai_reach || null,
 });
 
 class ItemStore {
   constructor(db, { bus = null, now = () => Date.now() } = {}) { this.db = db; this.bus = bus; this.now = now; }
 
   // ---------- sources ----------
-  addSource({ kind, name = '', mode = 'pointer', sensitivity = 'normal', config = {}, id } = {}) {
+  // grant: { readLevel, filter, actions, autoActions, aiReach, liveSearch, mcp, retentionDays, expiresAt } (src/access/grants.js).
+  // Without one: everything may be read, private stays local, and MCP serves only what is not private (what the app did before grants).
+  addSource({ kind, name = '', mode = 'pointer', sensitivity = 'normal', config = {}, id, grant = {} } = {}) {
     if (!KINDS.includes(kind)) throw Object.assign(new Error(`unknown source kind "${kind}"`), { status: 400 });
     const t = this.now();
     const sid = id || newId('src');
-    this.db.prepare('INSERT INTO sources (id, kind, name, mode, sensitivity, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(sid, kind, String(name).slice(0, 120), mode, sensitivity, JSON.stringify(config), t, t);
+    const cols = grantColumns({ sensitivity, mcp: sensitivity !== 'private', ...grant });
+    const names = Object.keys(cols).filter((c) => c !== 'sensitivity');
+    this.db.prepare(`INSERT INTO sources (id, kind, name, mode, sensitivity, config, created_at, updated_at${names.map((c) => `, ${c}`).join('')}) VALUES (?, ?, ?, ?, ?, ?, ?, ?${names.map(() => ', ?').join('')})`)
+      .run(sid, kind, String(name).slice(0, 120), mode, cols.sensitivity || sensitivity, JSON.stringify(config), t, t, ...names.map((c) => cols[c]));
     this.bus?.publish('sources.changed', { id: sid });
     return this.source(sid);
   }
+
+  // Change what a source is granted. Narrowing what may be read drops what is no longer allowed at once (the bodies at 'metadata',
+  // everything at 'none'): a downgrade that left the text behind would only look like one.
+  setGrant(id, patch = {}) {
+    const cur = this.source(id);
+    if (!cur) return null;
+    const cols = grantColumns(patch);
+    const names = Object.keys(cols);
+    if (names.length) this.db.prepare(`UPDATE sources SET ${names.map((c) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...names.map((c) => cols[c]), this.now(), id);
+    const next = this.source(id);
+    let purged = 0;
+    if (next.readLevel === 'none') purged = this.purgeSource(id, { keepSource: true });
+    else if (next.readLevel === 'metadata' && cur.readLevel !== 'metadata') purged = this.dropBodies(id);
+    this.bus?.publish('sources.changed', { id });
+    return { ...next, purged };
+  }
+
+  // Keep who/when/subject, forget the text: the item stays (people, last contact) but nothing of its body is searchable any more.
+  dropBodies(sourceId) {
+    const rows = this.db.prepare("SELECT rowid, id, title FROM items WHERE source_id = ? AND kind <> 'meeting' AND text <> ''").all(sourceId);
+    this.db.exec('BEGIN');
+    try {
+      for (const r of rows) {
+        this.db.prepare("UPDATE items SET text = '', hash = '', updated_at = ? WHERE id = ?").run(this.now(), r.id);
+        this.index(r.rowid, r.title, '');
+      }
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    this.bus?.publish('items.purged', { sourceId, bodies: rows.length });
+    return rows.length;
+  }
+
+  // Forget everything read from a source (items, their search entries; the chunk index follows through items.purged). The source
+  // row itself goes too unless keepSource. Unlike a tombstone nothing is kept: this is for revoking access.
+  purgeSource(sourceId, { keepSource = false } = {}) {
+    const n = this.db.prepare('SELECT COUNT(*) AS n FROM items WHERE source_id = ?').get(sourceId).n;
+    this.db.exec('BEGIN');
+    try {
+      ftsRun(this.db, 'DELETE FROM items_fts WHERE rowid IN (SELECT rowid FROM items WHERE source_id = ?)', sourceId);
+      this.db.prepare('DELETE FROM items WHERE source_id = ?').run(sourceId);
+      if (keepSource) this.db.prepare('UPDATE sources SET cursor = NULL, updated_at = ? WHERE id = ?').run(this.now(), sourceId);
+      else this.db.prepare('DELETE FROM sources WHERE id = ?').run(sourceId);
+      this.db.exec('COMMIT');
+    } catch (e) { this.db.exec('ROLLBACK'); throw e; }
+    this.bus?.publish('items.purged', { sourceId, all: true });
+    return n;
+  }
+
+  // One item kept stricter than its source ('local' / 'ask'), or back to its source's rule (null).
+  setItemReach(id, aiReach) {
+    if (aiReach !== null && !['local', 'ask', 'any'].includes(aiReach)) throw Object.assign(new Error('aiReach must be local, ask, any or null'), { status: 400 });
+    this.db.prepare('UPDATE items SET ai_reach = ? WHERE id = ?').run(aiReach, id);
+    return this.item(id);
+  }
+
+  // The source a note (meeting) belongs to: the recorder's, or the Notion / Linear / Obsidian import source.
+  sourceOfNote(noteId) {
+    const r = this.db.prepare('SELECT s.* FROM items i JOIN sources s ON s.id = i.source_id WHERE i.note_id = ?').get(noteId);
+    return r ? srcRow(r) : null;
+  }
+
+  grant(id) { return grantOf(this.source(id)); }
 
   source(id) { return srcRow(this.db.prepare('SELECT * FROM sources WHERE id = ?').get(id)); }
 
@@ -58,7 +129,7 @@ class ItemStore {
     const set = (col, v) => { sets.push(`${col} = ?`); vals.push(v); };
     if ('name' in patch) set('name', String(patch.name).slice(0, 120));
     if ('mode' in patch) { if (!['pointer', 'excerpt', 'copy'].includes(patch.mode)) throw Object.assign(new Error('mode must be pointer, excerpt or copy'), { status: 400 }); set('mode', patch.mode); }
-    if ('sensitivity' in patch) { if (!['normal', 'private'].includes(patch.sensitivity)) throw Object.assign(new Error('sensitivity must be normal or private'), { status: 400 }); set('sensitivity', patch.sensitivity); }
+    if ('sensitivity' in patch) { const g = grantColumns({ sensitivity: patch.sensitivity }); set('sensitivity', g.sensitivity); set('ai_reach', g.ai_reach); }
     if ('enabled' in patch) set('enabled', patch.enabled ? 1 : 0);
     if ('config' in patch) set('config', JSON.stringify({ ...cur.config, ...patch.config }));
     if ('cursor' in patch) set('cursor', patch.cursor);
@@ -81,6 +152,7 @@ class ItemStore {
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     this.bus?.publish('sources.changed', { id });
+    this.bus?.publish('items.purged', { sourceId: id, all: true });   // the search index forgets them now
     return true;
   }
 

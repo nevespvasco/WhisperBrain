@@ -88,19 +88,44 @@ class Account {
   deleteVoices() { const n = this.speakers.removeAllVoices(); this.bus?.publish('account.changed', { what: 'voices' }); return n; }
 
   // Everything the user created. Downloaded models are kept unless removeModels is set (they are re-downloadable but large).
-  deleteEverything({ removeModels = false } = {}) {
+  // Everything read from sources (mail, chat, files), what was worked out from it (people, promises, the search index), and the
+  // records of AI calls, actions and access go too: "everything" that left the brain's own meetings behind would only look deleted.
+  // The app lock's passphrase stays (index_meta), so the emptied app is still locked. The copies the app made of the database
+  // before each update (whisperbrain.sqlite.before-vN, next to it) are deleted too; backups in a folder you chose are yours and
+  // are listed, not deleted (Settings > Backups).
+  deleteEverything({ removeModels = false, removeCopies = true } = {}) {
+    const has = new Set(this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((r) => r.name));
     tx(this.db, () => {
-      for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segments', 'note_speakers', 'search', 'notes', 'folders',
-        'evidence', 'semantic_chunks', 'templates', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings']) this.db.exec(`DELETE FROM ${t}`);
+      for (const t of ['chat_messages', 'snippets', 'action_items', 'note_tags', 'note_topics', 'note_links', 'segment_translations', 'note_translations', 'segments', 'note_speakers', 'note_briefings', 'briefings',
+        'assistant_events', 'search', 'notes', 'folders', 'evidence', 'semantic_chunks', 'templates', 'voice_exemplars', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings',
+        // the brain: sources and what came from them, what was worked out, and the records
+        'rule_runs', 'rules', 'reminders', 'actions', 'assertions', 'projects', 'mentions', 'entity_proposals', 'entity_merges', 'entity_identities', 'entities',
+        'index_owner', 'chunks', 'items', 'sources', 'ai_runs', 'access_log', 'jobs']) if (has.has(t)) this.db.exec(`DELETE FROM ${t}`);
+      for (const f of ['items_fts', 'chunks_fts']) if (has.has(f)) this.db.exec(`INSERT INTO ${f}(${f}) VALUES ('delete-all')`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
+    this.chunkIndex?.forgetVectors();
     this.settings.reset();
     this.semantic?.prune();
     this.db.exec('VACUUM');
+    if (removeCopies) this.removeCopies();
     if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
     this.bus?.publish('account.changed', { what: 'all' });
     return true;
   }
 }
+
+// The database copies the app wrote before updating its schema (db.js backupBeforeMigrating): whisperbrain.sqlite.before-vN.
+Account.prototype.copies = function copies() {
+  const file = this.dbFile;
+  if (!file) return [];
+  const dir = path.dirname(file), base = path.basename(file);
+  try { return fs.readdirSync(dir).filter((f) => f.startsWith(`${base}.before-v`)).map((f) => path.join(dir, f)); } catch { return []; }
+};
+Account.prototype.removeCopies = function removeCopies() {
+  let n = 0;
+  for (const f of this.copies()) { try { fs.rmSync(f, { force: true }); n++; } catch { /* in use: listed again next time */ } }
+  return n;
+};
 
 module.exports = { Account };

@@ -7,6 +7,7 @@ const { DatabaseSync } = require('node:sqlite');
 const { Notes } = require('../core/notes');
 const { ItemStore } = require('../items/store');
 const { ChunkIndex } = require('../search/index');
+const { can } = require('../access/grants');
 
 const PROTOCOL = '2025-06-18';
 const NEEDS_SCHEMA = 19;
@@ -31,7 +32,13 @@ class BrainReader {
     this.notes = new Notes(db);
     this.items = new ItemStore(db);
     this.index = new ChunkIndex({ db, notes: this.notes, items: this.items });
-    this.privateSources = () => new Set(db.prepare("SELECT id FROM sources WHERE sensitivity = 'private'").all().map((r) => r.id));
+  }
+
+  // While WhisperBrain is locked (src/core/lock.js), nothing is served: the lock screen must not be walked around through MCP.
+  // A passphrase is set and the app has not said it is unlocked (it writes lock:state; it starts locked).
+  locked() {
+    const meta = (k) => { try { return this.db.prepare('SELECT value FROM index_meta WHERE key = ?').get(`lock:${k}`)?.value ?? null; } catch { return null; } };
+    return !!meta('hash') && meta('state') !== 'unlocked';
   }
 
   static open(file) {
@@ -41,7 +48,18 @@ class BrainReader {
     return new BrainReader(db);
   }
 
-  allowed() { const priv = this.privateSources(); return (kind, id) => kind !== 'item' || !priv.has(this.items.item(id)?.sourceId); }
+  // What MCP may serve, by each source's grant (src/access/grants.js, op 'mcp': switched on for that source, and not kept local).
+  // A meeting follows the source it came from; one not yet filed under a source is the recorder's.
+  allowed() {
+    const sources = new Map();
+    const src = (id) => { if (!sources.has(id)) sources.set(id, this.items.source(id)); return sources.get(id); };
+    return (kind, id) => {
+      if (kind === 'note') { const s = this.items.sourceOfNote(id); return s ? can(s, 'mcp') : true; }
+      if (kind !== 'item') return false;
+      const it = this.items.item(id);
+      return !!it && can(src(it.sourceId), 'mcp', { item: it });
+    };
+  }
 
   async search({ query, limit = 6 }) {
     const hits = await this.index.search(String(query || ''), { limit: Math.max(1, Math.min(20, limit)), allow: this.allowed() });
@@ -55,6 +73,7 @@ class BrainReader {
       return { id: item.id, kind: 'note', title: item.title, text: item.text.slice(0, 20000), uri: item.uri || undefined };
     }
     const n = this.notes.get(String(id));
+    if (n && !this.allowed()('note', n.id)) throw new Error('This meeting is in a source that is not shared over MCP.');
     if (n) return { id: n.id, kind: 'meeting', title: n.title, when: new Date(n.startedAt || n.createdAt).toISOString().slice(0, 10), summary: n.summary, notes: n.body };
     throw new Error('Not found.');
   }
@@ -89,6 +108,7 @@ class BrainReader {
   }
 
   async call(name, args = {}) {
+    if (this.locked()) throw new Error('WhisperBrain is locked. Unlock it in the app first.');
     switch (name) {
       case 'search': return this.search(args);
       case 'get_note': return this.getNote(args);

@@ -1,13 +1,13 @@
 # Connecting services
 
-Folders & vaults → **Connect a service**. Everything is **read-only**, the keys are kept sealed on this computer, and what is read is **private by default**: only an AI on this computer may ever see it (change it per source). A copy of the text is kept so it can be searched; removing a source forgets that copy and touches nothing at the service.
+Folders & vaults → **Connect a service**. What each source may read, who may see it and which actions it may propose is its **access grant** (see [access.md](access.md)). Today everything is **read-only**, the keys are kept sealed on this computer, and what is read is **private by default**: only an AI on this computer may ever see it (change it per source). A copy of the text is kept so it can be searched; removing a source forgets that copy and touches nothing at the service.
 
 | Service | What you give it | What is read | Notes |
 |---|---|---|---|
 | **GitHub** | A personal access token with read access to the repositories | Issues and pull requests with their comments, one item each | Only what changed since the last run (`since`); every 15 min |
 | **Slack** | The token of **your own** Slack app (`channels:history`, `channels:read`, `users:read`, and `groups:history` for private channels) | Channels you list, one item per channel per day, replies included | An app of your own is not under the limits Slack put on shared apps. A short `Retry-After` is waited out; a long one stops the run until the next |
 | **Discord** | Your own bot token (the same as the voice feature), View Channel + Read Message History, Message Content intent on | Channels you list, one item per channel per day | Your own server only. Personal accounts and unofficial clients are never used |
-| **Gmail** | Your Google OAuth client, connected again **with mail switched on** (`gmail.readonly`) | Threads matching your search (default the last 90 days), plain text, quoted history cut | Incremental by `historyId`; a stale history (404) starts again and tombstones what left the window |
+| **Gmail** | Your Google OAuth client, connected again **with mail switched on** (`gmail.readonly`) | Threads matching your search and the source's grant (labels any-of, never-read list); at the metadata level only who/when/subject | Incremental by `historyId` with every change type (added, deleted, labels), so Trash/Spam/archive propagate; a long history or first listing continues across runs without skipping; a stale history (404) starts again and tombstones what left the window |
 | **Notion / Linear** | The keys already in Integrations | Pages and issues you **already imported**, read again every 6 h | Nothing new is pulled in by itself |
 
 **What the e-mail connector adds to the Inbox:** a thread where you wrote last, asked something, and nobody answered for 3 to 30 days ("No reply yet"). Nothing is sent: it can be opened, turned into a reminder, or dismissed.

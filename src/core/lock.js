@@ -18,6 +18,7 @@ class AppLock {
   constructor({ db, bus = null, now = () => Date.now() }) {
     Object.assign(this, { db, bus, now });
     this.isLocked = this.enabled();      // starts locked when a passphrase is set
+    this.persist();
     this.lastUse = now();
     this.fails = 0; this.blockedUntil = 0;
   }
@@ -25,6 +26,8 @@ class AppLock {
   meta(k) { return this.db.prepare('SELECT value FROM index_meta WHERE key = ?').get(`lock:${k}`)?.value ?? null; }
   setMeta(k, v) { this.db.prepare('INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(`lock:${k}`, String(v)); }
   enabled() { return !!this.meta('hash'); }
+  // The state, written where the MCP server (another process, src/mcp/server.js) can read it, so it refuses while the app is locked.
+  persist() { try { this.setMeta('state', this.isLocked ? 'locked' : 'unlocked'); } catch { /* read-only or closing */ } }
   minutes() { return Number(this.meta('minutes')) || 0; }
 
   status() { return { enabled: this.enabled(), locked: this.locked(), minutes: this.minutes() }; }
@@ -53,8 +56,8 @@ class AppLock {
     throw err('That is not the passphrase.', 401, 'wrong-passphrase');
   }
 
-  unlock(pass) { this.guess(pass); this.isLocked = false; this.lastUse = this.now(); this.bus?.publish('lock.changed', { locked: false }); return this.status(); }
-  lock() { if (this.enabled()) { this.isLocked = true; this.bus?.publish('lock.changed', { locked: true }); } return this.status(); }
+  unlock(pass) { this.guess(pass); this.isLocked = false; this.lastUse = this.now(); this.persist(); this.bus?.publish('lock.changed', { locked: false }); return this.status(); }
+  lock() { if (this.enabled()) { this.isLocked = true; this.persist(); this.bus?.publish('lock.changed', { locked: true }); } return this.status(); }
 
   // Set or change the passphrase. When one is already set, the current one is needed.
   enable({ passphrase, current, minutes = 0 }) {
@@ -64,9 +67,12 @@ class AppLock {
     this.setMeta('salt', salt.toString('hex'));
     this.setMeta('hash', this.hash(passphrase, salt));
     this.setMeta('minutes', Math.max(0, Math.min(1440, Math.round(Number(minutes) || 0))));
-    this.isLocked = false; this.lastUse = this.now();
+    this.isLocked = false; this.lastUse = this.now(); this.persist();
     return this.status();
   }
+
+  // The app is closing: whoever reads the database next (the MCP server) sees it locked until the app is opened and unlocked again.
+  close() { if (this.enabled()) { this.isLocked = true; this.persist(); } }
 
   setMinutes(minutes, { passphrase }) { this.guess(passphrase); this.setMeta('minutes', Math.max(0, Math.min(1440, Math.round(Number(minutes) || 0)))); return this.status(); }
 

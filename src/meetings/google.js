@@ -156,7 +156,10 @@ class GoogleCalendar {
 
   // GET <apiBase><path>?params with one refresh-and-retry on 401.
   async api(path, params = {}, base = this.apiBase) {
-    const url = `${base}${path}?${new URLSearchParams(Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== ''))}`;
+    // a list value is sent as the same name repeated (Gmail's historyTypes, metadataHeaders), not joined with commas
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) for (const one of (Array.isArray(v) ? v : [v])) if (one !== undefined && one !== null && one !== '') qs.append(k, one);
+    const url = `${base}${path}?${qs}`;
     for (let attempt = 0; ; attempt++) {
       const token = await this.accessToken({ force: attempt > 0 });
       const res = await this.fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });

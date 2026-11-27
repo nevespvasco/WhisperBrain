@@ -52,7 +52,8 @@ class LlmScheduler {
     return {
       priority,
       // Holds one slot from the first next() until the generator finishes, throws, or the consumer stops early.
-      async *stream(messages, { signal, key, ...opts } = {}) {
+      // sources: the source ids whose material is in the messages (Ask, briefs): written to the ledger, never sent to the server
+      async *stream(messages, { signal, key, sources = null, ...opts } = {}) {
         const slot = await scheduler.acquire(priority, { signal, key });
         const t0 = Date.now();
         let charsOut = 0, ok = true, error = null;
@@ -60,7 +61,7 @@ class LlmScheduler {
           for await (const d of llm.stream(messages, { ...opts, signal: slot.signal })) { charsOut += d.length; yield d; }
         } catch (e) { ok = false; error = e?.message || String(e); throw e; } finally {
           slot.release();
-          if (scheduler.onRun) { try { scheduler.onRun({ lane: priority, config: llm.getConfig(), messages, charsOut, ms: Date.now() - t0, ok, error }); } catch { /* a ledger problem never breaks an AI call */ } }
+          if (scheduler.onRun) { try { scheduler.onRun({ lane: priority, config: llm.getConfig(), messages, charsOut, ms: Date.now() - t0, ok, error, sources }); } catch { /* a ledger problem never breaks an AI call */ } }
         }
       },
       async complete(messages, opts) {

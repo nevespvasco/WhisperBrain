@@ -610,6 +610,55 @@ const MIGRATIONS = [
   CREATE INDEX entity_identities_entity ON entity_identities(entity_id);
   ALTER TABLE note_speakers ADD COLUMN account TEXT NOT NULL DEFAULT '';
   `,
+  // v26: access grants on sources (src/access/grants.js, docs/access.md). What may be read (read_level, filter), which actions may be
+  // proposed (actions; auto_actions = exports of one's own notes that run without asking), who may see it (ai_reach, replacing
+  // sensitivity, which is kept in step), live search, MCP, retention of live-fetched copies, an optional expiry. Existing sources
+  // keep exactly what they did: services read the part they were given, folders all, private stays local, and what MCP served it
+  // still serves. items.ai_reach: one item kept stricter than its source. ai_runs.source_ids: which sources an AI call carried.
+  // access_log: live searches and actions run. actions: rebuilt so an approval can claim a row ('running') and proposals can expire.
+  `
+  ALTER TABLE sources ADD COLUMN read_level TEXT NOT NULL DEFAULT 'all' CHECK (read_level IN ('none', 'metadata', 'part', 'all'));
+  ALTER TABLE sources ADD COLUMN filter TEXT NOT NULL DEFAULT '{}';
+  ALTER TABLE sources ADD COLUMN actions TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN auto_actions TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE sources ADD COLUMN ai_reach TEXT NOT NULL DEFAULT 'any' CHECK (ai_reach IN ('local', 'ask', 'any'));
+  ALTER TABLE sources ADD COLUMN live_search INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sources ADD COLUMN mcp INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE sources ADD COLUMN retention_days INTEGER NOT NULL DEFAULT 7;
+  ALTER TABLE sources ADD COLUMN expires_at INTEGER;
+  UPDATE sources SET ai_reach = CASE sensitivity WHEN 'private' THEN 'local' ELSE 'any' END,
+                     mcp = CASE sensitivity WHEN 'private' THEN 0 ELSE 1 END,
+                     read_level = CASE WHEN json_extract(config, '$.remote') THEN 'part' ELSE 'all' END;
+  ALTER TABLE items ADD COLUMN ai_reach TEXT CHECK (ai_reach IS NULL OR ai_reach IN ('local', 'ask', 'any'));
+  ALTER TABLE ai_runs ADD COLUMN source_ids TEXT NOT NULL DEFAULT '';
+  CREATE TABLE access_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at INTEGER NOT NULL,
+    source_id TEXT,
+    op TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT ''
+  );
+  CREATE INDEX access_log_at ON access_log(at DESC);
+  CREATE TABLE actions_v2 (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'rejected', 'done', 'failed', 'expired')),
+    origin TEXT NOT NULL DEFAULT 'user',
+    assertion_id TEXT REFERENCES assertions(id) ON DELETE SET NULL,
+    result TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    expires_at INTEGER
+  );
+  INSERT INTO actions_v2 (id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at)
+    SELECT id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at FROM actions;
+  DROP TABLE actions;
+  ALTER TABLE actions_v2 RENAME TO actions;
+  CREATE INDEX actions_state ON actions(state);
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

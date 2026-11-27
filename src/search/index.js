@@ -101,9 +101,21 @@ class ChunkIndex {
       .run(kind, id, hash, chunks.length, this.now());
   }
 
+  // Is there a vector table whose rows must go with their chunks? Loads sqlite-vec when the table exists but was not touched yet in
+  // this run, so a removed item never leaves its vectors behind (an embedding says something about the text it came from).
+  vecTable() {
+    if (this.vec.ready) return true;
+    try {
+      if (!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'chunk_vec'").get()) return false;
+      if (!this.vec.loaded) { this.load(); this.vec.loaded = true; }
+      return true;
+    } catch { return false; }
+  }
+
   removeChunks(kind, id) {
     const ids = this.db.prepare('SELECT id FROM chunks WHERE owner_kind = ? AND owner_id = ?').all(kind, id).map((r) => r.id);
-    for (const cid of ids) { ftsRun(this.db, 'DELETE FROM chunks_fts WHERE rowid = ?', cid); if (this.vec.ready) this.db.prepare('DELETE FROM chunk_vec WHERE rowid = ?').run(BigInt(cid)); }
+    const vec = ids.length && this.vecTable();
+    for (const cid of ids) { ftsRun(this.db, 'DELETE FROM chunks_fts WHERE rowid = ?', cid); if (vec) this.db.prepare('DELETE FROM chunk_vec WHERE rowid = ?').run(BigInt(cid)); }
     this.db.prepare('DELETE FROM chunks WHERE owner_kind = ? AND owner_id = ?').run(kind, id);
   }
 
@@ -149,6 +161,18 @@ class ChunkIndex {
       this.vec = { ready: true, dim, loaded: true, reason: '' };
     } catch (e) { this.vec = { ready: false, dim: 0, loaded: this.vec.loaded, reason: e.message }; }
     return this.vec.ready;
+  }
+
+  // Forget every vector (everything was deleted, or access to what they came from was revoked): the table goes, chunks are re-embedded.
+  forgetVectors() {
+    try {
+      if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'chunk_vec'").get()) {
+        if (!this.vec.loaded) { this.load(); this.vec.loaded = true; }
+        this.db.exec('DROP TABLE IF EXISTS chunk_vec');
+      }
+    } catch { /* sqlite-vec missing: there were no vectors it could have made */ }
+    try { this.db.exec('UPDATE chunks SET embedded = 0'); } catch { /* closing */ }
+    this.vec = { ready: false, dim: 0, loaded: this.vec.loaded, reason: this.vec.reason };
   }
 
   // Another embedding model means other vectors: all start again.

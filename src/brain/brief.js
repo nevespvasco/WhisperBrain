@@ -68,8 +68,10 @@ function factsOf(b) {
 }
 
 // A model phrases the facts; only facts that were given may be cited, others are removed, and an answer that cites nothing is not used.
-async function narrate(llm, brief, { signal } = {}) {
-  const facts = factsOf(brief);
+// mayShare(kind, id): only facts from meetings and items that may reach this AI server are given to it (src/access/grants.js);
+// the brief on screen still shows everything, it is only the model's phrasing that leaves those out.
+async function narrate(llm, brief, { signal, mayShare = null } = {}) {
+  const facts = factsOf(brief).filter((x) => !mayShare || !x.ref || mayShare(x.ref.kind === 'meeting' ? 'note' : x.ref.kind, x.ref.id));
   if (!facts.length) return null;
   const body = facts.map((x) => `[${x.n}] ${neutralizeTags(x.text)}`).join('\n');
   const reply = (await llm.complete([{ role: 'system', content: NARRATE }, { role: 'user', content: `<facts>\n${body}\n</facts>` }], { signal, temperature: 0.2, maxTokens: 400 })).trim();

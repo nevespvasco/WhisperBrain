@@ -19,9 +19,10 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   r('GET', '/api/services', async () => Object.values(app.sources.services).map((v) => ({ kind: v.kind, ready: !!v.ready(app.sources.ctx), everyMin: Math.round(v.every / 60000) })));
   r('POST', '/api/sources', async ({ body }) => {
     const { service } = object(body);
-    if (service) return app.sources.addRemote({ kind: service, name: body.name, config: object(body.config || {}), sensitivity: body.sensitivity === 'normal' ? 'normal' : 'private' });
+    const grant = body.grant && typeof body.grant === 'object' ? object(body.grant) : {};   // the access sheet's answers (src/access/grants.js)
+    if (service) return app.sources.addRemote({ kind: service, name: body.name, config: object(body.config || {}), sensitivity: body.sensitivity === 'normal' ? 'normal' : 'private', grant });
     const { path, flavour, name, sensitivity, exclude } = object(body);
-    return app.sources.add({ path, flavour, name, sensitivity, exclude: Array.isArray(exclude) ? exclude.map(String) : [] });
+    return app.sources.add({ path, flavour, name, sensitivity, exclude: Array.isArray(exclude) ? exclude.map(String) : [], grant });
   });
   // check a folder before adding it (is it readable, is it an Obsidian vault, how many notes)
   // Discord's own data package (a ZIP): the messages you wrote, one item per channel per day. Private by default.
@@ -53,6 +54,16 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
     if (enabled === true) app.sources.resume(params.id);
     return app.items.updateSource(params.id, { ...(name !== undefined ? { name } : {}), ...(sensitivity !== undefined ? { sensitivity } : {}) });
   });
+  // What a source is granted (src/access/grants.js): read level, filter, actions, who may see it, live search, MCP, expiry.
+  // Narrowing what may be read forgets what is no longer allowed at once; the answer says how many items were dropped.
+  r('PATCH', '/api/sources/:id/grant', async ({ params, body }) => {
+    source(params.id);
+    const allowed = ['readLevel', 'filter', 'actions', 'autoActions', 'aiReach', 'liveSearch', 'mcp', 'retentionDays', 'expiresAt'];
+    const patch = Object.fromEntries(Object.entries(object(body)).filter(([k]) => allowed.includes(k)));
+    const r2 = app.items.setGrant(params.id, patch);
+    app.accessLog?.add({ sourceId: params.id, op: 'grant.changed', detail: Object.keys(patch).join(',') });
+    return r2;
+  });
   r('POST', '/api/sources/:id/sync', async ({ params }) => { source(params.id); app.sources.enqueueSync(params.id); return { ok: true }; });
   r('DELETE', '/api/sources/:id', async ({ params }) => { source(params.id); app.sources.remove(params.id); return { ok: true }; });
 
@@ -61,6 +72,13 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
     total: app.items.count(),
     items: app.items.list({ sourceId: query.source || undefined, q: query.q || undefined, limit: Math.max(1, Math.min(200, Number(query.limit) || 60)), offset: Math.max(0, Number(query.offset) || 0) }),
   }));
+  // keep one item stricter than its source ('local' / 'ask'), or back to its source's rule (null)
+  r('PATCH', '/api/items/:id/reach', async ({ params, body }) => {
+    const it = app.items.item(params.id);
+    if (!it || it.deletedAt) throw new HttpError(404, 'item not found');
+    const v = object(body).aiReach;
+    return app.items.setItemReach(params.id, v === undefined ? null : v);
+  });
   r('GET', '/api/items/:id', async ({ params }) => {
     const it = app.items.item(params.id);
     if (!it || it.deletedAt) throw new HttpError(404, 'item not found');
@@ -115,7 +133,7 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
     const b = object(body);
     const brief = await app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] });
     // optional: a model phrases the facts (only the facts, each cited); without a server, or when it cites nothing, the facts stand alone
-    if (b.narrate && !brief.empty && app.ai.configured()) { try { brief.narrative = await require('../brain/brief').narrate(app.scheduler.client('chat'), brief); } catch { brief.narrative = null; } }
+    if (b.narrate && !brief.empty && app.ai.configured()) { try { brief.narrative = await require('../brain/brief').narrate(app.scheduler.client('chat'), brief, { mayShare: app.mayShare }); } catch { brief.narrative = null; } }
     return brief;
   });
 
@@ -156,10 +174,12 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   // ---- the search index: how much is searchable, and what a question finds (meetings and notes, by words and by meaning) ----
   r('GET', '/api/index', async () => app.chunkIndex.stats());
   r('GET', '/api/retrieve', async ({ query }) => {
-    const hits = await app.chunkIndex.search(String(query.q || ''), { limit: Math.max(1, Math.min(30, Number(query.limit) || 8)) });
+    // retrieval is what an AI tool would be handed: only what may reach the AI server in Settings (src/access/grants.js)
+    const hits = await app.chunkIndex.search(String(query.q || ''), { limit: Math.max(1, Math.min(30, Number(query.limit) || 8)), allow: app.mayShare });
     return hits.map((h) => ({ ...h, text: h.text.slice(0, 1200) }));
   });
 
   // ---- the AI-run ledger: what was asked of an AI server and whether it left this computer ----
+  r('GET', '/api/access-log', async ({ query }) => app.accessLog.list({ sourceId: query.source || undefined, limit: Math.max(1, Math.min(500, Number(query.limit) || 100)) }));
   r('GET', '/api/ai-runs', async ({ query }) => ({ summary: app.aiRuns.summary(Number(query.days) || 30), runs: app.aiRuns.list(Math.max(1, Math.min(500, Number(query.limit) || 50))) }));
 };
