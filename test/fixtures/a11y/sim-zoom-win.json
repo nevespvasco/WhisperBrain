@@ -1,0 +1,88 @@
+{
+ "event": "snapshot",
+ "platform": "win32",
+ "app": "Zoom",
+ "window": "Zoom Meeting",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "Window",
+   "n": "Zoom Meeting"
+  },
+  {
+   "p": 0,
+   "r": "Text",
+   "n": "Talking: Ana Silva"
+  },
+  {
+   "p": 0,
+   "r": "Pane",
+   "n": ""
+  },
+  {
+   "p": 2,
+   "r": "List",
+   "n": "Participants (4)"
+  },
+  {
+   "p": 3,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 4,
+   "r": "Text",
+   "n": "Vasco Neves (Me)"
+  },
+  {
+   "p": 4,
+   "r": "Text",
+   "n": "Computer audio unmuted"
+  },
+  {
+   "p": 3,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 7,
+   "r": "Text",
+   "n": "Ana Silva"
+  },
+  {
+   "p": 7,
+   "r": "Text",
+   "n": "Computer audio unmuted"
+  },
+  {
+   "p": 3,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 10,
+   "r": "Text",
+   "n": "Bruno Costa"
+  },
+  {
+   "p": 10,
+   "r": "Text",
+   "n": "Computer audio muted"
+  },
+  {
+   "p": 3,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 13,
+   "r": "Text",
+   "n": "Carla Dias"
+  },
+  {
+   "p": 13,
+   "r": "Text",
+   "n": "Phone call"
+  }
+ ]
+}

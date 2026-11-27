@@ -1,0 +1,28 @@
+{
+ "event": "snapshot",
+ "platform": "darwin",
+ "app": "zoom.us",
+ "window": "Zoom Meeting",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "AXWindow",
+   "n": "Zoom Meeting"
+  },
+  {
+   "p": 0,
+   "r": "AXStaticText",
+   "n": "Talking: Bruno Costa"
+  },
+  {
+   "p": 0,
+   "r": "AXGroup",
+   "n": ""
+  },
+  {
+   "p": 2,
+   "r": "AXButton",
+   "n": "Participants"
+  }
+ ]
+}

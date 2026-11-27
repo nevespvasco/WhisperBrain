@@ -34,13 +34,16 @@ test('registry: a platform is recognised by page address and by window title', (
 });
 
 test('registry: the apps the native helpers watch come from the platforms, and the defaults reproduce today\'s', () => {
-  assert.equal(PLATFORMS.watch('linux').apps, 'chrom|brave|edge|vivaldi|opera|firefox');
-  assert.equal(PLATFORMS.watch('darwin').apps, 'chrome|brave|edge|vivaldi|opera|chromium|thebrowser');
-  assert.equal(PLATFORMS.watch('win32').apps, 'chrome|msedge|brave|vivaldi|opera|chromium');
-  assert.equal(PLATFORMS.watch('linux').title, 'meet|[a-z]{3}-[a-z]{4}-[a-z]{3}');
+  assert.equal(new PlatformRegistry([PLATFORMS.get('meet')]).watch('linux').apps, 'chrom|brave|edge|vivaldi|opera|firefox');
+  assert.equal(PLATFORMS.watch('linux').apps, 'chrom|brave|edge|vivaldi|opera|firefox|zoom', 'plus the Zoom app, to measure it (see Zoom desktop below)');
+  // with Google Meet alone they are what the helpers always had (Teams adds its desktop app on these two, see below)
+  const meetOnly = new PlatformRegistry([PLATFORMS.get('meet')]);
+  assert.equal(meetOnly.watch('darwin').apps, 'chrome|brave|edge|vivaldi|opera|chromium|thebrowser');
+  assert.equal(meetOnly.watch('win32').apps, 'chrome|msedge|brave|vivaldi|opera|chromium');
+  assert.equal(new PlatformRegistry([PLATFORMS.get('meet')]).watch('linux').title, 'meet|[a-z]{3}-[a-z]{4}-[a-z]{3}');
   const r = new PlatformRegistry([...PLATFORMS.list(), FAKE]);
-  assert.equal(r.watch('linux').apps, 'chrom|brave|edge|vivaldi|opera|firefox|fakeapp');
-  assert.equal(r.watch('linux').title, 'meet|[a-z]{3}-[a-z]{4}-[a-z]{3}|FakeCall room');
+  assert.equal(r.watch('linux').apps, 'chrom|brave|edge|vivaldi|opera|firefox|zoom|fakeapp');
+  assert.equal(r.watch('linux').title, 'meet|[a-z]{3}-[a-z]{4}-[a-z]{3}|zoom|FakeCall room');
 });
 
 test('registry: the lag of a source kind is the platform\'s, with the generic one as fallback', () => {
@@ -185,7 +188,8 @@ test('helpers: they are told which apps and window titles to watch; without any,
 test('source: the helper is started with the apps and titles of every platform with a reader (the defaults are today\'s)', async () => {
   const hub = new SignalHub();
   const a = fakeSpawn(() => {});
-  const src = new A11ySource({ hub, spec: { ...helperSpec('linux', { roots: ['/b'], exists: () => true }) }, spawn: a.spawn });
+  const meetOnly = new PlatformRegistry([PLATFORMS.get('meet')]);
+  const src = new A11ySource({ hub, platforms: meetOnly, spec: { ...helperSpec('linux', { roots: ['/b'], exists: () => true }) }, spawn: a.spawn });
   src.start(); src.stop();
   assert.deepEqual(a.calls[0].args, ['--interval-ms', '500', '--apps', 'chrom|brave|edge|vivaldi|opera|firefox', '--title', 'meet|[a-z]{3}-[a-z]{4}-[a-z]{3}']);
 
@@ -194,8 +198,8 @@ test('source: the helper is started with the apps and titles of every platform w
   const b = fakeSpawn(() => {});
   const two = new A11ySource({ hub: new SignalHub({ platforms: reg }), platforms: reg, spec: helperSpec('linux', { roots: ['/b'], exists: () => true }), spawn: b.spawn });
   two.start(); two.stop();
-  assert.ok(b.calls[0].args.includes('chrom|brave|edge|vivaldi|opera|firefox|fakeapp'));
-  assert.ok(b.calls[0].args.includes('meet|[a-z]{3}-[a-z]{4}-[a-z]{3}|FakeCall room'));
+  assert.ok(b.calls[0].args.includes('chrom|brave|edge|vivaldi|opera|firefox|zoom|fakeapp'));
+  assert.ok(b.calls[0].args.includes('meet|[a-z]{3}-[a-z]{4}-[a-z]{3}|zoom|FakeCall room'));
 });
 
 test('source: each window is read with the selectors of its platform, and its messages say which platform that is', async () => {
@@ -335,4 +339,157 @@ test('hub: while the platform\'s own app is connected over RPC, a browser page o
   hub.report('discord-rpc', { kind: 'rpc', state: 'waiting', platform: 'discord' });
   hub.ingest({ type: 'speaker', name: 'Eva', platform: 'discord' }, { source: 'extension', kind: 'extension' });
   assert.equal(heard.length, 4, 'RPC gone: the page speaks again');
+});
+
+// ---- Teams desktop (Windows, macOS) through the accessibility tree ----
+const { readMeeting, compileSelectors: compileSel } = require('../src/meet/a11y');
+const simTree = (n) => JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'a11y', `${n}.json`), 'utf8'));
+const teamsSel = () => compileSel(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'meet', 'selectors', 'teams.json'), 'utf8')));
+
+test('Teams desktop: the helpers watch the Teams app (by name or bundle id) on Windows and macOS, and nothing new on Linux, where Teams is web only', () => {
+  const t = PLATFORMS.get('teams');
+  assert.match(t.apps.win32, /ms-teams/);
+  assert.match(t.apps.darwin, /Microsoft Teams|com\.microsoft\.teams2/);
+  assert.equal(t.apps.linux, undefined);
+  for (const os of ['win32', 'darwin']) { const w = PLATFORMS.watch(os); assert.match(w.apps, /teams/i); assert.match(w.title, /teams/i, `${os}: the title filter lets the Teams window through`); }
+  assert.doesNotMatch(PLATFORMS.watch('linux').apps + PLATFORMS.watch('linux').title, /teams/i, 'Linux: Teams is read by the extension');
+  assert.equal(PLATFORMS.fromWindow('Weekly sync | Microsoft Teams')?.id, 'teams');
+  assert.equal(PLATFORMS.fromWindow('Meeting notes - Google Docs'), null, '"Meeting" is not Meet');
+  assert.equal(PLATFORMS.fromWindow('Meet - abc-defg-hij')?.id, 'meet');
+  assert.ok(PLATFORMS.readable('win32').some((p) => p.id === 'teams') && PLATFORMS.readable('darwin').some((p) => p.id === 'teams'));
+  assert.ok(!PLATFORMS.readable('linux').some((p) => p.id === 'teams'));
+});
+
+test('Teams desktop: the same selectors read the Windows (UI Automation) and macOS (AX) trees: people, who speaks, you', () => {
+  for (const name of ['sim-teams-win', 'sim-teams-mac']) {
+    const m = readMeeting(simTree(name), teamsSel());
+    assert.deepEqual(m.participants.map((p) => [p.name, p.self, p.speaking]), [['Vasco Neves', true, false], ['Ana Silva', false, true], ['Bruno Costa', false, false], ['Carla Dias', false, false]], name);
+    assert.deepEqual(m.speaking, ['Ana Silva']);
+    assert.ok(m.participants.every((p) => !/muted|organi[sz]er|speaking/i.test(p.name)), 'the labels of a row are not people');
+  }
+});
+
+test('Teams desktop: the reader sends platform teams messages from the Teams window, and the Teams window feeds meeting detection (macOS: the only call signal)', async () => {
+  const { MeetingDetector: Detector } = require('../src/meetings/detector');
+  const hub = new SignalHub();
+  const seen = [];
+  hub.on('signal', (s) => seen.push([s.msg.platform, s.msg.type]));
+  const { spawn } = fakeSpawn((c) => { c.stdout.write(line(simTree('sim-teams-mac'))); });
+  const src = new A11ySource({ hub, spec: helperSpec('darwin', { roots: ['/r'], exists: () => true }), spawn });
+  src.start();
+  await new Promise((r) => setTimeout(r, 30));
+  src.stop();
+  assert.deepEqual([...new Set(seen.map((s) => s[0]))], ['teams']);
+  assert.deepEqual(seen.slice(0, 3).map((s) => s[1]), ['meeting', 'roster', 'speaker']);
+  // a fresh hub, as it was while the call went on: macOS cannot watch the microphone, so this is how the call is known
+  const live = new SignalHub();
+  const { spawn: spawn2 } = fakeSpawn((c) => { c.stdout.write(line(simTree('sim-teams-mac'))); });
+  const src2 = new A11ySource({ hub: live, spec: helperSpec('darwin', { roots: ['/r'], exists: () => true }), spawn: spawn2 });
+  src2.start();
+  await new Promise((r) => setTimeout(r, 30));
+  const db = open(':memory:'), bus = new Bus(), events = [];
+  bus.subscribe((e) => events.push(e));
+  const det = new Detector({ platform: { micActivity: async () => ({ supported: false, active: false, apps: [] }), meetingWindows: async () => [] }, calendar: { current: async () => null, sources: () => [], events: async () => ({ events: [] }) }, bus, settings: new Settings(db, bus), recording: { status: () => ({ active: false }) }, signals: live });
+  await det.tick(); await det.tick();
+  src2.stop();
+  const hit = events.filter((e) => e.type === 'meeting.detected');
+  assert.equal(hit.length, 1);
+  assert.deepEqual([hit[0].data.platform, hit[0].data.apps], ['teams', ['Microsoft Teams']]);
+});
+
+test('Teams desktop: the helper is told Teams\' app and window title (macOS, Windows), and the one for Linux is not', () => {
+  const have = () => true;
+  const win = helperSpec('win32', { roots: ['/r'], exists: have });
+  const args = win.args('watch', { ...PLATFORMS.watch('win32') });
+  assert.match(args[args.indexOf('-Apps') + 1], /ms-teams/);
+  const mac = helperSpec('darwin', { roots: ['/r'], exists: have });
+  assert.match(mac.args('watch', { ...PLATFORMS.watch('darwin') }).join(' '), /--apps .*Microsoft Teams/);
+});
+
+test('Teams desktop: not verified, and Settings says so', () => {
+  assert.equal(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'meet', 'selectors', 'teams.json'), 'utf8')).verified, false);
+  const dir = tmp();
+  const store = { meet: { enabled: true, a11y: true, extension: false, vision: false, port: 0, token: 'x' } };
+  const svc = new MeetService({ settings: { get: (k) => store[k], update() {} }, bus: { subscribe() {} }, platformId: 'win32', roots: ['/b'], dataDir: dir });
+  const teams = svc.status().platforms.find((p) => p.id === 'teams');
+  assert.equal(teams.verified, false);
+  assert.ok(teams.sources.some((s) => s.kind === 'a11y'), 'on Windows the accessibility reader serves Teams');
+  assert.ok(!new MeetService({ settings: { get: (k) => store[k], update() {} }, bus: { subscribe() {} }, platformId: 'linux', roots: ['/b'], dataDir: dir }).status().platforms.find((p) => p.id === 'teams').sources.some((s) => s.kind === 'a11y'), 'on Linux it does not');
+});
+
+// ---- Zoom desktop (macOS, Windows; Linux to be measured) through the accessibility tree ----
+const zoomSel = () => compileSel(JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'meet', 'selectors', 'zoom.json'), 'utf8')));
+const launcher = require('../src/meet/launcher');
+
+test('Zoom desktop: the helpers watch the Zoom app on every system (Linux: so it can be measured), only meeting windows count', () => {
+  const z = PLATFORMS.get('zoom');
+  assert.match(z.apps.win32, /zoom/i); assert.match(z.apps.darwin, /zoom\\\.us/);   // a regex source: zoom\.us, and the bundle id us.zoom.xos
+  assert.match(z.apps.darwin, /us\\\.zoom\\\.xos/); assert.match(z.apps.linux, /zoom/i);
+  for (const os of ['win32', 'darwin', 'linux']) assert.match(PLATFORMS.watch(os).apps, /zoom/i, os);
+  assert.equal(PLATFORMS.fromWindow('Zoom Meeting')?.id, 'zoom');
+  assert.equal(PLATFORMS.fromWindow('Zoom Workplace'), null, 'the home window is no call');
+  assert.equal(PLATFORMS.fromWindow('Zoom Webinar')?.id, 'zoom');
+  assert.ok(PLATFORMS.readable('linux').some((p) => p.id === 'zoom'));
+  assert.equal(zoomSel().verified, false);
+});
+
+test('Zoom desktop: the same selectors read the Windows and macOS trees: the participants list and who is talking', () => {
+  for (const name of ['sim-zoom-win', 'sim-zoom-mac']) {
+    const m = readMeeting(simTree(name), zoomSel());
+    assert.deepEqual(m.participants.map((p) => [p.name, p.self, p.speaking]), [['Vasco Neves', true, false], ['Ana Silva', false, true], ['Bruno Costa', false, false], ['Carla Dias', false, false]], name);
+    assert.deepEqual(m.speaking, ['Ana Silva']);
+    assert.equal(m.partial, false);
+    assert.equal(m.code, '');
+  }
+});
+
+test('Zoom desktop: with the participants panel closed the "Talking:" label still says who speaks, and the roster says it is partial', () => {
+  const m = readMeeting(simTree('sim-zoom-closed'), zoomSel());
+  assert.deepEqual(m.participants.map((p) => [p.name, p.speaking]), [['Bruno Costa', true]]);
+  assert.deepEqual(m.speaking, ['Bruno Costa']);
+  assert.equal(m.partial, true);
+  const { MeetingReader } = require('../src/meet/a11y');
+  const msgs = new MeetingReader(zoomSel()).feed(simTree('sim-zoom-closed'));
+  assert.deepEqual(msgs.map((x) => [x.type, x.partial ?? x.name ?? x.inCall]), [['meeting', true], ['roster', true], ['speaker', 'Bruno Costa']]);
+  const home = readMeeting(simTree('sim-zoom-home'), zoomSel());
+  assert.deepEqual([home.found, home.participants.length, home.speaking.length], [false, 0, 0], 'the home window is nobody\'s call');
+});
+
+test('Zoom desktop: the window is read with Zoom\'s selectors, its messages say zoom, and the call feeds meeting detection', async () => {
+  const hub = new SignalHub();
+  const seen = [];
+  hub.on('signal', (s) => seen.push([s.msg.platform, s.msg.type]));
+  const { spawn } = fakeSpawn((c) => { c.stdout.write(line(simTree('sim-zoom-win'))); });
+  const src = new A11ySource({ hub, spec: helperSpec('win32', { roots: ['/r'], exists: () => true }), spawn });
+  src.start();
+  await new Promise((r) => setTimeout(r, 30));
+  src.stop();
+  assert.deepEqual([...new Set(seen.map((s) => s[0]))], ['zoom']);
+  assert.ok(seen.some((s) => s[1] === 'speaker'));
+});
+
+test('Zoom desktop on Linux: a Qt app shows its tree only when its accessibility is switched on, which a launcher of your own does and can undo', () => {
+  const files = {
+    '/usr/share/applications/Zoom.desktop': '[Desktop Entry]\nName=Zoom\nExec=/opt/zoom/ZoomLauncher %U\nType=Application\nCategories=Network;\n',
+    '/usr/share/applications/brave-browser.desktop': '[Desktop Entry]\nName=Brave\nExec=/usr/bin/brave-browser-stable %U\nType=Application\n',
+  };
+  const written = {};
+  const io = { home: '/home/u', env: { XDG_DATA_DIRS: '/usr/share' }, extra: false, read: (f) => written[f] ?? files[f] ?? (() => { throw Object.assign(new Error('no'), { code: 'ENOENT' }); })(), list: (d) => (d === '/usr/share/applications' ? Object.keys(files).map((f) => path.basename(f)) : (() => { throw new Error('no'); })()) };
+  const all = launcher.browsers(io);
+  const zoom = all.find((b) => b.file === 'Zoom.desktop');
+  assert.ok(zoom, 'the Zoom launcher is listed beside the browsers');
+  assert.equal(zoom.state, 'off');
+  assert.equal(zoom.app, 'zoom');
+  const r = launcher.enable('Zoom.desktop', { ...io, write: (f, t) => { written[f] = t; }, mkdir() {} });
+  assert.equal(r.state, 'on');
+  const text = written['/home/u/.local/share/applications/Zoom.desktop'];
+  assert.match(text, /^Exec=env QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 QT_ACCESSIBILITY=1 \/opt\/zoom\/ZoomLauncher %U$/m);
+  assert.match(text, /X-WhisperBrain-Accessibility=true/);
+  assert.doesNotMatch(text, /force-renderer-accessibility/, 'the browser flag is for browsers');
+  assert.equal(launcher.browsers(io).find((b) => b.file === 'Zoom.desktop').state, 'on');
+  let removed = null;
+  assert.equal(launcher.disable('Zoom.desktop', { ...io, remove: (f) => { removed = f; } }), true);
+  assert.equal(removed, '/home/u/.local/share/applications/Zoom.desktop');
+  // the browser entry still gets the browser flag, unchanged
+  assert.match((launcher.enable('brave-browser.desktop', { ...io, write: (f, t) => { written[f] = t; }, mkdir() {} }), written['/home/u/.local/share/applications/brave-browser.desktop']), /--force-renderer-accessibility/);
 });

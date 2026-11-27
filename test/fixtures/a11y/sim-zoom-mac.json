@@ -1,0 +1,88 @@
+{
+ "event": "snapshot",
+ "platform": "darwin",
+ "app": "zoom.us",
+ "window": "Zoom Meeting",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "AXWindow",
+   "n": "Zoom Meeting"
+  },
+  {
+   "p": 0,
+   "r": "AXStaticText",
+   "n": "Talking: Ana Silva"
+  },
+  {
+   "p": 0,
+   "r": "AXGroup",
+   "n": ""
+  },
+  {
+   "p": 2,
+   "r": "AXList",
+   "n": "Participants (4)"
+  },
+  {
+   "p": 3,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 4,
+   "r": "AXStaticText",
+   "n": "Vasco Neves (Me)"
+  },
+  {
+   "p": 4,
+   "r": "AXStaticText",
+   "n": "Computer audio unmuted"
+  },
+  {
+   "p": 3,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 7,
+   "r": "AXStaticText",
+   "n": "Ana Silva"
+  },
+  {
+   "p": 7,
+   "r": "AXStaticText",
+   "n": "Computer audio unmuted"
+  },
+  {
+   "p": 3,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 10,
+   "r": "AXStaticText",
+   "n": "Bruno Costa"
+  },
+  {
+   "p": 10,
+   "r": "AXStaticText",
+   "n": "Computer audio muted"
+  },
+  {
+   "p": 3,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 13,
+   "r": "AXStaticText",
+   "n": "Carla Dias"
+  },
+  {
+   "p": 13,
+   "r": "AXStaticText",
+   "n": "Phone call"
+  }
+ ]
+}

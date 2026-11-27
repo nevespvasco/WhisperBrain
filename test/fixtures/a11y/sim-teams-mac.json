@@ -1,0 +1,78 @@
+{
+ "event": "snapshot",
+ "platform": "darwin",
+ "app": "Microsoft Teams",
+ "window": "Weekly sync | Microsoft Teams",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "AXWebArea",
+   "n": "Weekly sync | Microsoft Teams"
+  },
+  {
+   "p": 0,
+   "r": "AXList",
+   "n": "Participants"
+  },
+  {
+   "p": 1,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 2,
+   "r": "AXStaticText",
+   "n": "Vasco Neves (You)"
+  },
+  {
+   "p": 2,
+   "r": "AXStaticText",
+   "n": "Muted"
+  },
+  {
+   "p": 1,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 5,
+   "r": "AXStaticText",
+   "n": "Ana Silva"
+  },
+  {
+   "p": 5,
+   "r": "AXStaticText",
+   "n": "Speaking"
+  },
+  {
+   "p": 1,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 8,
+   "r": "AXStaticText",
+   "n": "Bruno Costa"
+  },
+  {
+   "p": 8,
+   "r": "AXStaticText",
+   "n": "Unmuted"
+  },
+  {
+   "p": 1,
+   "r": "AXRow",
+   "n": ""
+  },
+  {
+   "p": 11,
+   "r": "AXStaticText",
+   "n": "Carla Dias"
+  },
+  {
+   "p": 11,
+   "r": "AXStaticText",
+   "n": "Organizer"
+  }
+ ]
+}

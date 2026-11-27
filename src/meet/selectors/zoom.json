@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "verified": false,
+  "note": "A first guess at how the Zoom desktop app (native UI, not a web page) shows up in the accessibility tree: the participants list (rows with a name and audio-state labels) and the \"Talking: <name>\" label Zoom shows while someone speaks. It has NOT been checked against a real call on any system: capture one with `npm run a11y:dump -- --platform zoom` and correct this file (or put a corrected copy at <data folder>/zoom-selectors.json, which wins over this one).",
+  "window": {
+    "title": "^Zoom (?:Meeting|Webinar)",
+    "code": "(\\d{9,11})"
+  },
+  "participants": {
+    "scope": {
+      "role": "^(?:list|tree|table)$",
+      "name": "participants|attendees|panelists|participantes"
+    },
+    "name": {
+      "role": "^(?:static|text)$",
+      "name": "\\S",
+      "not": {
+        "name": "^(?:computer audio (?:un)?muted|phone call|audio (?:un)?muted|video (?:on|off)|host|co-host|me|raised hand|mute|unmute|a falar)$|^(?:muted|unmuted)$"
+      }
+    },
+    "group": "parent",
+    "speakingText": {
+      "name": "^(?:talking|speaking|a falar|hablando)\\s*:\\s*(.+?)\\s*$"
+    },
+    "self": {
+      "name": "\\((?:me|you|eu|tu|yo)\\)$"
+    }
+  }
+}

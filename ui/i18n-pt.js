@@ -1569,4 +1569,7 @@ export const PT = {
   "After a Teams, Zoom or Google Meet recording, the platform's own transcript names every line. It needs the platform connected (Integrations) and the meeting link.": 'Depois de uma gravação do Teams, Zoom ou Google Meet, a transcrição da própria plataforma dá nome a cada linha. Precisa da plataforma ligada (Integrações) e da ligação da reunião.',
   'Offer it on the note': 'Oferecer na nota',
   'Fetch it automatically': 'Obter automaticamente',
+  'Started with Qt accessibility on (not measured: Zoom may still show nothing)': 'Iniciado com a acessibilidade do Qt ligada (não medido: o Zoom pode continuar a não mostrar nada)',
+  'You have your own launcher: start Zoom with QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1': 'Tem um lançador seu: inicie o Zoom com QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1',
+  'Normal launcher (Zoom is a Qt app: its window is only readable with Qt accessibility on, which has not been measured yet)': 'Lançador normal (o Zoom é uma app Qt: a janela só é legível com a acessibilidade do Qt ligada, o que ainda não foi medido)',
 };

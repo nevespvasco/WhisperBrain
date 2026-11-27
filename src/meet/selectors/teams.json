@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "verified": false,
+  "note": "A first guess at how the Microsoft Teams desktop app (new Teams: a web app in a desktop shell) shows up in the accessibility tree, derived from the Teams web page of the extension (extension/meet/selectors.js). It has NOT been checked against a real call on Windows or macOS: capture one with `npm run a11y:dump -- --platform teams` and correct this file (or put a corrected copy at <data folder>/teams-selectors.json, which wins over this one).",
+  "window": {
+    "title": "Microsoft Teams",
+    "code": "(?:/meet/|meetup-join/)([\\w%.-]{6,})"
+  },
+  "participants": {
+    "scope": {
+      "role": "^(?:list|tree)$",
+      "name": "participants|people|attendees|roster|pessoas|participantes"
+    },
+    "name": {
+      "role": "^(?:static|text)$",
+      "name": "\\S",
+      "not": {
+        "name": "^(?:muted|unmuted|speaking|is speaking|presenter|organi[sz]er|attendee|guest|host|co-organi[sz]er|a falar|em sil\u00eancio|organizador|convidado)$"
+      }
+    },
+    "group": "parent",
+    "speaking": {
+      "name": "^(?:speaking|is speaking|a falar|est\u00e1 a falar|esta a falar)$"
+    },
+    "self": {
+      "name": "\\((?:you|tu|voc\u00ea|voce|vous|du|t\u00fa)\\)$"
+    }
+  }
+}

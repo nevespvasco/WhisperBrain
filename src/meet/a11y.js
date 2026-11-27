@@ -51,6 +51,7 @@ function compileSelectors(json) {
     name: compileMatcher(p.name) || compileMatcher({ role: '^(?:static|text)$' }),
     group,
     speaking: compileMatcher(p.speaking),
+    speakingText: p.speakingText?.name ? new RegExp(p.speakingText.name, 'iu') : null,   // a label that says who speaks ("Talking: Ana"): the name is its first group
     self: compileMatcher(p.self),
     nameFrom: p.nameFrom || 'name',
   };
@@ -91,16 +92,17 @@ function groupOf(t, n, sel) {
   return out;
 }
 
-// -> { title, code, participants: [{ name, self, speaking }], speaking: [name], found }
+// -> { title, code, participants: [{ name, self, speaking }], speaking: [name], found, partial }
 // `found` is false when the page has no participant list (not in a call, the list is closed, or the selectors are wrong).
 function readMeeting(snapshot, sel) {
   const nodes = snapshot.nodes || [];
   const title = String(snapshot.window || '');
   const code = sel.code.exec(title)?.[1]?.toLowerCase() || '';
-  const out = { title, code, participants: [], speaking: [], found: false };
+  const out = { title, code, participants: [], speaking: [], found: false, partial: false };
   if (!nodes.length) return out;
   const t = buildTree(nodes, snapshot.platform || 'linux');
-  const inScope = sel.scope ? t.filter((n) => matches(sel.scope, n)).flatMap((n) => [...descendants(t, n.i)]) : t;
+  const scopes = sel.scope ? t.filter((n) => matches(sel.scope, n)) : null;
+  const inScope = scopes ? scopes.flatMap((n) => [...descendants(t, n.i)]) : t;
   const seen = new Set();
   for (const n of inScope) {
     if (!matches(sel.name, n)) continue;
@@ -114,6 +116,19 @@ function readMeeting(snapshot, sel) {
     if (c.name && seen.has(key)) continue;
     if (c.name) seen.add(key);
     out.participants.push({ name: c.name, self, speaking });
+  }
+  // a label that says who is talking ("Talking: Ana"), wherever it is on the page: it names the speaker even when the participants list is
+  // closed. A person not in the list then is only known by this label, so the roster is partial (it names people, it is not a head count).
+  if (sel.speakingText) {
+    for (const n of t) {
+      const m = n.n ? sel.speakingText.exec(n.n) : null;
+      if (!m || !m[1]) continue;
+      const c = cleanName(m[1]);
+      if (!c.name) continue;
+      const known = out.participants.find((p) => nameKey(p.name) === nameKey(c.name));
+      if (known) known.speaking = true;
+      else { out.participants.push({ name: c.name, self: c.self, speaking: true }); out.partial = true; }
+    }
   }
   out.found = out.participants.length > 0;
   out.speaking = out.participants.filter((p) => p.speaking && !p.self && p.name).map((p) => p.name);
@@ -137,8 +152,8 @@ class MeetingReader {
       out.push({ type: 'meeting', inCall: m.found, code: m.code, title: m.title });
     }
     if (!m.found) { this.roster = ''; if (this.speaker) { this.speaker = null; out.push({ type: 'speaker', name: null }); } return out; }
-    const rosterKey = m.participants.map((p) => `${nameKey(p.name)}${p.self ? '*' : ''}`).sort().join('|');
-    if (rosterKey !== this.roster) { this.roster = rosterKey; out.push({ type: 'roster', participants: m.participants.map((p) => ({ name: p.name, self: p.self })) }); }
+    const rosterKey = m.participants.map((p) => `${nameKey(p.name)}${p.self ? '*' : ''}`).sort().join('|') + (m.partial ? '~' : '');
+    if (rosterKey !== this.roster) { this.roster = rosterKey; out.push({ type: 'roster', participants: m.participants.map((p) => ({ name: p.name, self: p.self })), ...(m.partial ? { partial: true } : {}) }); }
     const who = m.speaking.length === 1 ? m.speaking[0] : null;
     const mine = m.participants.some((p) => p.self && p.speaking);
     const name = mine && !who ? null : who;

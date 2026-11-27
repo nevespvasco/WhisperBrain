@@ -1,0 +1,23 @@
+{
+ "event": "snapshot",
+ "platform": "darwin",
+ "app": "zoom.us",
+ "window": "Zoom Workplace",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "AXWindow",
+   "n": "Zoom Workplace"
+  },
+  {
+   "p": 0,
+   "r": "AXButton",
+   "n": "New meeting"
+  },
+  {
+   "p": 0,
+   "r": "AXButton",
+   "n": "Join"
+  }
+ ]
+}

@@ -1,0 +1,78 @@
+{
+ "event": "snapshot",
+ "platform": "win32",
+ "app": "ms-teams",
+ "window": "Weekly sync | Microsoft Teams",
+ "nodes": [
+  {
+   "p": -1,
+   "r": "Document",
+   "n": "Weekly sync | Microsoft Teams"
+  },
+  {
+   "p": 0,
+   "r": "List",
+   "n": "Participants"
+  },
+  {
+   "p": 1,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 2,
+   "r": "Text",
+   "n": "Vasco Neves (You)"
+  },
+  {
+   "p": 2,
+   "r": "Text",
+   "n": "Muted"
+  },
+  {
+   "p": 1,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 5,
+   "r": "Text",
+   "n": "Ana Silva"
+  },
+  {
+   "p": 5,
+   "r": "Text",
+   "n": "Speaking"
+  },
+  {
+   "p": 1,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 8,
+   "r": "Text",
+   "n": "Bruno Costa"
+  },
+  {
+   "p": 8,
+   "r": "Text",
+   "n": "Unmuted"
+  },
+  {
+   "p": 1,
+   "r": "ListItem",
+   "n": ""
+  },
+  {
+   "p": 11,
+   "r": "Text",
+   "n": "Carla Dias"
+  },
+  {
+   "p": 11,
+   "r": "Text",
+   "n": "Organizer"
+  }
+ ]
+}

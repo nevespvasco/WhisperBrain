@@ -67,9 +67,11 @@ const TEAMS = {
   id: 'teams',
   name: 'Microsoft Teams',
   short: 'Teams',
-  recognise: { urls: ['^https://teams\\.(?:microsoft|live)\\.com/'] },   // work or school, and personal
-  apps: {},
-  selectors: null,
+  recognise: { urls: ['^https://teams\\.(?:microsoft|live)\\.com/'], windowTitle: 'Microsoft Teams', watchTitle: 'teams' },   // work or school, and personal
+  // The desktop app on Windows and macOS is read through the accessibility tree (new Teams is a web app in a desktop shell, so its tree
+  // should look like the web page's). On Linux Teams is web only: the extension reads it. NOT verified on a real machine.
+  apps: { win32: 'ms-teams|teams', darwin: 'Microsoft Teams|MSTeams|com\\.microsoft\\.teams2' },
+  selectors: 'teams.json',
   extension: { matches: ['https://teams.microsoft.com/*', 'https://teams.live.com/*'] },
   lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },   // the extension's is a guess: it has not been measured on a real call
 };
@@ -78,9 +80,12 @@ const ZOOM = {
   id: 'zoom',
   name: 'Zoom',
   short: 'Zoom',
-  recognise: { urls: ['^https://(?:[\\w-]+\\.)?zoom\\.us/wc/'], code: '/wc/(?:join/)?([0-9]{9,11})' },   // the web client ("join from your browser")
-  apps: {},
-  selectors: null,
+  recognise: { urls: ['^https://(?:[\\w-]+\\.)?zoom\\.us/wc/'], code: '/wc/(?:join/)?([0-9]{9,11})', windowTitle: '^Zoom (?:Meeting|Webinar)', watchTitle: 'zoom' },   // the web client ("join from your browser"), and the meeting window of the desktop app
+  // The desktop app is native UI (not a web page): its own selectors (selectors/zoom.json). macOS and Windows are read as they are. On
+  // Linux it is a Qt app that may show nothing to AT-SPI unless Qt's accessibility is switched on (Settings has a reversible launcher
+  // switch): it is watched so that `npm run a11y:dump -- --platform zoom` can MEASURE that; nothing says it works there yet.
+  apps: { win32: 'zoom', darwin: 'zoom\\.us|us\\.zoom\\.xos', linux: 'zoom' },
+  selectors: 'zoom.json',
   extension: { matches: ['https://*.zoom.us/wc/*'] },
   lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },
 };
@@ -128,7 +133,8 @@ class PlatformRegistry {
   watch(os, only = null) {
     const list = only ? this.list().filter((p) => only.includes(p.id)) : this.list();
     const apps = unique(list.flatMap((p) => String(p.apps[os] || '').split('|').filter(Boolean)));
-    const titles = unique(list.map((p) => p.recognise.watchTitle || p.recognise.windowTitle).filter(Boolean));
+    // a platform's window titles are let through only where its apps are watched: Teams has none on Linux, where it is web only
+    const titles = unique(list.filter((p) => p.apps[os]).map((p) => p.recognise.watchTitle || p.recognise.windowTitle).filter(Boolean));
     return { apps: apps.join('|'), title: titles.join('|') };
   }
 

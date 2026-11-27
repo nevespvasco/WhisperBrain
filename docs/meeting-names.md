@@ -116,3 +116,28 @@ Attaching a transcript file already names every voice from it (`src/meet/attach.
 - Every way it can end has a reason in words, and the file drop is always offered: no cloud recording (Zoom needs a paid account, the host recording to the cloud and audio transcript switched on), transcription off, the organiser's policy blocks it, retention expired (Meet keeps transcripts 30 days), the transcript does not match the recording.
 
 **Not verified:** the fetch code (`src/transcripts/providers.js`) was written from the vendors' documentation and has never talked to a real account; the flow around it is tested against simulated provider answers, including "not there yet" and then there. Real-account checklist: work Teams (Graph, organiser policy), Zoom with a cloud recording, Google Workspace Meet.
+
+## Teams and Zoom desktop apps (accessibility tree)
+
+The two desktop apps are read like the browsers, with no extension: the same helpers (Linux AT-SPI, macOS AX, Windows UI Automation) are told which apps and window titles to watch from the platform registry, and the reader (`src/meet/a11y.js`) uses a selectors file per platform (`src/meet/selectors/teams.json`, `zoom.json`; yours go at `<data folder>/teams-selectors.json`, `zoom-selectors.json`). The call window feeds meeting detection (on macOS it is the only call signal, because the microphone cannot be watched).
+
+| App | Windows (UIA) | macOS (AX) | Linux (AT-SPI) |
+|---|---|---|---|
+| **Microsoft Teams** (new Teams: a web app in a desktop shell) | read, selectors derived from the Teams web page | read | web only: the extension reads it |
+| **Zoom** (native UI) | read: participants list + the "Talking: <name>" label | read | **to be measured**: a Qt app, see below |
+
+`zoom.json` also reads the label Zoom shows while someone talks (`speakingText`), which names the speaker even with the participants list closed; the roster is then marked partial (names, never a head count).
+
+### Findings (what has and has not been measured)
+
+- **Teams desktop, Windows and macOS: NOT measured.** Whether the app's tree carries the names and the speaking state, on either system, is the first thing to find out on a real machine: run `npm run a11y:dump -- --platform teams --redact` during a call. The Windows expectation is the Chromium one (a web view builds its page tree when a UI Automation client asks); on macOS it is unknown whether the app's web view exposes its tree to AX, and whether the "build it on request" step the browser reader uses applies.
+- **Zoom desktop, Linux: NOT measured** (Zoom was not installed on the machine this was written on). `npm run a11y:dump -- --platform zoom` is the measurement. Zoom's Linux client is a Qt app; Qt only exposes its tree to AT-SPI when its accessibility is on, which a launcher switch in Settings does and undoes (`QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 QT_ACCESSIBILITY=1` in your own copy of the launcher). Until someone measures, Linux is neither "supported" nor "unsupported": Settings says it is unmeasured.
+- **Zoom desktop, macOS and Windows: NOT measured.** The selectors are a guess from how Zoom's participants panel is described; `verified` is false.
+- The trees in `test/fixtures/a11y/sim-*.json` are **simulated** (written by hand in the shape the helpers print), not recorded from a real machine. They test the reading logic, not that the real apps look like that.
+
+### Real-machine checklist
+
+- [ ] Windows: Teams (new Teams, work and personal account) and Zoom: dump, correct the selectors, set `verified: true`.
+- [ ] macOS: same; and Teams: does the AX tree appear without the browser's `AXManualAccessibility` step?
+- [ ] Linux: Zoom with and without the Qt switch; write the answer here and in Settings.
+- [ ] The CI `native` job still builds the three helpers (nothing in them changed: the apps and titles come as arguments).

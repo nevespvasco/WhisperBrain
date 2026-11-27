@@ -1,6 +1,8 @@
 'use strict';
 // Linux: Chromium-based browsers only put a page in the accessibility tree when they are started with
-// --force-renderer-accessibility (measured). This adds that flag to the launcher a person clicks, in a copy of the
+// --force-renderer-accessibility (measured). The Zoom desktop app is a Qt program, which only shows its tree to AT-SPI when Qt's
+// accessibility is switched on (QT_LINUX_ACCESSIBILITY_ALWAYS_ON; NOT measured: Zoom was not installed where this was written),
+// so its launcher gets those variables the same way. This adds the flag to the launcher a person clicks, in a copy of the
 // browser's desktop entry that lives in their own applications folder and shadows the system one. Nothing outside the
 // user's home is touched, and removing the copy puts everything back. A copy the person made themselves is never touched.
 const fs = require('node:fs');
@@ -9,6 +11,9 @@ const path = require('node:path');
 
 const FLAG = '--force-renderer-accessibility';
 const MARK = 'X-WhisperBrain-Accessibility';
+const QT_ENV = 'env QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 QT_ACCESSIBILITY=1';
+const ZOOM = /^(?:Zoom|zoom|us\.zoom\.Zoom|zoom-us|Zoom[\w.-]*)\.desktop$/;
+const appOf = (file) => (ZOOM.test(file) ? 'zoom' : 'browser');
 const BROWSER = /^(?:google-chrome|chromium|chromium-browser|brave-browser|brave|microsoft-edge|vivaldi|opera)[\w.-]*\.desktop$|^(?:com\.google\.Chrome|org\.chromium\.Chromium|com\.brave\.Browser|com\.microsoft\.Edge)\.desktop$/;
 
 // extra: also look where snap and flatpak keep their launchers (a test says false: it must not depend on the machine)
@@ -23,8 +28,9 @@ function dirs({ home = os.homedir(), env = process.env, extra = true } = {}) {
 
 // Puts the flag in every Exec= line of a desktop entry (the main one and the "new window" style actions), before the
 // placeholders for files and addresses (%U, %u, @@u…) so it reaches the browser and not the page.
-function withFlag(text) {
+function withFlag(text, app = 'browser') {
   const lines = text.split('\n').map((line) => {
+    if (app === 'zoom') return !line.startsWith('Exec=') || line.includes('QT_LINUX_ACCESSIBILITY_ALWAYS_ON') ? line : `Exec=${QT_ENV} ${line.slice(5)}`;   // Qt reads its switches from the environment
     if (!line.startsWith('Exec=') || line.includes(FLAG)) return line;
     const tokens = line.slice(5).split(' ');
     const at = tokens.findIndex((t, i) => i > 0 && (/^%[a-zA-Z]$/.test(t) || t.startsWith('@@')));
@@ -46,13 +52,13 @@ function browsers({ home, env, extra, read = (f) => fs.readFileSync(f, 'utf8'), 
     let names;
     try { names = list(dir); } catch { continue; }
     for (const file of names) {
-      if (!BROWSER.test(file) || out.has(file)) continue;
+      if (!(BROWSER.test(file) || ZOOM.test(file)) || out.has(file)) continue;
       let text;
       try { text = read(path.join(dir, file)); } catch { continue; }
       // not a launcher a person clicks: no command, hidden, made for another desktop, or a snap's service entry (Exec=/usr/bin/false)
       const exec = field(text, 'Exec');
       if (!exec || /^(?:\/usr\/bin\/)?false\b/.test(exec) || /^true$/i.test(field(text, 'NoDisplay')) || field(text, 'OnlyShowIn')) continue;
-      out.set(file, { file, name: field(text, 'Name') || file, state: 'off', source: path.join(dir, file) });
+      out.set(file, { file, name: field(text, 'Name') || file, app: appOf(file), state: 'off', source: path.join(dir, file) });
     }
   }
   for (const b of out.values()) {
@@ -66,10 +72,10 @@ function browsers({ home, env, extra, read = (f) => fs.readFileSync(f, 'utf8'), 
 function enable(file, { home, env, extra, read = (f) => fs.readFileSync(f, 'utf8'), write = (f, t) => fs.writeFileSync(f, t), mkdir = (p) => fs.mkdirSync(p, { recursive: true }), list } = {}) {
   const b = browsers({ home, env, extra, read, list }).find((x) => x.file === file);
   if (!b) throw new Error('that browser was not found');
-  if (b.state === 'foreign') throw new Error('you already have your own launcher for it; add --force-renderer-accessibility to it yourself');
+  if (b.state === 'foreign') throw new Error(b.app === 'zoom' ? 'you already have your own launcher for it; start it with QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1 yourself' : 'you already have your own launcher for it; add --force-renderer-accessibility to it yourself');
   const d = dirs({ home, env, extra });
   mkdir(d.user);
-  write(path.join(d.user, file), withFlag(read(b.source)));
+  write(path.join(d.user, file), withFlag(read(b.source), b.app));
   return { ...b, state: 'on' };
 }
 
