@@ -3,16 +3,24 @@
 // 2025: one history request a minute for those). Read-only: channels:history (and groups:history for private channels), channels:read,
 // users:read. One item per channel per day (src/connectors/chat.js). Incremental: it reads again from the start of the day of the last
 // message it saw. A 429 is waited out when short; otherwise the run stops and the next one continues.
+//
+// What is read follows the source's access grant (src/access/grants.js; an old source without one reads what its config lists):
+//   metadata: per channel per day, who wrote and how many messages, NO text (and thread replies are not fetched)
+//   part:     the channels config lists, minus the "never read" list (channels, people, words), applied before anything is stored
+//   all:      every channel the Slack app is in (public and private, up to 300), minus the same list
 const { request } = require('./http');
-const { DAY, startOfDay, saveDays, add } = require('./chat');
+const { DAY, startOfDay, saveDays, add, levelOf, blockedReason, skippedRun, cursorsFor, cursorPatch, filterNever, channelBlocked, forgetChannel } = require('./chat');
 
 const BASE = 'https://slack.com/api';
 const every = 15 * 60_000;
 const FIRST_DAYS = 30;
 const MAX_PAGES = 20;
+const MAX_ALL_CHANNELS = 300;
 
-function validate(config) {
+// grant: the grant the source is being added with, when the caller has it (level 'all' needs no channel list: it reads every channel the app is in)
+function validate(config, grant = {}) {
   const channels = (Array.isArray(config.channels) ? config.channels : String(config.channels || '').split(/[\s,]+/)).map((c) => String(c).trim().replace(/^#/, '')).filter(Boolean);
+  if (!channels.length && (grant.readLevel === 'all' || config.all === true)) return { channels: [], all: true };
   if (!channels.length) throw Object.assign(new Error('Name at least one channel (for example general), or its id.'), { status: 400 });
   return { channels: [...new Set(channels)].slice(0, 30) };
 }
@@ -48,34 +56,68 @@ async function paginate(method, params, ctx, key) {
   return out;
 }
 
+// The messages of one channel from `oldest` (and up to `latest` when given), thread replies included unless withReplies is false.
+// -> the raw Slack messages, joins and topic changes left out
+async function readMessages({ channelId, oldest, latest, ctx, withReplies = true }) {
+  const msgs = await paginate('conversations.history', { channel: channelId, oldest: String(oldest / 1000), latest: latest ? String(latest / 1000) : undefined, limit: 200 }, ctx, 'messages');
+  const all = [];
+  for (const m of msgs) {
+    if (m.subtype && !['bot_message', 'thread_broadcast'].includes(m.subtype)) continue;      // joins, topic changes...
+    all.push(m);
+    if (withReplies && m.reply_count && m.thread_ts === m.ts) {
+      const replies = await paginate('conversations.replies', { channel: channelId, ts: m.ts, limit: 200 }, ctx, 'messages').catch(() => []);
+      all.push(...replies.filter((r) => r.ts !== m.ts));
+    }
+  }
+  return all;
+}
+
+// raw Slack messages -> the chat shape ({ at, who, uid, text, ref })
+const toMessages = (all, people) => all.filter((m) => m.text).map((m) => ({ at: Math.round(Number(m.ts) * 1000), who: people.get(m.user) || m.username || m.bot_profile?.name || m.user || 'someone', uid: m.user || '', text: clean(m.text, people), ref: m.ts }));
+const slackUri = (c, m) => `https://slack.com/app_redirect?channel=${c.id}&message_ts=${m.ref}`;
+
+// The people of the workspace, id -> name (empty when the token may not list them: ids are shown instead)
+async function peopleOf(ctx) { return new Map((await paginate('users.list', { limit: 200 }, ctx, 'members').catch(() => [])).map((u) => [u.id, u.profile?.display_name || u.real_name || u.name || u.id])); }
+
+// The channels this token can see (public and private, not archived). `member` ones only when asked: the app is in them.
+async function channelsOf(ctx, { memberOnly = false } = {}) {
+  const known = await paginate('conversations.list', { types: 'public_channel,private_channel', exclude_archived: 'true', limit: 200 }, ctx, 'channels');
+  return memberOnly ? known.filter((c) => c.is_member !== false) : known;
+}
+
 async function sync({ source, items, settings, fetchImpl, bases = {}, sleep, now = () => Date.now() }) {
   const token = settings.get('slack').token;
   if (!token) throw Object.assign(new Error('Add a Slack token first.'), { permanent: true });
+  const blocked = blockedReason(source, now());
+  if (blocked) return skippedRun(blocked);
+  const level = levelOf(source), metadataOnly = level === 'metadata', never = source.filter?.never;
   const ctx = { token, base: bases.slack || BASE, fetchImpl, sleep };
-  const people = new Map((await paginate('users.list', { limit: 200 }, ctx, 'members').catch(() => [])).map((u) => [u.id, u.profile?.display_name || u.real_name || u.name || u.id]));
-  const known = await paginate('conversations.list', { types: 'public_channel,private_channel', exclude_archived: 'true', limit: 200 }, ctx, 'channels');
+  const people = await peopleOf(ctx);
+  const known = await channelsOf(ctx);
+  // what to read: the channels config lists, or (at 'all') every channel the app is in plus any it lists
+  let targets;
+  if (level === 'all') {
+    const wanted = new Set(source.config.channels || []);
+    targets = known.filter((c) => c.is_member !== false || wanted.has(c.id) || wanted.has(c.name)).slice(0, MAX_ALL_CHANNELS);
+  } else targets = null;
   const out = { created: 0, updated: 0, unchanged: 0, removed: 0, errors: 0 };
-  const cursors = { ...(source.config.cursors || {}) };
-  for (const want of source.config.channels || []) {
-    const ch = known.find((c) => c.id === want || c.name === want);
-    if (!ch) { out.errors++; continue; }                                    // not found, or the app is not in it
-    const since = cursors[ch.id] ? startOfDay(Number(cursors[ch.id]) * 1000) : startOfDay(now() - FIRST_DAYS * DAY);
-    const msgs = await paginate('conversations.history', { channel: ch.id, oldest: String(since / 1000), limit: 200 }, ctx, 'messages');
-    const all = [];
-    for (const m of msgs) {
-      if (m.subtype && !['bot_message', 'thread_broadcast'].includes(m.subtype)) continue;      // joins, topic changes...
-      all.push(m);
-      if (m.reply_count && m.thread_ts === m.ts) {
-        const replies = await paginate('conversations.replies', { channel: ch.id, ts: m.ts, limit: 200 }, ctx, 'messages').catch(() => []);
-        all.push(...replies.filter((r) => r.ts !== m.ts));
-      }
+  const cursors = cursorsFor(source, level);
+  try {
+    const list = targets ? targets.map((ch) => ({ ch })) : (source.config.channels || []).map((want) => ({ want, ch: known.find((c) => c.id === want || c.name === want) }));
+    for (const { ch } of list) {
+      if (!ch) { out.errors++; continue; }                                  // not found, or the app is not in it
+      const channel = { id: ch.id, name: `#${ch.name}` };
+      if (channelBlocked(never, channel)) { out.removed += forgetChannel(items, source, ch.id); continue; }   // on the never-read list: not even looked at
+      const since = cursors[ch.id] ? startOfDay(Number(cursors[ch.id]) * 1000) : startOfDay(now() - FIRST_DAYS * DAY);
+      const all = await readMessages({ channelId: ch.id, oldest: since, ctx, withReplies: !metadataOnly });
+      const messages = filterNever(never, channel, toMessages(all, people));
+      add(out, saveDays({ items, source, channel, messages, uriOf: slackUri, metadataOnly }));
+      if (all.length) cursors[ch.id] = all.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), '0');
     }
-    const messages = all.filter((m) => m.text).map((m) => ({ at: Math.round(Number(m.ts) * 1000), who: people.get(m.user) || m.username || m.bot_profile?.name || m.user || 'someone', text: clean(m.text, people), ref: m.ts }));
-    add(out, saveDays({ items, source, channel: { id: ch.id, name: `#${ch.name}` }, messages, uriOf: (c, m) => `https://slack.com/app_redirect?channel=${c.id}&message_ts=${m.ref}` }));
-    if (all.length) cursors[ch.id] = all.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), '0');
+  } finally {
+    items.updateSource(source.id, { config: cursorPatch(cursors, level) });      // what was read stays read, even when a rate limit stopped the run
   }
-  items.updateSource(source.id, { config: { cursors } });
   return out;
 }
 
-module.exports = { kind: 'slack', every, validate, ready, check, sync, clean };
+module.exports = { kind: 'slack', every, validate, ready, check, sync, clean, api, paginate, readMessages, toMessages, peopleOf, channelsOf, slackUri, BASE };

@@ -20,6 +20,7 @@ import * as integrations from './views/integrations.js';
 import * as settings from './views/settings.js';
 import * as activity from './views/activity.js';
 import * as sources from './views/sources.js';
+import * as access from './views/access.js';
 import * as documents from './views/documents.js';
 import * as inbox from './views/inbox.js';
 import * as promises from './views/promises.js';
@@ -55,7 +56,7 @@ function setDrawer(open) {
 
 // ---------- routing ----------
 const ROUTES = {
-  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, documents, inbox, promises, review, projects, project: projects, rules,
+  '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, access, documents, inbox, promises, review, projects, project: projects, rules,
 };
 async function route() {
   const hash = location.hash.replace(/^#\/?/, '');

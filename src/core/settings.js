@@ -90,13 +90,21 @@ const DEFAULTS = {
   sidebarCollapsed: false,
   backupDir: '',                 // a folder for backups of the database ('' = none); with one, a copy is made every day while the app runs (src/core/backup.js)
   ocrLanguages: 'por+eng',        // tesseract languages for scanned PDFs, where pdftoppm and tesseract are installed (src/importers/ocr.js)
+  askLiveSearch: true,          // when the copy kept here has little to say, Ask also searches the services that allow it (Gmail...), with the question's own words (src/search/live.js)
+  redactRemote: true,           // to an AI server that is not on this computer, swap e-mail addresses, phone numbers, IBAN/card numbers, keys, codes and secret links for placeholders (src/access/redact.js)
   rerank: false,                 // let the AI server order the excerpts for a question by how well each answers it (one extra request per question)
   autoAssertions: true,          // after a meeting, look for decisions and commitments (each one a suggestion with its quote; nothing is accepted by itself)
   embeddingModel: '',            // an embedding model on the AI server (e.g. embeddinggemma): search by meaning as well as by words; '' = words only (src/search)
   startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
   secretStorage: 'ask',         // what to do when the keystore is no real protection: 'ask' (keep as is, show a warning) | 'plaintext' (keep them in the clear, on purpose) | 'never' (do not save secrets)
-  google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false },   // gmail: the sign-in also asked for read-only access to mail
+  google: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false, scopes: [], needsReconnect: false, calendarDetail: 'full' },   // gmail: the sign-in also gave access to mail; scopes: what Google really granted
+  mailAccounts: [],             // more Google accounts used only for mail: [{ id, email, refreshToken, accessToken, expiresAt, scopes, needsReconnect }] (src/meetings/google-accounts.js)
+  // Outlook / Microsoft 365 / outlook.com mail through Microsoft Graph (src/connectors/outlook.js); tenant 'common' lets personal accounts sign in too.
+  // scopes: what Microsoft really granted (Mail.ReadBasic | Mail.Read | ...); needsReconnect: Microsoft refused the refresh token, sign in again
+  outlook: { clientId: '', tenant: 'common', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', scopes: [], needsReconnect: false },
+  // Mail from any IMAP server (src/connectors/imap.js): [{ id, label, host, port, tls, user, password, authMethod: 'password' | 'xoauth2', accessToken, refreshToken, expiresAt, clientId, clientSecret, tokenUrl, oauthScope, aliases, smtp }]
+  imapAccounts: [],
   // The platforms' own transcripts (src/transcripts): the app each person registered with the platform, and the tokens it gave
   microsoft: { clientId: '', tenant: 'organizations', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
   googleMeet: { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0 },
@@ -105,7 +113,7 @@ const DEFAULTS = {
   linear: { apiKey: '', teamId: '', teamName: '' },
   obsidian: { vaultPath: '', folder: 'Meetings', transcript: true, autoExport: false },
   github: { token: '' },        // a personal access token (read-only: repository metadata, issues and pull requests): src/connectors/github.js
-  slack: { token: '' },         // a token of YOUR OWN Slack app (internal apps are exempt from the limits on shared apps): src/connectors/slack.js
+  slack: { token: '', userToken: '' },   // token: of YOUR OWN Slack app (internal apps are exempt from the limits on shared apps): src/connectors/slack.js. userToken: a USER token (xoxp-) with search:read, only for live search (Slack's search needs one): src/search/adapters/slack.js
   webhooks: [],                 // [{ id, name, url, secret, auto }]
   meet: {
     enabled: true,              // use what the meeting window shows (who is speaking, who is on the call) to name the voices on the call
@@ -126,17 +134,19 @@ const DEFAULTS = {
 };
 
 const MAX_TRANSLATION_TARGETS = 8;
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'discordRpc', 'translation', 'assistant']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'outlook', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'discordRpc', 'translation', 'assistant']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token'], meet: ['token'], discord: ['token'], discordRpc: ['clientSecret', 'accessToken', 'refreshToken'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], outlook: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token', 'userToken'], meet: ['token'], discord: ['token'], discordRpc: ['clientSecret', 'accessToken', 'refreshToken'] };
 const MASK = '********';
 
 // Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.
 function secretFields(key, value) {
   if (key === 'webhooks') return Array.isArray(value) ? value.filter((w) => w && typeof w === 'object').map((w) => [w, 'secret']) : [];
+  if (key === 'mailAccounts') return Array.isArray(value) ? value.filter((w) => w && typeof w === 'object').flatMap((w) => [[w, 'refreshToken'], [w, 'accessToken'], [w, 'clientSecret']]) : [];
+  if (key === 'imapAccounts') return Array.isArray(value) ? value.filter((w) => w && typeof w === 'object').flatMap((w) => [[w, 'password'], [w, 'refreshToken'], [w, 'accessToken'], [w, 'clientSecret']]) : [];
   return (SECRETS[key] || []).filter((f) => value && typeof value === 'object').map((f) => [value, f]);
 }
-const hasSecrets = (key) => key === 'webhooks' || !!SECRETS[key];
+const hasSecrets = (key) => key === 'webhooks' || key === 'mailAccounts' || key === 'imapAccounts' || !!SECRETS[key];
 function mapSecrets(key, value, f) {
   const out = structuredClone(value);
   for (const [holder, field] of secretFields(key, out)) if (typeof holder[field] === 'string' && holder[field]) holder[field] = f(holder[field]);
@@ -162,6 +172,7 @@ function validate(key, value) {
     for (const k of Object.keys(def)) {
       if (typeof merged[k] !== typeof def[k]) throw new Error(`${key}.${k} must be a ${typeof def[k]}`);
     }
+    if (key === 'google' && !['full', 'busy'].includes(merged.calendarDetail)) throw new Error('google.calendarDetail must be full or busy');
     if (key === 'meet' && !(Number.isInteger(merged.port) && merged.port >= 1024 && merged.port <= 65000)) throw new Error('meet.port must be a port from 1024 to 65000');
     if (key === 'assistant') {
       if (!['bullets', 'spoken'].includes(merged.mode)) throw new Error('assistant.mode must be bullets or spoken');
@@ -201,6 +212,31 @@ function validate(key, value) {
   if (key === 'floatingRecorder' && !['off', 'background', 'always'].includes(value)) throw new Error('floatingRecorder must be off, background or always');
   if (key === 'autoRecord' && !['off', 'ask', 'always'].includes(value)) throw new Error('autoRecord must be off, ask or always');
   if (key === 'captureCalendar' && !['off', 'selected', 'all'].includes(value)) throw new Error('captureCalendar must be off, selected or all');
+  if (key === 'mailAccounts') {
+    if (!Array.isArray(value)) throw new Error('mailAccounts must be a list');
+    return value.slice(0, 10).map((a) => ({
+      id: String(a?.id || require('node:crypto').randomUUID().slice(0, 12)), email: String(a?.email || '').toLowerCase().slice(0, 200),
+      refreshToken: String(a?.refreshToken || ''), accessToken: String(a?.accessToken || ''), expiresAt: Number(a?.expiresAt) || 0,
+      scopes: Array.isArray(a?.scopes) ? a.scopes.map(String).slice(0, 20) : [], needsReconnect: !!a?.needsReconnect,
+      clientId: String(a?.clientId || ''), clientSecret: String(a?.clientSecret || ''),
+    }));
+  }
+  if (key === 'imapAccounts') {
+    if (!Array.isArray(value)) throw new Error('imapAccounts must be a list');
+    const text = (v, n = 200) => String(v ?? '').trim().slice(0, n);
+    return value.slice(0, 10).map((a) => {
+      const port = Number(a?.port);
+      return {
+        id: text(a?.id, 40) || require('node:crypto').randomUUID().slice(0, 12), label: text(a?.label, 80), host: text(a?.host).toLowerCase(),
+        port: Number.isInteger(port) && port >= 1 && port <= 65535 ? port : (a?.tls === false ? 143 : 993), tls: a?.tls !== false,
+        user: text(a?.user), password: String(a?.password ?? ''), authMethod: a?.authMethod === 'xoauth2' ? 'xoauth2' : 'password',
+        accessToken: String(a?.accessToken ?? ''), refreshToken: String(a?.refreshToken ?? ''), expiresAt: Number(a?.expiresAt) || 0,
+        clientId: text(a?.clientId), clientSecret: String(a?.clientSecret ?? ''), tokenUrl: text(a?.tokenUrl, 500), oauthScope: text(a?.oauthScope, 500),
+        aliases: (Array.isArray(a?.aliases) ? a.aliases : []).map((x) => text(x, 200).toLowerCase()).filter(Boolean).slice(0, 10),
+        smtp: { host: text(a?.smtp?.host).toLowerCase(), port: Number(a?.smtp?.port) || 587, security: ['tls', 'starttls', 'none'].includes(a?.smtp?.security) ? a.smtp.security : 'starttls' },
+      };
+    });
+  }
   if (key === 'webhooks') {
     if (!Array.isArray(value)) throw new Error('webhooks must be a list');
     return value.slice(0, 20).map((w) => {
@@ -320,6 +356,8 @@ class Settings {
     const s = this.all();
     for (const [key, fields] of Object.entries(SECRETS)) for (const f of fields) if (s[key][f]) s[key][f] = MASK;
     s.webhooks = s.webhooks.map((w) => ({ ...w, secret: w.secret ? MASK : '' }));
+    s.imapAccounts = s.imapAccounts.map((m) => ({ ...m, password: m.password ? MASK : '', refreshToken: m.refreshToken ? MASK : '', accessToken: m.accessToken ? MASK : '', clientSecret: m.clientSecret ? MASK : '' }));
+    s.mailAccounts = s.mailAccounts.map((m) => ({ ...m, refreshToken: m.refreshToken ? MASK : '', accessToken: m.accessToken ? MASK : '', clientSecret: m.clientSecret ? MASK : '' }));
     s.managed = [...Object.keys(this.policy.locked), ...(this.policy.requireLocalLlm ? ['llm.baseUrl (local servers only)'] : [])];
     return s;
   }
@@ -356,7 +394,7 @@ class Settings {
     const pairs = secretFields(key, out), prevPairs = secretFields(key, prev);
     for (const [holder, field] of pairs) {
       if (holder[field]) continue;
-      const was = key === 'webhooks' ? prevPairs.find(([h]) => h.id === holder.id) : prevPairs.find(([, f]) => f === field);
+      const was = key === 'webhooks' || key === 'mailAccounts' || key === 'imapAccounts' ? prevPairs.find(([h, f]) => h.id === holder.id && f === field) : prevPairs.find(([, f]) => f === field);
       if (was && SecretBox.isSealed(was[0][was[1]])) holder[field] = was[0][was[1]];
     }
     return out;
@@ -381,6 +419,8 @@ class Settings {
         for (const f of SECRETS[key]) if (v[f] === MASK) v[f] = current[key][f];
       }
       if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => (w?.secret === MASK ? { ...w, secret: current.webhooks.find((x) => x.id === w.id)?.secret || '' } : w));
+      if (key === 'imapAccounts' && Array.isArray(v)) v = v.map((m) => { const cur = current.imapAccounts.find((x) => x.id === m?.id) || {}; const fix = (f) => (m?.[f] === MASK ? cur[f] || '' : m?.[f]); return { ...m, password: fix('password'), refreshToken: fix('refreshToken'), accessToken: fix('accessToken'), clientSecret: fix('clientSecret') }; });
+      if (key === 'mailAccounts' && Array.isArray(v)) v = v.map((m) => { const cur = current.mailAccounts.find((x) => x.id === m?.id) || {}; const fix = (f) => (m?.[f] === MASK ? cur[f] || '' : m?.[f]); return { ...m, refreshToken: fix('refreshToken'), accessToken: fix('accessToken'), clientSecret: fix('clientSecret') }; });
       next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);        // as it will read (policy applied): checked and cached
       stored[key] = OBJECT_KEYS.has(key) ? validate(key, { ...raw[key], ...v }) : next[key];   // as it is kept
     }

@@ -145,6 +145,8 @@ class AssistantService {
     try { briefings = this.briefings?.forNote?.(live.noteId) || []; } catch { /* no briefings */ }
     const note = this.notes.get(live.noteId);
     if (note?.body?.trim()) briefings = [...briefings, { title: 'My notes for this meeting', kind: 'notes', text: note.body }];
+    // recent mail with the people on this call, as a short note each, only what the AI server in use may see (set by the app from the grants)
+    try { briefings = [...briefings, ...(this.mailContext?.(live.noteId) || [])]; } catch { /* the call goes on without it */ }
     const budget = Math.min(12000, Math.max(3000, Math.floor((this.settings.get('llm').contextChars || 24000) / 2)));
     return buildContext({ question, briefings, tail: live.tail.slice(-16), history: live.history, meSaid: live.engine.meSaid(), glossary: this.glossary(), budget });
   }

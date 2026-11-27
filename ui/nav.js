@@ -54,7 +54,7 @@ export const DOORS = [
     id: 'setup', label: 'Setup', icon: 'settings', href: '#/integrations',
     hint: 'Connect your tools and choose how WhisperBrain works.',
     sections: [
-      { links: [L('#/sources', 'Folders & vaults', 'folder', ['sources'], { count: 'sources' }), L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/activity', 'Activity', 'refresh', ['activity']), L('#/rules', 'Rules', 'wand', ['rules'])] },
+      { links: [L('#/sources', 'Folders & vaults', 'folder', ['sources'], { count: 'sources' }), L('#/integrations', 'Integrations', 'plug', ['integrations']), L('#/access', 'Access & privacy', 'shield', ['access']), L('#/activity', 'Activity', 'refresh', ['activity']), L('#/rules', 'Rules', 'wand', ['rules'])] },
       { label: 'Settings', links: SETTINGS_SECTIONS.map(([id, label, icon]) => L(`#/settings/${id}`, label, icon, ['settings'], { section: id })) },
     ],
   },

@@ -93,9 +93,10 @@ class SourceManager {
   addRemote({ kind, name, config = {}, sensitivity = 'private', grant = {} }) {
     const svc = this.services[kind];
     if (!svc) throw err(`unknown service "${kind}"`);
-    if (!svc.ready(this.ctx)) throw err(`Connect ${kind} first: its token or sign-in is missing.`, 412);
-    const checked = svc.validate(config);
-    const source = this.items.addSource({ kind, name: name || `${kind}`, mode: 'copy', sensitivity, config: { ...checked, remote: true }, grant: { readLevel: 'part', ...grant } });
+    if (!svc.ready(this.ctx, config)) throw err(`Connect ${kind} first: its token or sign-in is missing.`, 412);
+    const level = { readLevel: 'part', ...grant };
+    const checked = svc.validate(config, level);
+    const source = this.items.addSource({ kind, name: name || `${kind}`, mode: 'copy', sensitivity, config: { ...checked, remote: true }, grant: level });
     this.enqueueSync(source.id);
     return source;
   }
@@ -111,14 +112,16 @@ class SourceManager {
       this.bus?.publish('sources.syncing', { id: sourceId });
       const r = await c.scan({ onProgress: (p) => { this.progress.set(sourceId, p); this.bus?.publish('sources.progress', { id: sourceId, ...p }); } });
       this.items.markSync(sourceId, { ok: true });
+      if (source.config?.needsReconnect) this.items.updateSource(sourceId, { config: { needsReconnect: false } });
       this.progress.delete(sourceId);
       this.bus?.publish('sources.changed', { id: sourceId });
       return r;
     } catch (e) {
       this.progress.delete(sourceId);
       this.items.markSync(sourceId, { ok: false, error: e.message });
+      if (['google-auth', 'outlook-auth'].includes(e.code) && !source.config?.needsReconnect) this.items.updateSource(sourceId, { config: { needsReconnect: true } });   // data and grant stay: the card offers one-click Reconnect
       this.bus?.publish('sources.changed', { id: sourceId });
-      throw Object.assign(e, { permanent: e.permanent || e.code === 'unauthorized' || /does not exist|not a folder|No folder/.test(e.message) });
+      throw Object.assign(e, { permanent: e.permanent || e.code === 'unauthorized' || e.code === 'google-auth' || e.code === 'outlook-auth' || /does not exist|not a folder|No folder/.test(e.message) });
     }
   }
 

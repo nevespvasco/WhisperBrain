@@ -7,9 +7,10 @@ import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
 
 // where a source opens: a meeting at the line that was cited, or a note from a folder
-const hrefOf = (s) => (s.kind === 'item' ? `#/documents/${s.id}` : `#/note/${s.id}${s.segmentId ? `?tab=transcript&seg=${s.segmentId}` : ''}`);
-const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map((s) => `<a class="chip" href="${hrefOf(s)}" title="${esc(s.title || '')}">${icon(s.kind === 'item' ? 'file' : 'link', 'sm')}${s.n ? `<b>[${s.n}]</b> ` : ''}${esc(s.title || t('Untitled meeting'))}</a>`).join('')}</div>` : '');
-// [1] in an answer becomes a link to what it cites; a number with nothing behind it stays plain text
+const hrefOf = (s) => (s.kind === 'live' ? (s.uri || '#') : s.kind === 'item' ? `#/documents/${s.id}` : `#/note/${s.id}${s.segmentId ? `?tab=transcript&seg=${s.segmentId}` : ''}`);
+const chip = (s) => `<a class="chip" href="${esc(hrefOf(s))}" ${s.kind === 'live' ? 'target="_blank" rel="noopener noreferrer"' : ''} title="${esc(s.title || '')}${s.untrusted ? ` — ${esc(t('unverified sender: what it says is only a claim'))}` : ''}">${icon(s.kind === 'item' || s.kind === 'live' ? 'mail' : 'link', 'sm')}${s.n ? `<b>[${s.n}]</b> ` : ''}${esc(s.title || t('Untitled meeting'))}${s.untrusted ? ` <span class="badge danger" title="${esc(t('Somebody you have not dealt with'))}">${t('unverified')}</span>` : ''}</a>${s.kind === 'item' || s.kind === 'live' ? `<button class="btn xs ghost" data-reply="${esc(s.kind === 'item' ? s.id : '')}" data-live="${esc(s.kind === 'live' ? `${s.sourceId}|${s.externalId}` : '')}" data-prov="${esc(s.sourceId || '')}" title="${t('Write a reply to this mail')}">${t('Reply…')}</button>` : ''}`;
+const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map(chip).join('')}</div>` : '');
+const searchedHtml = (searched) => (searched?.length ? `<div class="xsmall muted" style="margin-top:6px">${icon('search', 'sm')} ${searched.map((x) => t('Searched {name} for: {q}', { name: esc(x.source), q: `“${esc(x.query)}”` })).join(' · ')}</div>` : '');
 const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${hrefOf(s)}" title="${esc(s.title || '')}">${n}</a>` : m; });
 const bubble = (m) => `<div class="bubble ${m.role}">${m.role === 'user' ? esc(m.content) : withCites(renderMarkdown(m.content), m.sources) + sourcesHtml(m.sources)}</div>`;
 const emptyHtml = (suggestions) => `<div class="chat-empty"><span class="ic-wrap">${icon('sparkles')}</span><div class="muted small">${t('Ask a question, or start from one of these:')}</div>
@@ -44,6 +45,8 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
       const sources = !noteId ? res?.sources : null;
       if (res?.answer) { text = res.answer; out.innerHTML = withCites(renderMarkdown(text), sources); }   // the checked answer: only numbers that were given stay
       if (sources?.length) out.insertAdjacentHTML('beforeend', sourcesHtml(sources));
+      if (res?.searched?.length) out.insertAdjacentHTML('beforeend', searchedHtml(res.searched));
+      if (res?.redacted) out.insertAdjacentHTML('beforeend', `<div class="xsmall muted">${icon('shield', 'sm')} ${t('Addresses, numbers and codes were replaced by placeholders before they went to your AI server.')}</div>`);
       fol.update();
       history.push({ role: 'user', content: q }, { role: 'assistant', content: text, sources });
     } catch (e) { out.remove(); fail(e); } finally { S.streaming = null; }
@@ -53,6 +56,16 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
   root.onclick = async (e) => {
     const chip = e.target.closest('[data-q]');
     if (chip) send(chip.dataset.q);
+    const rep = e.target.closest('[data-reply]');
+    if (rep) {
+      try {
+        let id = rep.dataset.reply;
+        if (!id && rep.dataset.live) { const [sourceId, externalId] = rep.dataset.live.split('|'); id = (await api('POST', '/api/live-search/open', { sourceId, externalId })).id; }   // keep the thread (a few days) so a reply can be made from it
+        const prov = (rep.closest('.bubble')?.querySelectorAll('[data-prov]') || []);
+        const { composeMail } = await import('../compose.js');
+        await composeMail({ itemId: id, title: t('Reply'), provenance: [...new Set([...prov].map((x) => x.dataset.prov).filter(Boolean))], origin: 'ask' });
+      } catch (err) { fail(err); }
+    }
     if (e.target.closest('[data-clear]')) { if (!await confirmDialog(t('Clear this conversation? The questions and answers are deleted and cannot be brought back.'), { ok: t('Clear chat'), title: t('Clear chat') })) return; await api('DELETE', `/api/chat${noteId ? `?noteId=${noteId}` : ''}`); history.length = 0; renderChat(root, history, { noteId, suggestions, placeholder, onLayout }); }
   };
   onLayout?.();

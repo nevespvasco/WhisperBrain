@@ -1,4 +1,5 @@
 'use strict';
+const { gmailScopesFor } = require('../access/gmail-scopes');
 // HTTP routes for the knowledge layer, exports/imports and integrations. Registered by http.js.
 const { FORMATS, fileName, toHtml } = require('../knowledge/meeting');
 const { zip } = require('../core/zip-writer');
@@ -199,13 +200,20 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     if (Object.keys(patch).length) app.settings.update({ google: { ...app.settings.get('google'), ...patch } });
     if (!app.google.config().clientId) throw new HttpError(400, 'Add the OAuth client ID from Google Cloud first.');
     app.pendingGoogleAuth?.cancel?.();
-    const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined, gmail: !!body.gmail });
+    // What Google is asked for follows what the person grants (src/access/gmail-scopes.js): level and actions -> exactly those permissions.
+    // Without `level` a plain `gmail: true` still means read-only mail, as before.
+    const scopes = body.gmail ? gmailScopesFor({ level: ['metadata', 'part', 'all'].includes(body.level) ? body.level : 'part', actions: Array.isArray(body.actions) ? body.actions.map(String) : [] }) : [];
+    const account = String(body.account || 'primary');
+    if (account !== 'primary' && account !== 'new' && !app.googleAccounts.find(account)) throw new HttpError(404, 'unknown account');
+    if (account !== 'primary' && !scopes.length) throw new HttpError(400, 'An extra account is only for mail: choose what to read.');
+    const { auth, finished } = await app.googleAccounts.connect({ account, scopes, openExternal: app.openExternal || undefined });
     app.pendingGoogleAuth = auth;
-    auth.done.then((r2) => { app.calendar.invalidate?.(); app.bus.publish('google.connected', { email: r2.email, calendars: r2.calendars?.length || 0 }); })
+    finished.then((r2) => { app.calendar.invalidate?.(); app.bus.publish('google.connected', { email: r2.email, account: r2.id }); })
       .catch((e) => app.bus.publish('google.error', { message: e.message }))
       .finally(() => { if (app.pendingGoogleAuth === auth) app.pendingGoogleAuth = null; });
     return { authUrl: auth.authUrl, opened: !!app.openExternal };
   });
+  r('GET', '/api/google/accounts', async () => app.googleAccounts.list());
   r('GET', '/api/google/calendars', async () => app.google.listCalendars());
   r('PUT', '/api/google/calendars', async ({ body }) => {
     const sel = new Set(body.selected || []);
@@ -214,5 +222,6 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     app.calendar.invalidate?.();
     return cals;
   });
-  r('POST', '/api/google/disconnect', async () => { await app.google.disconnect(); app.calendar.invalidate?.(); return { ok: true }; });
+  // Sign out of one account (default: the calendar sign-in). Mail sources that read it keep what they read until they are revoked in Access.
+  r('POST', '/api/google/disconnect', async ({ body }) => { await app.googleAccounts.disconnect(String(body?.account || 'primary')); app.calendar.invalidate?.(); return { ok: true }; });
 };

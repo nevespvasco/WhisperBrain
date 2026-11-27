@@ -3,79 +3,9 @@
 // metadata scope). It proves the connector's logic; the real Gmail needs the person's own account.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const http = require('node:http');
-const fs = require('node:fs');
-const { createApp } = require('../src/server/app');
 const { compileQuery, neverRead, readCursor, writeCursor, threadItem } = require('../src/connectors/gmail');
-const { tmpDir } = require('./helpers');
 
-const fakePlatform = () => ({
-  id: 'fake', session: 'test', capture: { mic: 'renderer', system: 'renderer' },
-  async capabilities() { return { platform: 'fake', mic: true, systemAudio: true, paste: false, notes: [] }; },
-  async listMics() { return []; }, createMicSource() { return null; }, async createSystemSource() { return null; },
-  async micActivity() { return { supported: false, active: false, apps: [] }; }, async paste() { return { ok: false }; }, clipboard: null,
-});
-const b64 = (s) => Buffer.from(s).toString('base64url');
-const mail = (id, from, to, text, { labels = ['INBOX'], cc = '', subject = 'Contract terms', at = Date.parse('2026-11-24T10:00:00Z'), unsubscribe = false } = {}) => ({
-  id, labelIds: labels, internalDate: String(at), snippet: `snippet of ${text}`,
-  payload: { headers: [{ name: 'From', value: from }, { name: 'To', value: to }, ...(cc ? [{ name: 'Cc', value: cc }] : []), { name: 'Date', value: new Date(at).toUTCString() }, { name: 'Subject', value: subject }, ...(unsubscribe ? [{ name: 'List-Unsubscribe', value: '<mailto:u@x>' }] : [])],
-    mimeType: 'text/plain', body: { data: b64(text) } },
-});
-
-// A small Gmail. scope: 'readonly' | 'metadata' (then q and format=full are refused, as Google does).
-async function fakeGmail({ scope = 'readonly' } = {}) {
-  const g = { threads: {}, history: [], historyId: 100, log: [], scope, sendAs: ['ana@x.pt'], pageSize: 100 };
-  const send = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)); };
-  const server = http.createServer((req, res) => {
-    const u = new URL(req.url, 'http://x');
-    const p = u.pathname.replace('/gmail/v1/users/me', '');
-    g.log.push(`${p}${u.search}`);
-    if (p === '/profile') return send(res, 200, { emailAddress: 'ana@x.pt', historyId: String(g.historyId), messagesTotal: 9, threadsTotal: Object.keys(g.threads).length });
-    if (p === '/settings/sendAs') return g.scope === 'metadata' ? send(res, 403, { error: { message: 'Insufficient Permission' } }) : send(res, 200, { sendAs: g.sendAs.map((e) => ({ sendAsEmail: e })) });
-    if (p === '/threads') {
-      if (u.searchParams.get('q') && g.scope === 'metadata') return send(res, 403, { error: { message: "Metadata scope does not support 'q' parameter" } });
-      const all = Object.keys(g.threads).sort().reverse();
-      const start = Number(u.searchParams.get('pageToken') || 0);
-      const page = all.slice(start, start + g.pageSize);
-      return send(res, 200, { threads: page.map((id) => ({ id })), ...(start + g.pageSize < all.length ? { nextPageToken: String(start + g.pageSize) } : {}) });
-    }
-    const t = /^\/threads\/(\w+)$/.exec(p);
-    if (t) {
-      const th = g.threads[t[1]];
-      if (!th) return send(res, 404, { error: { message: 'Requested entity was not found.' } });
-      const format = u.searchParams.get('format');
-      if (format === 'full' && g.scope === 'metadata') return send(res, 403, { error: { message: 'Metadata scope doesn\'t allow format FULL' } });
-      if (format === 'metadata') {
-        const want = new Set(u.searchParams.getAll('metadataHeaders').map((h) => h.toLowerCase()));
-        return send(res, 200, { ...th, messages: th.messages.map((m) => ({ ...m, payload: { headers: m.payload.headers.filter((h) => want.has(h.name.toLowerCase())) } })) });
-      }
-      return send(res, 200, th);
-    }
-    if (p === '/history') {
-      const types = u.searchParams.getAll('historyTypes');
-      const start = Number(u.searchParams.get('startHistoryId'));
-      if (start < 50) return send(res, 404, { error: { message: 'Requested entity was not found.' } });
-      const events = g.history.filter((h) => h.id > start && types.includes(h.type));
-      const from = Number(u.searchParams.get('pageToken') || 0);
-      const page = events.slice(from, from + 2);
-      return send(res, 200, { historyId: String(g.historyId), history: page.map((h) => ({ id: String(h.id), [h.field]: [{ message: { threadId: h.threadId } }] })), ...(from + 2 < events.length ? { nextPageToken: String(from + 2) } : {}) });
-    }
-    send(res, 404, { error: { message: 'no such route' } });
-  });
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  g.url = `http://127.0.0.1:${server.address().port}`;
-  g.close = () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); });
-  g.event = (type, threadId) => { g.historyId++; const field = { messageAdded: 'messagesAdded', messageDeleted: 'messagesDeleted', labelAdded: 'labelsAdded', labelRemoved: 'labelsRemoved' }[type]; g.history.push({ id: g.historyId, type, field, threadId }); };
-  return g;
-}
-async function boot(t, g) {
-  const dataDir = tmpDir('wb-gmail-');
-  const app = createApp({ dataDir, platform: fakePlatform(), version: 'test', connectorOptions: { sleep: async () => {}, google: { gmailBase: `${g.url}/gmail/v1`, tokenUrl: `${g.url}/token` } } });
-  t.after(() => { app.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
-  await app.ready; await app.runner.stop();
-  app.settings.update({ google: { ...app.settings.get('google'), clientId: 'c', clientSecret: 's', refreshToken: 'r', accessToken: 'a', expiresAt: Date.now() + 3600_000, gmail: true, email: 'ana@x.pt' } });
-  return app;
-}
+const { fakePlatform, b64, mail, fakeGmail, boot } = require('./gmail-fake');
 
 test('the Gmail search for a part: labels are any-of, exclusions and the never-read list go in, categories can be skipped', () => {
   assert.equal(compileQuery({ query: 'newer_than:30d' }), 'newer_than:30d');
@@ -162,4 +92,29 @@ test('a big first listing is read across runs, newest first, and the never-read 
   assert.equal(app.items.byExternal(src.id, 'thread:t3'), null, 'never stored');
   assert.equal(app.items.list({ sourceId: src.id }).length, 4);
   assert.ok(g.log.some((l) => decodeURIComponent(l.replace(/\+/g, ' ')).includes('-from:corp.pt')), 'and asked Gmail to leave it out too');
+});
+
+test('a calendar invite in a mail carries its event id; old mail keeps less text; attachment text is read only when the source says so', async (t) => {
+  const pdfBytes = Buffer.from('%PDF fake');
+  const g = await fakeGmail(); t.after(() => g.close());
+  const long = 'word '.repeat(4000);                                  // 20 000 characters
+  const invite = { ...mail('mi', 'Rui <rui@x.pt>', 'ana@x.pt', 'Invitation: Kickoff'), payload: { headers: mail('mi', 'Rui <rui@x.pt>', 'ana@x.pt', 'x').payload.headers, mimeType: 'multipart/mixed', parts: [{ mimeType: 'text/plain', body: { data: b64('Invitation: Kickoff') } }, { mimeType: 'text/calendar', body: { data: b64('BEGIN:VEVENT\nUID:evt-123@google.com\nSUMMARY:Kickoff\nEND:VEVENT') } }] } };
+  g.threads.t1 = { id: 't1', historyId: '90', messages: [invite] };
+  g.threads.t2 = { id: 't2', historyId: '91', messages: [mail('m2', 'Old <o@x.pt>', 'ana@x.pt', long, { at: Date.now() - 400 * 86_400_000, subject: 'Old' })] };
+  g.threads.t3 = { id: 't3', historyId: '92', messages: [{ ...mail('m3', 'Rui <rui@x.pt>', 'ana@x.pt', 'See attached.', { subject: 'Contract' }), payload: { headers: mail('m3', 'Rui <rui@x.pt>', 'ana@x.pt', 'x', { subject: 'Contract' }).payload.headers, mimeType: 'multipart/mixed', parts: [{ mimeType: 'text/plain', body: { data: b64('See attached.') } }, { mimeType: 'application/pdf', filename: 'terms.pdf', body: { attachmentId: 'att1', size: 9 } }] } }] };
+  g.attachments.att1 = pdfBytes.toString('base64url');
+  const app = await boot(t, g);
+  const src = app.sources.addRemote({ kind: 'gmail', name: 'Mail', config: {} });
+  await app.sources.sync(src.id);
+  assert.deepEqual(app.items.byExternal(src.id, 'thread:t1').meta.invite, { uid: 'evt-123@google.com', summary: 'Kickoff' });
+  const meeting = app.notes.create({ title: 'Kickoff', status: 'done', eventUid: 'evt-123@google.com' });
+  const rel = await app.timeline.related(meeting.id);
+  assert.ok(rel.some((r) => r.why === 'invite'), 'the invitation mail is tied to the event');
+  assert.ok(app.items.byExternal(src.id, 'thread:t2').text.length <= 8000, 'old mail keeps a smaller text');
+  assert.ok(app.items.byExternal(src.id, 'thread:t3').text.length < 200 && !app.items.byExternal(src.id, 'thread:t3').text.includes('terms.pdf'), 'attachments are names only by default');
+  assert.deepEqual(app.items.byExternal(src.id, 'thread:t3').meta.attachments.map((a) => a.name), ['terms.pdf']);
+  app.items.setGrant(src.id, { filter: { attachmentText: true } });
+  g.event('messageAdded', 't3');
+  await app.sources.services.gmail.sync({ ...app.sources.ctx, pdfToText: async () => 'The payment term is 30 days.', source: app.items.source(src.id), items: app.items, budget: 10 });
+  assert.match(app.items.byExternal(src.id, 'thread:t3').text, /Attachment terms\.pdf:\nThe payment term is 30 days\./);
 });

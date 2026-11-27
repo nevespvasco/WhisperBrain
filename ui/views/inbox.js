@@ -2,6 +2,7 @@
 // it rests on and where they were said, and nothing counts until you accept it. Also: promises that are overdue (yours, and others'
 // to you), reminders that came due, and people who may be the same.
 import { S, $, $$, api, t, esc, icon, fail, done, modal, empty, fmtDate, fmtClock, go } from '../lib.js';
+import { composeMail } from '../compose.js';
 
 const KIND = { decision: 'Possible decision', commitment: 'Possible promise' };
 const day = (ms) => fmtDate(ms, { day: 'numeric', month: 'short' });
@@ -27,11 +28,19 @@ const card = (c) => {
       <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="rdone">${t('Done')}</button><button class="btn sm" data-do="snooze">${t('Tomorrow')}</button><button class="btn sm ghost" data-do="rdismiss">${t('Dismiss')}</button></div></div>`;
   }
   if (c.type === 'action') {
-    return `<div class="card inbox-card" data-id="${c.id}" data-type="action"><div class="xsmall muted">${icon('external', 'sm')} ${t('Waiting for your approval')} · ${t('nothing has been sent')}</div>
+    const a = c.args || {};
+    // what exactly will happen: a message (to, subject, text), a change to many threads, or the plain text the other services take
+    const shown = a.body !== undefined && a.to ? `To: ${(a.to || []).join(', ')}${a.cc?.length ? `\nCc: ${a.cc.join(', ')}` : ''}\nSubject: ${a.subject || ''}\n\n${a.body}`
+      : a.threads ? `${a.add?.length ? `Add: ${a.add.join(', ')}${a.create ? ' (creates the label if it is missing)' : ''}\n` : ''}${a.remove?.length ? `Remove: ${a.remove.join(', ')}\n` : ''}\n${a.threads.slice(0, 30).map((x) => `• ${x.title}`).join('\n')}${a.threads.length > 30 ? `\n… ${a.threads.length - 30} more` : ''}`
+      : `${a.title || ''}${a.description ? `\n\n${a.description}` : a.text ? `\n\n${a.text}` : a.payload ? `\n\n${JSON.stringify(a.payload, null, 2)}` : ''}`;
+    const verbOk = c.kind === 'gmail.send' ? t('Approve and send') : c.kind === 'gmail.draft' ? t('Approve and save the draft') : t('Approve and do it');
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="action"><div class="xsmall muted">${icon('external', 'sm')} ${t('Waiting for your approval')} · ${t('nothing has been sent')}${c.expiresAt ? ` · ${t('expires {d}', { d: day(c.expiresAt) })}` : ''}</div>
       <div class="strong" style="margin:4px 0">${esc(c.title)}</div>
-      <pre class="small" style="white-space:pre-wrap;margin:6px 0;padding:8px 10px;background:var(--sunken);border:1px solid var(--line);border-radius:10px">${esc(c.args.title || '')}${c.args.description ? `\n\n${esc(c.args.description)}` : ''}</pre>
-      <div class="xsmall muted">${t('This is exactly what will be sent.')}</div>
-      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve">${t('Approve and send')}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not send')}</button></div></div>`;
+      ${(c.flags || []).length ? `<div class="banner ${c.needsSecondYes ? 'danger' : 'warn'} small" style="margin:6px 0" role="alert">${icon('alert')}<div class="grow">${c.flags.map((f) => `<div>${esc(f.text)}</div>`).join('')}</div></div>` : ''}
+      <pre class="small" style="white-space:pre-wrap;margin:6px 0;padding:8px 10px;background:var(--sunken);border:1px solid var(--line);border-radius:10px">${esc(shown)}</pre>
+      <div class="xsmall muted">${t('This is exactly what will be done.')}</div>
+      ${c.needsSecondYes ? `<label class="row small" style="gap:8px;margin-top:8px"><input type="checkbox" data-second> ${t('I have read the warnings and still want this.')}</label>` : ''}
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve" ${c.needsSecondYes ? 'disabled' : ''}>${verbOk}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not do it')}</button></div></div>`;
   }
   if (c.type === 'supersede') {
     return `<div class="card inbox-card" data-id="${esc(c.id)}" data-type="supersede"><div class="xsmall muted">${icon('merge', 'sm')} ${t('Does this replace an earlier decision?')}</div>
@@ -47,7 +56,12 @@ const card = (c) => {
   if (c.type === 'noreply') {
     return `<div class="card inbox-card" data-id="${c.id}" data-type="noreply"><div class="xsmall muted">${icon('mail', 'sm')} ${t('No reply yet')}</div>
       <div class="strong" style="margin:4px 0">${esc(c.title)}</div><div class="small muted">${t('You asked {who} {n} days ago and nobody has answered.', { who: esc((c.to || []).join(', ') || t('them')), n: c.days })}</div>
-      <div class="row" style="gap:8px;margin-top:10px">${c.uri ? `<a class="btn sm primary" href="${esc(c.uri)}" target="_blank" rel="noopener noreferrer">${t('Open the thread')}</a>` : ''}<button class="btn sm" data-do="remind">${t('Remind me tomorrow')}</button><button class="btn sm ghost" data-do="nodismiss">${t('Not needed')}</button></div></div>`;
+      <div class="row" style="gap:8px;margin-top:10px">${c.uri ? `<a class="btn sm primary" href="${esc(c.uri)}" target="_blank" rel="noopener noreferrer">${t('Open the thread')}</a>` : ''}<button class="btn sm" data-do="followup">${t('Draft a follow-up')}</button><button class="btn sm" data-do="remind">${t('Remind me tomorrow')}</button><button class="btn sm ghost" data-do="nodismiss">${t('Not needed')}</button></div></div>`;
+  }
+  if (c.type === 'access-review') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="access-review"><div class="xsmall muted">${icon('shield', 'sm')} ${t('Access to review')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.name)}</div><div class="small muted">${t('Nobody has looked at what this may do for {n} days. Is it still what you want?', { n: c.days })}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><a class="btn sm primary" href="#/access">${t('Review it')}</a><button class="btn sm ghost" data-do="review-ok">${t('It is right')}</button></div></div>`;
   }
   if (c.type === 'merge') {
     return `<div class="card inbox-card" data-type="merge"><div class="xsmall muted">${icon('users', 'sm')} ${t('Same person?')}</div>
@@ -78,7 +92,13 @@ export async function render(main) {
       else if (what === 'snooze') await api('POST', `/api/reminders/${id}/snooze`, { ms: 24 * 3600_000 });
       else if (what === 'later') { const d = new Date(); d.setDate(d.getDate() + 7); d.setHours(18, 0, 0, 0); await api('PATCH', `/api/assertions/${id}`, { dueAt: d.getTime() }); done(t('Moved a week')); }
       else if (what === 'edit') { await editDialog(id, type); }
-      else if (what === 'approve') { const r = await api('POST', `/api/outbound/${id}/approve`); if (r.state === 'done') done(`${t('Sent')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be sent.'))); }
+      else if (what === 'approve') {
+        const confirmRisky = !!el.querySelector('[data-second]')?.checked;
+        const r = await api('POST', `/api/outbound/${id}/approve`, { confirmRisky });
+        if (r.state === 'done') done(`${t('Done')}${r.result?.identifier ? `: ${r.result.identifier}` : ''}`); else fail(new Error(r.error || t('It could not be done.')));
+      }
+      else if (what === 'review-ok') await api('POST', `/api/inbox/access-review/${id}/dismiss`);
+      else if (what === 'followup') { await composeMail({ itemId: id, title: t('Follow up'), body: '' }); }
       else if (what === 'reject-action') await api('POST', `/api/outbound/${id}/reject`);
       else if (what === 'sup-yes' || what === 'sup-no') { const [o, n] = id.split(':'); await api('POST', `/api/inbox/supersede/${o}/${n}/${what === 'sup-yes' ? 'confirm' : 'reject'}`); }
       else if (what === 'idle-no') await api('POST', `/api/inbox/idle/${id}/dismiss`);
@@ -88,6 +108,7 @@ export async function render(main) {
     } catch (e) { fail(e); }
   };
   main.onclick = (e) => { const b = e.target.closest('[data-do]'); if (b) act(b.closest('.inbox-card'), b.dataset.do); };
+  main.onchange = (e) => { if (e.target.matches('[data-second]')) { const card = e.target.closest('.inbox-card'); card.querySelector('[data-do="approve"]').disabled = !e.target.checked; } };
   const keys = (e) => {
     if (S.view.name !== 'inbox') { document.removeEventListener('keydown', keys); return; }
     if (e.target.closest('input,textarea,select,dialog') || e.ctrlKey || e.metaKey || e.altKey) return;

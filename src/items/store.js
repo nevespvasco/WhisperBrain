@@ -9,7 +9,7 @@ const { grantColumns, grantOf } = require('../access/grants');
 
 const NATIVE = 'native';                                   // the recorder and the app's own meetings
 const MAX_TEXT = 400_000;                                  // derived text kept per item (pointer mode keeps the text for search, not the file)
-const KINDS = ['native', 'folder', 'obsidian', 'notion', 'linear', 'github', 'slack', 'discord', 'gmail'];
+const KINDS = ['native', 'folder', 'obsidian', 'notion', 'linear', 'github', 'slack', 'discord', 'gmail', 'mbox', 'outlook', 'imap'];
 
 const newId = (prefix) => `${prefix}_${crypto.randomBytes(6).toString('hex')}`;
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex').slice(0, 32);
@@ -25,7 +25,7 @@ const srcRow = (r) => !r ? null : ({
 const itemRow = (r) => !r ? null : ({
   id: r.id, sourceId: r.source_id, externalId: r.external_id, kind: r.kind, title: r.title, text: r.text, hash: r.hash, uri: r.uri, path: r.path,
   meta: parse(r.meta, {}), noteId: r.note_id, occurredAt: r.occurred_at, ingestedAt: r.ingested_at, updatedAt: r.updated_at, deletedAt: r.deleted_at,
-  aiReach: r.ai_reach || null,
+  aiReach: r.ai_reach || null, origin: r.origin || 'sync', expiresAt: r.expires_at ?? null, pinned: !!r.pinned,
 });
 
 class ItemStore {
@@ -42,9 +42,13 @@ class ItemStore {
     const names = Object.keys(cols).filter((c) => c !== 'sensitivity');
     this.db.prepare(`INSERT INTO sources (id, kind, name, mode, sensitivity, config, created_at, updated_at${names.map((c) => `, ${c}`).join('')}) VALUES (?, ?, ?, ?, ?, ?, ?, ?${names.map(() => ', ?').join('')})`)
       .run(sid, kind, String(name).slice(0, 120), mode, cols.sensitivity || sensitivity, JSON.stringify(config), t, t, ...names.map((c) => cols[c]));
+    this.touchReview(sid);
     this.bus?.publish('sources.changed', { id: sid });
     return this.source(sid);
   }
+
+  // When a grant was last made or changed: the 90-day review counts from here (a sync that merely updates the row does not count)
+  touchReview(id) { try { this.db.prepare('INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(`access:review:${id}`, String(this.now())); } catch { /* closing */ } }
 
   // Change what a source is granted. Narrowing what may be read drops what is no longer allowed at once (the bodies at 'metadata',
   // everything at 'none'): a downgrade that left the text behind would only look like one.
@@ -55,6 +59,7 @@ class ItemStore {
     const names = Object.keys(cols);
     if (names.length) this.db.prepare(`UPDATE sources SET ${names.map((c) => `${c} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...names.map((c) => cols[c]), this.now(), id);
     const next = this.source(id);
+    this.touchReview(id);
     let purged = 0;
     if (next.readLevel === 'none') purged = this.purgeSource(id, { keepSource: true });
     else if (next.readLevel === 'metadata' && cur.readLevel !== 'metadata') purged = this.dropBodies(id);
@@ -92,6 +97,30 @@ class ItemStore {
     this.bus?.publish('items.purged', { sourceId, all: true });
     return n;
   }
+
+  // Keep a body that was opened from a live search: it no longer expires.
+  pin(id) { this.db.prepare("UPDATE items SET pinned = 1, expires_at = NULL WHERE id = ? AND origin = 'live'").run(id); return this.item(id); }
+
+  // Live copies past their time (and not kept) go for good. -> how many
+  purgeExpired(now = this.now()) {
+    const ids = this.db.prepare("SELECT id FROM items WHERE origin = 'live' AND pinned = 0 AND expires_at IS NOT NULL AND expires_at <= ?").all(now).map((r) => r.id);
+    for (const id of ids) this.purgeItem(id);
+    return ids.length;
+  }
+
+  // Forget one item for good (no tombstone): its search entries and links go with it.
+  purgeItem(id) {
+    const row = this.db.prepare('SELECT rowid FROM items WHERE id = ?').get(id);
+    if (!row) return false;
+    ftsRun(this.db, 'DELETE FROM items_fts WHERE rowid = ?', row.rowid);
+    this.db.prepare('DELETE FROM items WHERE id = ?').run(id);
+    this.bus?.publish('items.purged', { itemId: id });
+    return true;
+  }
+
+  // Addresses forgotten on purpose (Forget a person): connectors never read them again.
+  blocked() { return this.db.prepare('SELECT address FROM blocked_addresses').all().map((r) => r.address); }
+  unblock(address) { return this.db.prepare('DELETE FROM blocked_addresses WHERE address = ?').run(String(address).toLowerCase()).changes > 0; }
 
   // One item kept stricter than its source ('local' / 'ask'), or back to its source's rule (null).
   setItemReach(id, aiReach) {
@@ -171,7 +200,8 @@ class ItemStore {
   // 'unchanged': the content hash is the same, so nothing is written (a tombstoned item that comes back is 'revived').
   // Derived text is capped: it is for finding the item, the original stays where it is (pointer mode).
   // metaInHash: what is in `meta` counts as content (a label, a state, who wrote last): a change to it updates the item even when the text is the same
-  upsert(sourceId, { externalId, kind = 'document', title = '', text = '', hash, uri = '', path = '', meta = {}, noteId = null, occurredAt, metaInHash = false } = {}) {
+  // origin 'live' + expiresAt: a body opened from a live search; it goes away on its own unless pinned (Keep). A synced copy is never made 'live'.
+  upsert(sourceId, { externalId, kind = 'document', title = '', text = '', hash, uri = '', path = '', meta = {}, noteId = null, occurredAt, metaInHash = false, origin = 'sync', expiresAt = null } = {}) {
     if (externalId == null || externalId === '') throw new Error('an item needs an externalId');
     const clipped = String(text).slice(0, MAX_TEXT);
     const h = hash || sha(`${title}\n${clipped}${metaInHash ? `\n${JSON.stringify(meta)}` : ''}`);
@@ -179,13 +209,18 @@ class ItemStore {
     const cur = this.db.prepare('SELECT * FROM items WHERE source_id = ? AND external_id = ?').get(sourceId, String(externalId));
     if (!cur) {
       const id = newId('it');
-      const info = this.db.prepare(`INSERT INTO items (id, source_id, external_id, kind, title, text, hash, uri, path, meta, note_id, occurred_at, ingested_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, sourceId, String(externalId), kind, String(title).slice(0, 300), clipped, h, uri, path, JSON.stringify(meta), noteId, occurredAt || t, t, t);
+      const info = this.db.prepare(`INSERT INTO items (id, source_id, external_id, kind, title, text, hash, uri, path, meta, note_id, occurred_at, ingested_at, updated_at, origin, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, sourceId, String(externalId), kind, String(title).slice(0, 300), clipped, h, uri, path, JSON.stringify(meta), noteId, occurredAt || t, t, t, origin === 'live' ? 'live' : 'sync', origin === 'live' ? expiresAt : null);
       if (kind !== 'meeting') this.index(Number(info.lastInsertRowid), title, clipped);   // a meeting has no text here: its own notes are searched
       return { action: 'created', item: this.item(id) };
     }
-    if (cur.hash === h && !cur.deleted_at && cur.title === String(title).slice(0, 300) && cur.uri === uri && cur.path === path && cur.note_id === noteId) return { action: 'unchanged', item: itemRow(cur) };
+    if (cur.hash === h && !cur.deleted_at && cur.title === String(title).slice(0, 300) && cur.uri === uri && cur.path === path && cur.note_id === noteId) {
+      if (origin === 'sync' && cur.origin === 'live') this.db.prepare("UPDATE items SET origin = 'sync', expires_at = NULL, pinned = 0 WHERE id = ?").run(cur.id);
+      else if (origin === 'live' && cur.origin === 'live' && !cur.pinned && expiresAt) this.db.prepare('UPDATE items SET expires_at = ? WHERE id = ?').run(expiresAt, cur.id);
+      return { action: 'unchanged', item: itemRow(cur) };
+    }
     const revived = !!cur.deleted_at;
+    if (origin === 'sync' && cur.origin === 'live') this.db.prepare("UPDATE items SET origin = 'sync', expires_at = NULL, pinned = 0 WHERE id = ?").run(cur.id);   // the sync now reads it too: it is a normal copy
     this.db.prepare(`UPDATE items SET kind = ?, title = ?, text = ?, hash = ?, uri = ?, path = ?, meta = ?, note_id = ?, occurred_at = ?, updated_at = ?, deleted_at = NULL WHERE id = ?`)
       .run(kind, String(title).slice(0, 300), clipped, h, uri, path, JSON.stringify(meta), noteId, occurredAt || cur.occurred_at, t, cur.id);
     const rowid = this.db.prepare('SELECT rowid FROM items WHERE id = ?').get(cur.id).rowid;
@@ -213,7 +248,7 @@ class ItemStore {
   // After a full scan: every live item of this source that was not seen is tombstoned. Returns how many.
   tombstoneMissing(sourceId, seen) {
     let n = 0;
-    for (const r of this.db.prepare('SELECT external_id FROM items WHERE source_id = ? AND deleted_at IS NULL').all(sourceId)) {
+    for (const r of this.db.prepare("SELECT external_id FROM items WHERE source_id = ? AND deleted_at IS NULL AND origin = 'sync'").all(sourceId)) {   // a body opened live is not part of the listing
       if (!seen.has(r.external_id) && this.tombstone(sourceId, r.external_id)) n++;
     }
     return n;

@@ -36,20 +36,61 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
     app.bus.publish('sources.changed', { id: src.id });
     return { source: src.id, ...r };
   });
+  // A Google Takeout / any .mbox file on this computer, read in place into a source ('mbox'): the level and the never-read list apply
+  r('POST', '/api/sources/mbox', async ({ body }) => {
+    const b = object(body);
+    const file = require('node:path').resolve(String(b.path || ''));
+    const fs = require('node:fs');
+    if (!b.path || !fs.existsSync(file) || !fs.statSync(file).isFile()) throw new HttpError(400, `There is no such file: ${b.path || ''}`);
+    const grant = b.grant && typeof b.grant === 'object' ? object(b.grant) : {};
+    const src = app.items.addSource({ kind: 'mbox', name: String(b.name || require('node:path').basename(file)).slice(0, 120), mode: 'copy', sensitivity: 'private', config: { path: file }, grant: { readLevel: 'all', ...grant } });
+    const { importMbox } = require('../importers/mbox');
+    try {
+      const r = await importMbox({ items: app.items, source: app.items.source(src.id), file, filter: app.items.source(src.id).filter, level: app.items.source(src.id).readLevel });
+      app.items.markSync(src.id, { ok: true });
+      app.bus.publish('sources.changed', { id: src.id });
+      return { source: src.id, ...r };
+    } catch (e) { app.items.removeSource(src.id); throw Object.assign(new HttpError(e.status || 400, e.message), {}); }
+  });
+  // Outlook / Microsoft 365: sign in with the app the person registered (settings.outlook); the permissions follow the access they chose
+  r('POST', '/api/outlook/connect', async ({ body }) => {
+    const b = object(body);
+    const patch = {};
+    for (const k of ['clientId', 'tenant']) if (typeof b[k] === 'string' && b[k].trim()) patch[k] = b[k].trim();
+    if (typeof b.clientSecret === 'string' && b.clientSecret && b.clientSecret !== '********') patch.clientSecret = b.clientSecret.trim();
+    if (Object.keys(patch).length) app.settings.update({ outlook: { ...app.settings.get('outlook'), ...patch } });
+    if (!app.settings.get('outlook').clientId) throw new HttpError(400, 'Add the application (client) ID of your Microsoft app first.');
+    const outlook = require('../connectors/outlook');
+    const auth = await outlook.authFor(app.sources.ctx).beginAuth({ openExternal: app.openExternal || undefined, level: ['metadata', 'part', 'all'].includes(b.level) ? b.level : 'part', actions: Array.isArray(b.actions) ? b.actions.map(String) : [] });
+    auth.done.then((r2) => app.bus.publish('outlook.connected', { email: r2?.email || app.settings.get('outlook').email }), (e) => app.bus.publish('outlook.error', { message: e.message }));
+    return { authUrl: auth.authUrl, opened: !!app.openExternal };
+  });
+  r('POST', '/api/outlook/disconnect', async () => { await require('../connectors/outlook').authFor(app.sources.ctx).disconnect(); return { ok: true }; });
+  r('GET', '/api/outlook/status', async () => { const c = app.settings.get('outlook'); return { configured: !!c.clientId, connected: !!c.refreshToken, email: c.email, needsReconnect: !!c.needsReconnect, scopes: c.scopes || [] }; });
+  // IMAP: try a mailbox account (host, user, password) before adding it as a source
+  r('POST', '/api/imap/test', async ({ body }) => {
+    const imap = require('../connectors/imap');
+    return imap.check(app.sources.ctx, { config: { account: String(object(body).account || '') } });
+  });
   r('POST', '/api/sources/check', async ({ body }) => {
-    const { path, flavour, service } = object(body);
+    const { path, flavour, service, config } = object(body);
     if (service) {
       const svc = app.sources.services[service];
       if (!svc) throw new HttpError(404, 'unknown service');
-      if (!svc.ready(app.sources.ctx)) throw new HttpError(412, `Connect ${service} first.`);
-      return svc.check(app.sources.ctx);
+      if (!svc.ready(app.sources.ctx, object(config || {}))) throw new HttpError(412, `Connect ${service} first.`);
+      return svc.check(app.sources.ctx, { config: object(config || {}) });
     }
     const { FolderConnector } = require('../connectors/folder');
     return new FolderConnector({ source: { id: 'check', kind: flavour === 'obsidian' ? 'obsidian' : 'folder', config: { path } }, items: app.items }).check();
   });
   r('PATCH', '/api/sources/:id', async ({ params, body }) => {
-    const { name, sensitivity, enabled } = object(body);
-    source(params.id);
+    const { name, sensitivity, enabled, config } = object(body);
+    const cur = source(params.id);
+    if (config !== undefined) {                                  // what to read (labels, channels, repositories, a search): checked by the service
+      const svc = cur.config?.remote && app.sources.services[cur.kind];
+      const next = svc ? { ...svc.validate({ ...cur.config, ...object(config) }, { readLevel: cur.readLevel }), remote: true } : object(config);
+      app.items.updateSource(params.id, { config: next });
+    }
     if (enabled === false) return app.sources.pause(params.id);
     if (enabled === true) app.sources.resume(params.id);
     return app.items.updateSource(params.id, { ...(name !== undefined ? { name } : {}), ...(sensitivity !== undefined ? { sensitivity } : {}) });
@@ -103,7 +144,7 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
     if (assertion && assertion.state !== 'accepted') throw new HttpError(409, 'only a promise you accepted can be sent anywhere');
     return app.actions.propose(String(b.kind || ''), { assertion, note: assertion?.noteId ? app.notes.get(assertion.noteId) : null, webhookId: b.webhookId }, { assertionId: assertion?.id || null });
   });
-  r('POST', '/api/outbound/:id/approve', async ({ params }) => app.actions.approve(params.id));
+  r('POST', '/api/outbound/:id/approve', async ({ params, body }) => app.actions.approve(params.id, { confirmRisky: body?.confirmRisky === true }));
   r('POST', '/api/outbound/:id/reject', async ({ params }) => app.actions.reject(params.id));
   r('POST', '/api/inbox/supersede/:old/:new/:decision', async ({ params }) => (params.decision === 'confirm' ? app.supersession.confirm(params.old, params.new) : params.decision === 'reject' ? app.supersession.reject(params.old, params.new) : (() => { throw new HttpError(400, 'decision must be confirm or reject'); })()));
   r('POST', '/api/inbox/noreply/:id/dismiss', async ({ params }) => { app.inbox.dismissNoReply(params.id); return { ok: true }; });
@@ -131,7 +172,7 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   r('POST', '/api/reminders/:id/:state', async ({ params }) => app.reminders.setState(params.id, params.state === 'dismiss' ? 'dismissed' : params.state));
   r('POST', '/api/brief', async ({ body }) => {
     const b = object(body);
-    const brief = await app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] });
+    const brief = await app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] }, { live: b.live === true });
     // optional: a model phrases the facts (only the facts, each cited); without a server, or when it cites nothing, the facts stand alone
     if (b.narrate && !brief.empty && app.ai.configured()) { try { brief.narrative = await require('../brain/brief').narrate(app.scheduler.client('chat'), brief, { mayShare: app.mayShare }); } catch { brief.narrative = null; } }
     return brief;
@@ -180,6 +221,49 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   });
 
   // ---- the AI-run ledger: what was asked of an AI server and whether it left this computer ----
+  // ---- access: accounts, grants, what is kept, what to review (src/access/center.js) ----
+  r('GET', '/api/access', async () => app.accessCenter.overview());
+  r('DELETE', '/api/access/copies', async () => ({ removed: app.account.removeCopies() }));
+  r('POST', '/api/access/notice/dismiss', async () => ({ ok: app.accessCenter.dismissNotice() }));
+  r('POST', '/api/access/review/:id', async ({ params }) => { source(params.id); return { ok: app.accessCenter.markReviewed(params.id) }; });
+  r('POST', '/api/inbox/access-review/:id/dismiss', async ({ params }) => { source(params.id); return { ok: app.accessCenter.markReviewed(params.id) }; });
+  r('POST', '/api/sources/:id/revoke', async ({ params, body }) => { source(params.id); const b = object(body); return app.accessCenter.revoke(params.id, { signOut: !!b.signOut, keepSource: b.keepSource !== false }); });
+  r('POST', '/api/access/estimate', async ({ body }) => {
+    const { service, config } = object(body);
+    const svc = app.sources.services[service];
+    if (!svc?.estimate) throw new HttpError(404, 'no estimate for this service');
+    if (!svc.ready(app.sources.ctx, object(config || {}))) throw new HttpError(412, `Connect ${service} first.`);
+    return svc.estimate(app.sources.ctx, { config: object(config || {}) });
+  });
+  r('POST', '/api/people/:id/forget', async ({ params }) => app.entities.forget(params.id, { items: app.items }));
+  r('DELETE', '/api/blocked-addresses/:address', async ({ params }) => ({ ok: app.items.unblock(decodeURIComponent(params.address)) }));
+  // ---- live search: ask the services that allow it, with a short cache; opening a result keeps its body for the grant's retention ----
+  r('GET', '/api/live-search', async ({ query }) => app.liveSearch.search(String(query.q || ''), { sourceIds: query.sources ? String(query.sources).split(',') : null, limit: Math.max(1, Math.min(20, Number(query.limit) || 8)), force: query.fresh === '1' }));
+  r('POST', '/api/live-search/open', async ({ body }) => { const b = object(body); return app.liveSearch.open(String(b.sourceId || ''), String(b.externalId || '')); });
+  r('POST', '/api/items/:id/pin', async ({ params }) => app.items.pin(params.id));
+  // ---- one line of events: per person, per project; related mail and messages on a meeting ----
+  r('GET', '/api/people/:key/timeline', async ({ params, query }) => { const id = app.entities.find(params.key); if (!id) throw new HttpError(404, 'person not found'); return app.timeline.person(id, { limit: Math.max(1, Math.min(100, Number(query.limit) || 40)) }); });
+  r('GET', '/api/projects/:id/timeline', async ({ params }) => app.timeline.project(params.id));
+  r('GET', '/api/notes/:id/related', async ({ params }) => app.timeline.related(params.id));
+  r('PUT', '/api/notes/:id/related/:itemId', async ({ params, body }) => ({ ok: app.timeline.setLink(params.id, params.itemId, object(body).state ?? null) }));
+  // ---- mail: suggest the text of a reply (the AI only if its source allows it), and propose an action on mail (waits in the Inbox) ----
+  r('POST', '/api/mail/suggest', async ({ body }) => { const b = object(body); return app.ai.draftReply(String(b.itemId || ''), String(b.instruction || '')); });
+  r('POST', '/api/mail/propose', async ({ body }) => {
+    const b = object(body);
+    const kind = String(b.kind || '');
+    if (!kind.startsWith('gmail.')) throw new HttpError(400, 'unknown mail action');
+    return app.actions.propose(kind, { itemId: b.itemId, itemIds: Array.isArray(b.itemIds) ? b.itemIds.map(String) : undefined, sourceId: b.sourceId, to: b.to, cc: b.cc, subject: b.subject, body: b.body, add: b.add, remove: b.remove, create: b.create === true, typedRecipients: Array.isArray(b.typedRecipients) ? b.typedRecipients.map(String) : [] }, { origin: b.origin === 'ask' ? 'ask' : 'user', provenance: Array.isArray(b.provenance) ? b.provenance.map(String) : [] });
+  });
+  // the recap of a meeting, as a message to the people who were in it (a draft or a send, approved in the Inbox)
+  r('POST', '/api/notes/:id/propose-recap', async ({ params, body }) => {
+    const b = object(body);
+    const n = app.notes.get(params.id);
+    if (!n) throw new HttpError(404, 'meeting not found');
+    const text = [n.summary?.trim() || n.body?.trim() || '', ...(app.knowledge?.actionItems?.({ noteId: params.id }) || []).map((a) => `- ${a.text}`)].filter(Boolean).join('\n\n').trim();
+    if (!text) throw new HttpError(409, 'This meeting has no notes to send yet.');
+    const to = (Array.isArray(b.to) ? b.to : []).map(String);
+    return app.actions.propose(b.send ? 'gmail.send' : 'gmail.draft', { sourceId: b.sourceId, to, subject: b.subject || `Recap: ${n.title || 'our meeting'}`, body: text, typedRecipients: to });
+  });
   r('GET', '/api/access-log', async ({ query }) => app.accessLog.list({ sourceId: query.source || undefined, limit: Math.max(1, Math.min(500, Number(query.limit) || 100)) }));
   r('GET', '/api/ai-runs', async ({ query }) => ({ summary: app.aiRuns.summary(Number(query.days) || 30), runs: app.aiRuns.list(Math.max(1, Math.min(500, Number(query.limit) || 50))) }));
 };

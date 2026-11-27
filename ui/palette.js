@@ -3,7 +3,7 @@
 import { S, $, $$, api, t, esc, icon, go, fmtClock, dateGroup, groupBy, debounce, safeSnippet, menu, fmtDate } from './lib.js';
 
 const KINDS = [['all', 'All'], ['meetings', 'Meetings'], ['quotes', 'Who said'], ['topics', 'Topics'], ['people', 'People'], ['glossary', 'Glossary'], ['tags', 'Tags'], ['actions', 'Actions'], ['docs', 'Notes & files']];
-const KIND_ICON = { meeting: 'link', quote: 'quote', topic: 'hash', person: 'user', term: 'book', tag: 'tag', action: 'checksq', doc: 'file', cmd: 'bolt' };
+const KIND_ICON = { live: 'mail', livemore: 'search', meeting: 'link', quote: 'quote', topic: 'hash', person: 'user', term: 'book', tag: 'tag', action: 'checksq', doc: 'file', cmd: 'bolt' };
 const DATES = [['', 'Any time'], ['1', 'Today'], ['7', 'Past week'], ['30', 'Past month'], ['365', 'Past year']];
 const SORTS = [['relevance', 'Relevance'], ['newest', 'Newest first'], ['oldest', 'Oldest first']];
 let dlg = null;
@@ -39,7 +39,9 @@ function commands(q) {
 
 export function openPalette(initial = '') {
   if (dlg) { $('input', dlg).focus(); return; }
-  const st = { q: initial, kind: 'all', sort: 'relevance', days: '', results: [], active: 0, seq: 0 };
+  const st = { q: initial, kind: 'all', sort: 'relevance', days: '', results: [], active: 0, seq: 0, live: null };
+  // which services may be searched live (their access allows it): known once, when the palette opens
+  api('GET', '/api/access').then((o) => { st.live = o.sources.filter((x) => x.liveSearch && x.enabled && x.readLevel !== 'none' && x.readLevel !== 'metadata'); }).catch(() => { st.live = []; });
   dlg = document.createElement('dialog');
   dlg.className = 'palette';
   dlg.setAttribute('aria-label', t('Search'));
@@ -54,7 +56,7 @@ export function openPalette(initial = '') {
   const input = $('input', dlg), box = $('.pal-results', dlg);
   input.focus();
 
-  const KIND_TITLE = { cmd: 'Commands', meeting: 'Meetings', quote: 'Who said it', topic: 'Topics', person: 'People', term: 'Glossary', tag: 'Tags', action: 'Action items', doc: 'Notes & files' };
+  const KIND_TITLE = { cmd: 'Commands', meeting: 'Meetings', quote: 'Who said it', topic: 'Topics', person: 'People', term: 'Glossary', tag: 'Tags', action: 'Action items', doc: 'Notes & files', live: 'Found live in your services', livemore: 'Search your services' };
   // Groups in display order: commands first, then by kind (relevance) or by day (date sorts / empty query).
   const layout = (rows) => {
     const cmds = rows.filter((r) => r.kind === 'cmd'), rest = rows.filter((r) => r.kind !== 'cmd');
@@ -85,8 +87,10 @@ export function openPalette(initial = '') {
     else if (r.kind === 'tag') sub = `(${r.count} ${r.count === 1 ? t('meeting') : t('meetings')})`;
     else if (r.kind === 'term') sub = esc(r.snippet || '');
     else if (r.kind === 'doc') sub = `${r.snippet ? safeSnippet(r.snippet) : ''}${r.source ? ` · ${esc(r.source)}` : ''}`;
+    else if (r.kind === 'live') sub = esc([r.who, r.snippet].filter(Boolean).join(' · '));
+    else if (r.kind === 'livemore') sub = esc(r.snippet || '');
     else if (r.kind === 'action') { title = `${r.done ? '✓ ' : ''}${title}`; sub = esc([r.snippet, r.noteTitle].filter(Boolean).join(' · ')); }
-    const right = r.kind === 'meeting' && r.tags?.length ? r.tags.slice(0, 2).map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</span>`).join('') : r.kbd ? `<kbd>${esc(r.kbd)}</kbd>` : '';
+    const right = r.kind === 'live' ? `<span class="badge">${esc(r.sourceName || '')}</span>` : r.kind === 'meeting' && r.tags?.length ? r.tags.slice(0, 2).map((tg) => `<span class="tagchip"><span class="dot" style="background:${tg.color}"></span>${esc(tg.name)}</span>`).join('') : r.kbd ? `<kbd>${esc(r.kbd)}</kbd>` : '';
     return `<a class="pal-item" role="option" data-i="${i}" href="${esc(href(r))}">${ic}<span class="grow"><span class="t ${r.kind === 'meeting' ? 'u' : ''}">${title}</span><span class="s">${sub}</span></span><span class="right">${right}</span></a>`;
   };
   const flat = () => $$('.pal-item', box);
@@ -100,6 +104,7 @@ export function openPalette(initial = '') {
   const pick = (el) => {
     const i = Number(el.dataset.i);
     const r = allOrdered()[i];
+    if (r?.kind === 'livemore') { r.run(); return; }   // the list stays open: the answers replace it
     close();
     if (r?.run) r.run(); else location.hash = href(r).slice(1) ? href(r) : '#/';
   };
@@ -114,8 +119,23 @@ export function openPalette(initial = '') {
     try { rows = await api('GET', `/api/find?${p}`); } catch { rows = []; }
     if (seq !== st.seq) return;
     if (st.kind === 'all' && (!st.q || st.q.length < 40)) rows = [...(st.q ? commands(st.q).slice(0, 3) : commands('').slice(0, 4)), ...rows];
+    // when some service allows live search, one more row asks it (never per keystroke: only when this row is chosen)
+    if (st.kind === 'all' && st.q.length >= 3 && st.live?.length) rows = [...rows, { kind: 'livemore', id: 'livemore', title: t('Search {names} for “{q}”', { names: st.live.map((x) => x.name).slice(0, 3).join(', '), q: st.q }), snippet: t('Asks the service itself, so older mail is found too'), icon: 'search', run: () => liveSearch() }];
     st.results = rows;
     render();
+  };
+  // ask the services; the answers replace the list, each one opens where it lives
+  const liveSearch = async () => {
+    const q = st.q;
+    box.innerHTML = `<div class="empty">${icon('search')}<p>${t('Asking {names}…', { names: st.live.map((x) => x.name).slice(0, 3).join(', ') })}</p></div>`;
+    try {
+      const out = await api('GET', `/api/live-search?q=${encodeURIComponent(q)}&limit=12`);
+      st.results = out.results.map((r) => ({ ...r, kind: 'live', id: `${r.sourceId}|${r.externalId}`, run: () => window.open(r.uri, '_blank', 'noopener') }));
+      const failed = out.searched.filter((x) => x.error);
+      render();
+      if (failed.length) box.insertAdjacentHTML('beforeend', `<div class="small muted" style="padding:8px 14px">${failed.map((f) => `${esc(f.source)}: ${esc(f.error)}`).join(' · ')}</div>`);
+      if (!out.results.length && !failed.length) box.innerHTML = `<div class="empty">${icon('search')}<p>${t('Nothing found for “{q}” in your services.', { q: esc(q) })}</p></div>`;
+    } catch (e) { box.innerHTML = `<div class="empty">${icon('alert')}<p>${esc(e.message)}</p></div>`; }
   };
   const close = () => { dlg?.close(); };
   dlg.addEventListener('close', () => { dlg.remove(); dlg = null; });

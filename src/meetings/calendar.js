@@ -1,6 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const { parseIcs, expand } = require('./ics');
+const { busyEvent } = require('./google');
 const { newId } = require('../core/ids');
 
 const TTL_MS = 5 * 60 * 1000;
@@ -91,7 +92,10 @@ class Calendar {
     if (this.google?.connected()) {
       const g = await this.loadGoogle(from, to, { force });
       if (g.error) errors.push({ source: GOOGLE, error: g.error, ...(g.code && { code: g.code }) });
-      for (const o of g.events) {
+      // free/busy detail is applied here too (not only when Google's answer is read), so a change of the setting shows at once, not after the cache expires
+      const busy = this.google.config?.().calendarDetail === 'busy';
+      for (const raw of g.events) {
+        const o = busy ? busyEvent(raw) : raw;
         if (o.end > from && o.start < to) out.push({ ...o, id: `google:${o.calendarId || 'primary'}:${o.uid}:${o.start}`, source: GOOGLE, provider: 'google' });
       }
     }

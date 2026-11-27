@@ -10,10 +10,12 @@
 // (the history page, or the listing page) and the next run continues from there: nothing is skipped. If Google says the history is too
 // old (404), the listing starts again from scratch and anything no longer in it is tombstoned. Threads that are only in Trash or Spam
 // are tombstoned too. Mail is private by default: only an AI on this computer may read it.
+const { canReadBodies } = require('../access/gmail-scopes');
+
 const every = 10 * 60_000;
 const MAX_THREADS = 400;          // threads read per run (the rest waits for the next run, from the saved cursor)
 const MAX_TEXT = 40_000;
-const META_HEADERS = ['From', 'To', 'Cc', 'Subject', 'Date', 'List-Unsubscribe'];
+const META_HEADERS = ['From', 'To', 'Cc', 'Subject', 'Date', 'List-Unsubscribe', 'Message-ID', 'References'];
 const HISTORY_TYPES = ['messageAdded', 'messageDeleted', 'labelAdded', 'labelRemoved'];
 const GONE_LABELS = new Set(['TRASH', 'SPAM']);
 const CATEGORIES = ['promotions', 'social', 'updates', 'forums'];
@@ -23,9 +25,11 @@ const quoteLabel = (l) => (/^[\w-]+$/.test(l) ? l : `"${l.replace(/"/g, '')}"`);
 
 function validate(config) {
   const query = String(config.query || 'newer_than:90d').trim().slice(0, 200);
-  return { query: query || 'newer_than:90d', labels: list(config.labels, 10) };
+  return { query: query || 'newer_than:90d', labels: list(config.labels, 10), account: String(config.account || 'primary').slice(0, 40) };
 }
-const ready = ({ google }) => !!google?.config().gmail && google.connected();
+// the Google account a source reads: its own (config.account), else the first sign-in (ctx.google)
+const clientFor = (ctx, source) => (ctx.googleFor && source ? ctx.googleFor(source) : null) || ctx.google;
+const ready = (ctx, config = {}) => { const g = clientFor(ctx, { config }); return !!g?.config().gmail && g.connected(); };
 
 // The Gmail search for a source: its own query, its labels as ANY-of (Gmail's labelIds would mean ALL-of), and the grant's filter:
 //   filter = { labels:[], excludeLabels:[], fromDomains:[], excludeSenders:[], skipCategories:bool, never:{ senders, domains, labels, keywords } }
@@ -88,25 +92,44 @@ function neverRead(msgs, never = {}) {
 }
 
 // me: the account's addresses (the address and its send-as aliases); account: the address, for links that open the right mailbox.
-function threadItem(thread, me, { metadataOnly = false, account = '' } = {}) {
+const OLD_MS = 365 * 86_400_000, MAX_TEXT_OLD = 8_000;
+
+// A calendar invite inside a mail (a text/calendar part): its UID, so the mail can be tied to the event and not shown twice
+function inviteOf(part) {
+  const parts = [];
+  const walk = (p) => { if (p.parts?.length) p.parts.forEach(walk); else parts.push(p); };
+  walk(part || {});
+  const cal = parts.find((p) => /^text\/calendar/i.test(p.mimeType || '') && p.body?.data);
+  if (!cal) return null;
+  const ics = b64(cal.body.data);
+  const uid = /^UID:(.+)$/m.exec(ics)?.[1]?.trim();
+  return uid ? { uid, summary: /^SUMMARY:(.+)$/m.exec(ics)?.[1]?.trim() || '' } : null;
+}
+
+function threadItem(thread, me, { metadataOnly = false, account = '', extraText = '' } = {}) {
   const mine = me instanceof Set ? me : new Set([me].filter(Boolean));
   const msgs = (thread.messages || []).filter((m) => !(m.labelIds || []).includes('DRAFT'));
   if (!msgs.length) return null;
   const first = msgs[0], last = msgs[msgs.length - 1];
   const subject = header(first, 'subject') || '(no subject)';
-  const text = metadataOnly ? '' : msgs.map((m) => `From: ${header(m, 'from')}\nDate: ${header(m, 'date')}\n\n${bodyOf(m.payload)}`).join('\n\n———\n\n').slice(0, MAX_TEXT);
+  const old = Date.now() - (Number(last.internalDate) || Date.now()) > OLD_MS;      // old mail keeps less text: it is searched by words, rarely read again
+  const text = metadataOnly ? '' : `${msgs.map((m) => `From: ${header(m, 'from')}\nDate: ${header(m, 'date')}\n\n${bodyOf(m.payload)}`).join('\n\n———\n\n')}${extraText ? `\n\n———\n\n${extraText}` : ''}`.slice(0, old ? MAX_TEXT_OLD : MAX_TEXT);
+  const invite = msgs.map((m) => inviteOf(m.payload)).find(Boolean);
   const lastFrom = emailOf(header(last, 'from'));
   const lastBody = metadataOnly ? '' : bodyOf(last.payload);
   const people = [...new Set(msgs.flatMap((m) => [header(m, 'from'), header(m, 'to'), header(m, 'cc')].flatMap(addresses)))].slice(0, 30);
+  const senders = [...new Set(msgs.flatMap((m) => addresses(header(m, 'from'))))].slice(0, 20);
+  const recipients = [...new Set(msgs.flatMap((m) => [header(m, 'to'), header(m, 'cc')].flatMap(addresses)))].slice(0, 30);
   const attachments = metadataOnly ? [] : msgs.flatMap((m) => attachmentsOf(m.payload)).slice(0, 30);
   const link = `https://mail.google.com/mail/${account ? `?authuser=${encodeURIComponent(account)}` : 'u/0/'}#all/${thread.id}`;
   return {
     metaInHash: true, externalId: `thread:${thread.id}`, kind: 'email', title: subject, text, uri: link, occurredAt: Number(last.internalDate) || Date.now(),
     meta: {
-      messages: msgs.length, people, lastFrom, lastFromMe: mine.has(lastFrom), lastAt: Number(last.internalDate) || 0,
+      messages: msgs.length, people, senders, recipients, lastFrom, lastFromMe: mine.has(lastFrom), lastAt: Number(last.internalDate) || 0,
       lastAsksSomething: metadataOnly ? null : /\?\s*($|\n)/.test(lastBody.slice(0, 600)),
       labels: [...new Set(msgs.flatMap((m) => m.labelIds || []))].slice(0, 10), historyId: thread.historyId,
-      newsletter: msgs.some((m) => !!header(m, 'list-unsubscribe')), metadataOnly, ...(attachments.length ? { attachments } : {}),
+      newsletter: msgs.some((m) => !!header(m, 'list-unsubscribe')), metadataOnly,
+      ...(invite ? { invite } : {}), gmailThreadId: thread.id, lastMessageId: header(last, 'message-id'), references: header(last, 'references').split(/\s+/).filter(Boolean).slice(-10), subject, ...(attachments.length ? { attachments } : {}),
     },
   };
 }
@@ -114,9 +137,19 @@ function threadItem(thread, me, { metadataOnly = false, account = '' } = {}) {
 // a thread whose every message is in Trash or Spam is gone as far as the person is concerned
 const gone = (thread) => { const msgs = thread.messages || []; return msgs.length > 0 && msgs.every((m) => (m.labelIds || []).some((l) => GONE_LABELS.has(l))); };
 
-async function check({ google }) {
+async function check(ctx, source = null) {
+  const google = clientFor(ctx, source);
   const p = await google.gmail('/users/me/profile');
   return { ok: true, email: p.emailAddress, messages: p.messagesTotal, threads: p.threadsTotal };
+}
+
+// How big is "everything"? From the mailbox's own counts: threads, about how much space the text takes here (the search index doubles it),
+// and about how long the first read takes at a polite pace. An estimate, said as one.
+const READ_PER_SECOND = 4, TEXT_KB_PER_THREAD = 6;
+async function estimate(ctx, source = null) {
+  const p = await clientFor(ctx, source).gmail('/users/me/profile');
+  const threads = Number(p.threadsTotal) || 0;
+  return { email: p.emailAddress, threads, messages: Number(p.messagesTotal) || 0, megabytes: Math.round((threads * TEXT_KB_PER_THREAD * 2) / 1024), hours: Math.round((threads / READ_PER_SECOND / 3600) * 10) / 10 };
 }
 
 async function fetchThread(google, id, metadataOnly) {
@@ -140,12 +173,38 @@ async function myAddresses(google, email) {
   return out;
 }
 
-async function sync({ source, items, google, budget = MAX_THREADS }) {
-  if (!ready({ google })) throw Object.assign(new Error('Connect Google with mail switched on first.'), { permanent: true });
+// Attachment text, only when the source's filter says so (filter.attachmentText): PDFs and text files up to 5 MB, a few per thread.
+// -> a text block, or ''. ctx.pdfToText(buffer) -> text.
+const ATTACH_MAX = 5_000_000, ATTACH_PER_THREAD = 3;
+async function attachmentText(google, thread, pdfToText) {
+  const out = [];
+  for (const m of thread.messages || []) {
+    const walk = async (p) => {
+      if (out.length >= ATTACH_PER_THREAD) return;
+      if (p.parts?.length) { for (const c of p.parts) await walk(c); return; }
+      const isPdf = /pdf/i.test(p.mimeType || '') || /\.pdf$/i.test(p.filename || ''), isText = /^text\/(plain|markdown|csv)/i.test(p.mimeType || '') && p.filename;
+      if (!p.filename || !p.body?.attachmentId || p.body.size > ATTACH_MAX || !(isPdf || isText)) return;
+      try {
+        const a = await google.gmail(`/users/me/messages/${m.id}/attachments/${p.body.attachmentId}`);
+        const buf = Buffer.from(a.data || '', 'base64url');
+        const text = isPdf ? (pdfToText ? await pdfToText(buf) : '') : buf.toString('utf8');
+        if (String(text).trim()) out.push(`Attachment ${p.filename}:\n${String(text).trim().slice(0, 8000)}`);
+      } catch { /* an attachment that cannot be read is skipped */ }
+    };
+    await walk(m.payload || {});
+  }
+  return out.join('\n\n');
+}
+
+async function sync({ source, items, budget = MAX_THREADS, ...ctx }) {
+  const google = clientFor(ctx, source);
+  if (!google || !ready(ctx, source.config)) throw Object.assign(new Error(google?.config().needsReconnect ? 'Google access expired or was revoked: reconnect it (Access).' : 'Connect Google with mail switched on first.'), { permanent: true, code: 'google-auth' });
   const level = source.readLevel || 'part';
   if (level === 'none') return { created: 0, updated: 0, unchanged: 0, removed: 0, errors: 0, skipped: 'nothing may be read' };
-  const metadataOnly = level === 'metadata';
-  const filter = source.filter || {};
+  // what Google really granted limits what can be read, whatever the grant says: under the metadata permission there are no bodies and no searches
+  const metadataOnly = level === 'metadata' || !canReadBodies(google.grantedScopes?.());
+  const filter = { ...(source.filter || {}) };
+  filter.never = { ...(filter.never || {}), senders: [...list(filter.never?.senders, 200), ...(items.blocked?.() || [])] };   // addresses forgotten on purpose
   const profile = await google.gmail('/users/me/profile');
   const account = String(profile.emailAddress || '').toLowerCase();
   const me = await myAddresses(google, account);
@@ -190,7 +249,8 @@ async function sync({ source, items, google, budget = MAX_THREADS }) {
     if (!t || gone(t)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; continue; }
     if (neverRead(t.messages || [], filter.never)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; continue; }
     if (metadataOnly && filter.labels?.length && !(t.messages || []).some((m) => (m.labelIds || []).some((l) => filter.labels.includes(l)))) continue;   // metadata: Gmail cannot search, so the part is chosen here
-    save(threadItem(t, me, { metadataOnly, account }));
+    const extraText = !metadataOnly && filter.attachmentText ? await attachmentText(google, t, ctx.pdfToText) : '';
+    save(threadItem(t, me, { metadataOnly, account, extraText }));
     seen.add(`thread:${id}`);
   }
   if (listing && wholeListing && listingDone) out.removed += items.tombstoneMissing(source.id, seen);   // a complete listing: what fell out of it is gone
@@ -198,4 +258,4 @@ async function sync({ source, items, google, budget = MAX_THREADS }) {
   return out;
 }
 
-module.exports = { kind: 'gmail', every, validate, ready, check, sync, bodyOf, threadItem, compileQuery, neverRead, readCursor, writeCursor, HISTORY_TYPES };
+module.exports = { kind: 'gmail', every, validate, ready, check, estimate, sync, bodyOf, threadItem, compileQuery, neverRead, readCursor, writeCursor, HISTORY_TYPES };

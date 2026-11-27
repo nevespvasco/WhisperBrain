@@ -527,10 +527,38 @@ function renderAside() {
     </section>
     ${N.glossary.length ? `<section class="panel"><div class="panel-head"><h3>${icon('book')} ${t('Glossary')}</h3><a class="link" href="#/glossary">${t('All')}</a></div><div class="stack tight">${N.glossary.slice(0, 8).map((g) => `<a class="quote" href="#/term/${g.id}"><b>${esc(g.term)}</b><span class="xsmall muted clamp2">${esc(g.definition || t('No definition yet'))}</span></a>`).join('')}</div></section>` : ''}
     ${linkedPanel()}
+    <section class="panel" id="rel-mail" hidden></section>
     ${N.related.length ? `<section class="panel"><div class="panel-head"><h3>${icon('layers')} ${t('Related meetings')}</h3></div><div class="list">${N.related.map((r) => meetingRow(r, { snippet: esc(r.reasons.join(' · ')) })).join('')}</div></section>` : ''}`;
+  loadRelatedMail(box);
   box.prepend(assistantSlot(N.id));   // the same node every time: a suggestion being written survives the redraw
   if (box.scrollTop !== keepTop) box.scrollTop = keepTop;
   fitLive();
+}
+
+// ---------- related mail and messages ----------
+// The mail and messages of the people in this meeting, and what the search finds for its title. Each can be unlinked (or an unlinked one
+// brought back); the recap can be proposed as an e-mail to the people who were there (waits in the Inbox).
+async function loadRelatedMail(box) {
+  const slot = box.querySelector('#rel-mail'); if (!slot) return;
+  const id = N.id;
+  try {
+    const [rel, ov] = await Promise.all([api('GET', `/api/notes/${id}/related`), api('GET', '/api/access').catch(() => ({ sources: [] }))]);
+    if (N.id !== id) return;
+    const mailer = ov.sources.find((s) => s.kind === 'gmail' && (s.actions || []).some((a) => ['gmail.draft', 'gmail.send'].includes(a)));
+    const emails = (N.note.attendees || []).map((a) => a.email).filter(Boolean);
+    if (!rel.length && !(mailer && emails.length && (N.note.summary || N.note.body))) return;
+    slot.hidden = false;
+    slot.innerHTML = `<div class="panel-head"><h3>${icon('mail')} ${t('Related mail and messages')}</h3>${mailer && emails.length && (N.note.summary || N.note.body) ? `<button class="btn xs" data-recap>${t('Email the recap…')}</button>` : ''}</div>
+      ${rel.length ? `<div class="stack tight">${rel.map((r) => `<div class="row small" style="gap:8px;align-items:center"><a class="grow ellipsis" href="#/documents/${r.id}" title="${esc(r.why === 'attendee' ? t('Mail with someone who was in this meeting') : r.why === 'linked' ? t('You linked it') : t('Matches the meeting'))}">${icon('mail', 'sm')} ${esc(r.title)}</a><span class="xsmall muted">${fmtDate(r.at, { day: 'numeric', month: 'short' })}</span><button class="btn xs ghost" data-unlink="${r.id}" title="${t('Not related')}">${icon('x', 'sm')}</button></div>`).join('')}</div><div class="xsmall muted mt-s">${t('Only from sources that allow it.')}</div>` : ''}`;
+    slot.onclick = async (e) => {
+      const u = e.target.closest('[data-unlink]');
+      if (u) { try { await api('PUT', `/api/notes/${id}/related/${u.dataset.unlink}`, { state: 'unlinked' }); loadRelatedMail(box); } catch (err) { fail(err); } return; }
+      if (e.target.closest('[data-recap]')) {
+        const { composeMail } = await import('../compose.js');
+        await composeMail({ sourceId: mailer.id, to: emails, subject: `${t('Recap')}: ${N.note.title || t('our meeting')}`, body: N.note.summary || N.note.body, title: t('Email the recap'), canSuggest: false });
+      }
+    };
+  } catch { /* nothing to show */ }
 }
 
 // ---------- actions ----------

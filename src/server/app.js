@@ -27,6 +27,7 @@ const { toMeeting } = require('../knowledge/meeting');
 const { Importer } = require('../knowledge/importer');
 const { Integrations } = require('../integrations/service');
 const { GoogleCalendar } = require('../meetings/google');
+const { GoogleAccounts } = require('../meetings/google-accounts');
 const { DiscordVoice } = require('../discord/bot');
 const { DiscordRpc } = require('../discord/rpc');
 const { DiscordRpcSource } = require('../discord/rpc-source');
@@ -51,6 +52,9 @@ const { ChunkIndex } = require('../search/index');
 const { LlmEmbedder } = require('../search/embedder');
 const { can } = require('../access/grants');
 const { AccessLog } = require('../access/log');
+const { AccessCenter } = require('../access/center');
+const { LiveSearch } = require('../search/live');
+const { Timeline } = require('../knowledge/timeline');
 const { Assertions } = require('../brain/assertions');
 const { extractAssertions } = require('../brain/extract');
 const { Reminders } = require('../brain/reminders');
@@ -108,6 +112,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const assistant = new AssistantService({ db: conn, notes, settings, bus, llm: scheduler, knowledge, briefings });
   assistant.attach();   // live help while recording (off until switched on in Settings → Assistant)
   const google = new GoogleCalendar({ getConfig: () => settings.get('google'), saveConfig: (p) => settings.update({ google: { ...settings.get('google'), ...p } }), ...(connectorOptions.google || {}) });
+  const googleAccounts = new GoogleAccounts({ settings, primary: google, options: connectorOptions.google || {} });   // the calendar sign-in and any further mailboxes
   const calendar = new Calendar({ settings, bus, google });
   const detector = new MeetingDetector({ platform: plat, calendar, bus, settings, recording, notes, signals: meet.hub });
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
@@ -173,11 +178,11 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
   const items = new ItemStore(conn, { bus });
-  const connectorCtx = { settings, get google() { return google; }, get integrations() { return integrations; }, get app() { return self; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, sleep: connectorOptions.sleep };
+  const connectorCtx = { settings, get google() { return google; }, googleFor: (source) => googleAccounts.forSource(source), pdfToText: (buf) => pdfToText(buf), get integrations() { return integrations; }, get app() { return self; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, sleep: connectorOptions.sleep };
   // OCR for scanned PDFs, only where pdftoppm and tesseract are installed (checked once, the first time a PDF has no text)
   let ocrReady = null;
   const ocr = async (buf) => { ocrReady ??= (connectorOptions.ocrExec ? { available: true } : await ocrTools.available()); if (!ocrReady.available) throw new Error(ocrReady.reason); return ocrTools.ocrPdf(buf, { lang: settings.get('ocrLanguages'), exec: connectorOptions.ocrExec }); };
-  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), ocr, watch: detect, services: { github: gh, slack: slackSvc, discord: discordSvc, gmail: gmailSvc, notion: pollSvc.notion, linear: pollSvc.linear }, ctx: connectorCtx });
+  const sources = new SourceManager({ items, runner, bus, pdfToText: (buf) => pdfToText(buf), ocr, watch: detect, services: { github: gh, slack: slackSvc, discord: discordSvc, gmail: gmailSvc, outlook: require('../connectors/outlook'), imap: require('../connectors/imap'), notion: pollSvc.notion, linear: pollSvc.linear }, ctx: connectorCtx });
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
@@ -194,27 +199,78 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     const it = items.item(id);
     return !!it && can(items.source(it.sourceId), 'ai.remote', { item: it, llmConfig });
   };
+  // mail older than a year is searched by words only: embedding a whole mailbox would take hours and most of it is never asked about
+  const oldMail = (kind, id) => { if (kind !== 'item') return false; const it = items.item(id); return !!it && it.kind === 'email' && it.occurredAt < Date.now() - 365 * 86_400_000; };
   ai.index = chunkIndex; ai.mayShare = mayShare; translator.mayShare = mayShare;
+  // Live search (src/search/live.js): one adapter per service; those that need a token are only asked when they are connected.
+  const liveSearch = new LiveSearch({ db: conn, items, accessLog, ctx: Object.defineProperties({ items }, Object.getOwnPropertyDescriptors(connectorCtx)) });   // (keeps connectorCtx's lazy getters lazy)
+  liveSearch.register(require('../search/adapters/gmail'));
+  for (const name of ['github', 'slack', 'notion', 'linear']) liveSearch.register(require(`../search/adapters/${name}`));
+  for (const kind of ['outlook', 'imap']) {
+    const svc = require(`../connectors/${kind}`);
+    liveSearch.register({ provider: kind, label: kind === 'outlook' ? 'Outlook' : 'E-mail', supports: (source, ctx) => { try { return !!svc.ready(ctx, source.config) && source.readLevel !== 'metadata'; } catch { return false; } },
+      search: ({ source, query, limit, ctx }) => svc.searchLive({ ctx, source, query, limit }), open: ({ source, externalId, ctx }) => svc.openLive({ ctx, source, externalId }) });
+  }
+  ai.live = liveSearch; ai.items = items;
+  // The live assistant sees the latest mail with the people on the call, one line each, if (and only if) this AI server may see that source
+  assistant.mailContext = (noteId) => {
+    const llmConfig = settings.get('llm');
+    const lines = [];
+    for (const r of conn.prepare("SELECT DISTINCT entity_id FROM mentions WHERE note_id = ? AND role IN ('attendee', 'speaker')").all(noteId)) {
+      const name = knowledge.entities.summary(r.entity_id)?.name || '';
+      for (const it of knowledge.entities.itemsOf(r.entity_id, { limit: 2 })) {
+        const full = items.item(it.id);
+        if (full && can(items.source(it.sourceId), 'ai.remote', { item: full, llmConfig })) lines.push(`${name}: "${it.title}" (${new Date(it.at).toISOString().slice(0, 10)})${full.text ? ` ${full.text.replace(/\s+/g, ' ').slice(0, 220)}` : ''}`);
+      }
+    }
+    return lines.length ? [{ title: 'Recent mail with the people on this call', kind: 'mail', text: lines.slice(0, 8).join('\n') }] : [];
+  };
+  // is this sender somebody the user knows? a person met in a meeting (or merged by address), or at the user's own domain
+  ai.senderKnown = (email) => {
+    const mail = String(email || '').toLowerCase();
+    if (knowledge.entities.resolve({ email: mail, create: false })) return true;
+    const mine = String(settings.get('google').email || '').toLowerCase().split('@')[1];
+    return !!mine && mail.endsWith(`@${mine}`);
+  };
   // Access was narrowed or revoked: what was read is forgotten from the search index now, not at the next scheduled pass.
   bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
-  const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare });
+  const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare, items, live: liveSearch, visible: (sid) => { const s = items.source(sid); return !!s && s.enabled && s.readLevel !== 'none' && (s.expiresAt == null || s.expiresAt > Date.now()); } });
   const projects = new Projects({ db: conn, notes, items, assertions });
   const supersession = new Supersession({ db: conn, assertions });
-  const actions = new Actions({ db: conn, bus, handlers: ACTION_HANDLERS, deps: { settings, get integrations() { return integrations; } } });
+  // Every outbound action: the old ones (Linear, webhook, Obsidian), Gmail's, and the other services' (src/brain/actions-services.js)
+  let SERVICE_HANDLERS = {};
+  try { SERVICE_HANDLERS = require('../brain/actions-services').HANDLERS; } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }
+  const ALL_HANDLERS = { ...ACTION_HANDLERS, ...require('../brain/actions-gmail').HANDLERS, ...SERVICE_HANDLERS };
+  // may this source's grant do this? An action made for one source (args.sourceId) needs that source to allow it; one for a service with no
+  // source row (a token set up in Integrations, approved each time) keeps working as before.
+  const actionAllowed = (kind, args) => {
+    const provider = ALL_HANDLERS[kind]?.provider;
+    if (!provider) return true;
+    if (args?.sourceId) { const s = items.source(args.sourceId); return !!s && can(s, `action.${kind}`); }
+    const own = items.sources().filter((s) => s.kind === provider);
+    return !own.length || own.some((s) => can(s, `action.${kind}`));
+  };
+  const actions = new Actions({ db: conn, bus, handlers: ALL_HANDLERS, allowed: actionAllowed, onRun: ({ kind, args, ok, error }) => accessLog.add({ sourceId: args?.sourceId || null, op: 'action.run', detail: `${kind} ${ok ? 'done' : `failed: ${String(error).slice(0, 100)}`}` }),
+    deps: { settings, items, get googleAccounts() { return googleAccounts; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, get integrations() { return integrations; } } });
+  const timeline = new Timeline({ db: conn, notes, entities: knowledge.entities, items, projects, index: chunkIndex, allow: () => true });
   const rules = new Rules({ db: conn, assertions, actions, reminders, notes, bus });
   rules.attach();
-  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders, items, db: conn, actions, supersession, projects });
+  // mail rules look at what a sync just brought (cheap: only threads changed since the last look)
+  bus.subscribe((e) => { if (e.type === 'sources.changed') { try { rules.runMail(); } catch { /* a rule never breaks a sync */ } } });
+  const accessCenter = new AccessCenter({ db: conn, items, accounts: googleAccounts, settings, accessLog, aiRuns, account, outlook: () => require('../connectors/outlook').authFor(connectorCtx), listBackups: () => listBackups(settings.get('backupDir')), bus });
+  const inbox = new Inbox({ notes, assertions, entities: knowledge.entities, reminders, items, db: conn, actions, supersession, projects, access: accessCenter });
   const reviews = new Reviews({ db: conn, notes, assertions, entities: knowledge.entities, items, inbox });
   runner.register('index.sync', async () => {
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
     let embedded = 0;
-    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: mayShare }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
+    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
     return { indexed: total, embedded };
   }, { lane: 'sources' });
   // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the
   // database statistics are refreshed. Nothing here changes what you see except by removing what is long finished.
   runner.register('maintenance', async () => {
+    liveSearch.purge();
     const out = { jobs: jobs.prune(), aiRuns: aiRuns.prune(), accessLog: accessLog.prune(), actionsExpired: actions.expire(), pruned: 0 };
     knowledge.entities.proposeMerges();
     try { conn.exec('PRAGMA optimize'); } catch { /* busy: next time */ }
@@ -226,6 +282,24 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   bus.subscribe((e) => {
     if (['sources.changed', 'note.insights', 'note.updated', 'speakers.updated', 'recording.stopped', 'transcript.removed', 'import.done'].includes(e.type)) wantIndex();
     if (e.type === 'settings' && (e.data.keys.includes('embeddingModel') || e.data.keys.includes('llm'))) wantIndex();
+  });
+  // Mail and messages linked to the people in them (item_mentions); picks up what changed since the last run
+  runner.register('people.items', async () => {
+    const key = 'mentions:after';
+    let cur = Number(conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value) || 0, n = 0;
+    for (;;) {
+      const next = knowledge.entities.backfillItems(cur, 200);
+      if (next == null) break;
+      cur = next; n++;
+      conn.prepare('INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(key, String(cur));
+      await tick();
+    }
+    return { batches: n };
+  }, { lane: 'sources' });
+  const wantMentions = () => { try { runner.enqueue('people.items', {}, { key: 'all', runAfter: 2000, maxAttempts: 2 }); } catch { /* closing */ } };
+  bus.subscribe((e) => {
+    if (['sources.changed', 'people.changed', 'import.done', 'speakers.updated'].includes(e.type)) wantMentions();
+    if (e.type === 'people.changed') { try { conn.prepare("DELETE FROM index_meta WHERE key = 'mentions:after'").run(); } catch { /* closing */ } }   // a person was merged or forgotten: look at every item again
   });
   runner.register('items.backfill', async () => { let n = 0, c; while ((c = items.backfillNotes(200))) { n += c; await tick(); } return { notes: n }; }, { lane: 'sources' });
   runner.register('entities.backfill', async ({ after = 0 }) => { let cur = after; for (;;) { const next = knowledge.entities.backfillBatch(cur, 100); if (next == null) break; cur = next; await tick(); } return {}; }, { lane: 'sources' });
@@ -309,7 +383,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
-    version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, accessLog, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
+    version, dataDir, importer, integrations, google, googleAccounts, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, accessLog, accessCenter, liveSearch, timeline, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
     knowledge, analyze, openExternal, renderPdf, discord, discordRpc, discordRpcSource, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk

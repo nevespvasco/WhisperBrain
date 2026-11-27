@@ -5,6 +5,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { meetingUrl } = require('./ics');
 const { builtInClient } = require('../core/oauth-clients');
+const { gmailScopesFor, hasGmail, GMAIL_SCOPES } = require('../access/gmail-scopes');
 
 const SCOPE = 'https://www.googleapis.com/auth/calendar.readonly openid email';
 const SCOPE_GMAIL = `${SCOPE} https://www.googleapis.com/auth/gmail.readonly`;   // only when the person chose to connect mail too
@@ -33,8 +34,21 @@ main{max-width:28rem;padding:2rem;text-align:center}h1{font-size:1.3rem}@media(p
 // Local midnight, like ics.js does for a non-recurring all-day DTSTART.
 function dateMs(d) { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).getTime(); }
 
+// "Free/busy" detail (settings google.calendarDetail = 'busy'): only WHEN a person is busy leaves Google's answer, not what for or with
+// whom. The title becomes 'Busy' and the attendees, organizer, description, location and join link are dropped.
+function busyEvent(ev) {
+  if (!ev) return ev;
+  return { ...ev, summary: 'Busy', location: '', description: '', attendees: [], organizer: undefined, url: '' };
+}
+
 // One Google event resource -> the expand() shape (plus calendarId/calendar/color), or null when it should be hidden.
-function toEvent(it, cal = {}) {
+// detail: 'full' (default) or 'busy' (see busyEvent)
+function toEvent(it, cal = {}, { detail = 'full' } = {}) {
+  const ev = toFullEvent(it, cal);
+  return detail === 'busy' ? busyEvent(ev) : ev;
+}
+
+function toFullEvent(it, cal = {}) {
   if (!it || it.status === 'cancelled' || !it.start) return null;
   if ((it.attendees || []).some((a) => a.self && a.responseStatus === 'declined')) return null;
   const allDay = !!it.start.date;
@@ -92,7 +106,11 @@ class GoogleCalendar {
   }
 
   // Starts the loopback listener and returns the consent URL. `done` settles once Google redirects back (or after 5 min).
-  async beginAuth({ openExternal, gmail = false } = {}) {
+  // scopes: the Gmail permissions to ask for (src/access/gmail-scopes.js; default: read-only when `gmail`); calendar: ask for the calendar
+  // too (the first account does; an account added only for mail does not).
+  async beginAuth({ openExternal, gmail = false, scopes = null, calendar = true } = {}) {
+    const gscopes = scopes ? scopes : (gmail ? gmailScopesFor({ level: 'part' }) : []);
+    const scopeString = [...(calendar ? SCOPE.split(' ') : ['openid', 'email']), ...gscopes].join(' ');
     const { clientId, clientSecret } = this.config();
     if (!clientId) throw new Error('This build has no Google client built in: set a Google OAuth client ID (a "Desktop app" client from Google Cloud Console) in Integrations before connecting.');
     const verifier = b64url(crypto.randomBytes(48)); // 64 url-safe chars
@@ -121,10 +139,11 @@ class GoogleCalendar {
         const r = await this.postForm(this.tokenUrl, { code: u.searchParams.get('code') || '', client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri, grant_type: 'authorization_code', code_verifier: verifier });
         if (!r.ok || !r.json.access_token) throw authError(`Google token exchange failed: ${r.json.error_description || r.json.error || `HTTP ${r.status}`}`);
         if (!r.json.refresh_token) throw authError('Google did not return a refresh token; remove WhisperBrain from your Google account permissions and try again.');
-        this.saveTokens(r.json);
+        const granted = String(r.json.scope || '').split(/\s+/).filter(Boolean);                       // what Google REALLY granted (the person may untick boxes)
         const email = idTokenEmail(r.json.id_token);
-        this.saveConfig({ email, gmail: !!gmail });
-        const calendars = await this.listCalendars().catch(() => this.config().calendars); // connected even if listing hiccups
+        this.saveTokens(r.json);
+        this.saveConfig({ email, gmail: granted.some((x) => GMAIL_SCOPES.has(x)), scopes: granted.filter((x) => GMAIL_SCOPES.has(x)), needsReconnect: false });
+        const calendars = calendar ? await this.listCalendars().catch(() => this.config().calendars) : [];   // connected even if listing hiccups
         reply(res, 200, 'Connected', 'Connected — you can close this tab and return to WhisperBrain.');
         finish(null, { email, calendars });
       } catch (e) {
@@ -136,7 +155,7 @@ class GoogleCalendar {
     const timer = setTimeout(() => finish(authError('Google sign-in timed out')), this.authTimeoutMs);
     timer.unref?.();
     const redirectUri = `http://127.0.0.1:${server.address().port}/callback`;
-    const q = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: gmail ? SCOPE_GMAIL : SCOPE, access_type: 'offline', prompt: 'consent', state, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256' });
+    const q = new URLSearchParams({ client_id: clientId, redirect_uri: redirectUri, response_type: 'code', scope: scopeString, access_type: 'offline', prompt: 'consent', state, code_challenge: pkceChallenge(verifier), code_challenge_method: 'S256' });
     const authUrl = `${this.authBase}?${q}`;
     if (openExternal) { try { await openExternal(authUrl); } catch (e) { finish(e); } }
     return { authUrl, redirectUri, done, cancel: () => finish(authError('Google sign-in was cancelled')) };
@@ -152,8 +171,8 @@ class GoogleCalendar {
         const r = await this.postForm(this.tokenUrl, { client_id: c.clientId, client_secret: c.clientSecret, refresh_token: c.refreshToken, grant_type: 'refresh_token' });
         if (!r.ok || !r.json.access_token) {
           if (r.json.error === 'invalid_grant') {
-            this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0 });
-            throw authError('Google access expired or was revoked; reconnect Google Calendar');
+            this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, needsReconnect: true });   // the email, the grants and what was read all stay: one click reconnects
+            throw authError('Google access expired or was revoked; reconnect Google');
           }
           throw new Error(`Google token refresh failed: ${r.json.error_description || r.json.error || `HTTP ${r.status}`}`);
         }
@@ -164,18 +183,19 @@ class GoogleCalendar {
   }
 
   // GET <apiBase><path>?params with one refresh-and-retry on 401.
-  async api(path, params = {}, base = this.apiBase) {
+  async api(path, params = {}, base = this.apiBase, { method = 'GET', body = undefined } = {}) {
     // a list value is sent as the same name repeated (Gmail's historyTypes, metadataHeaders), not joined with commas
     const qs = new URLSearchParams();
     for (const [k, v] of Object.entries(params)) for (const one of (Array.isArray(v) ? v : [v])) if (one !== undefined && one !== null && one !== '') qs.append(k, one);
     const url = `${base}${path}?${qs}`;
     for (let attempt = 0; ; attempt++) {
       const token = await this.accessToken({ force: attempt > 0 });
-      const res = await this.fetch(url, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+      const res = await this.fetch(url, { method, headers: { Authorization: `Bearer ${token}`, Accept: 'application/json', ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) }, ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(15000) });
       if (res.status === 401 && attempt === 0) continue;
       const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const e = new Error(`Google Calendar: ${json.error?.message || `HTTP ${res.status}`}`);
+        const e = new Error(`Google: ${json.error?.message || `HTTP ${res.status}`}`);
+        e.status = res.status;
         if (res.status === 401) e.code = 'google-auth';
         throw e;
       }
@@ -184,10 +204,14 @@ class GoogleCalendar {
   }
 
   // Gmail (read-only), with the same token and the same refresh. Only after the person connected mail.
-  gmail(path, params = {}) {
-    if (!this.config().gmail) throw authError('Mail is not connected: connect Google again with mail switched on.');
-    return this.api(path, params, this.gmailBase);
+  gmail(path, params = {}, { method = 'GET', body } = {}) {
+    const c = this.config();
+    if (!c.gmail || !hasGmail(c.scopes)) throw authError('Mail is not connected: connect Google again with mail switched on.');
+    return this.api(path, params, this.gmailBase, { method, body });
   }
+
+  // what Google really granted for mail (empty for a sign-in made before this was recorded: it was read-only)
+  grantedScopes() { return this.config().scopes || []; }
 
   async paginate(path, params) {
     const items = [];
@@ -239,10 +263,11 @@ class GoogleCalendar {
     if (!cals.length) cals = await this.listCalendars();
     const out = [];
     const seen = new Set();
+    const detail = this.config().calendarDetail === 'busy' ? 'busy' : 'full';
     for (const cal of cals.filter((c) => c.selected)) {
       const items = await this.calendarItems(cal.id, from, to);
       for (const it of items) {
-        const ev = toEvent(it, cal);
+        const ev = toEvent(it, cal, { detail });
         if (!ev || ev.end <= from || ev.start >= to) continue;
         const key = `${ev.uid}|${ev.start}`; // the same meeting on two selected calendars shows once
         if (seen.has(key)) continue;
@@ -258,8 +283,8 @@ class GoogleCalendar {
     const token = c.refreshToken || c.accessToken;
     if (token) await this.postForm(this.revokeUrl, { token }).catch(() => {});
     this.windows.clear();
-    this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false });
+    this.saveConfig({ refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false, scopes: [], needsReconnect: false });
   }
 }
 
-module.exports = { GoogleCalendar, toEvent, idTokenEmail, pkceChallenge, SCOPE, SCOPE_GMAIL };
+module.exports = { GoogleCalendar, toEvent, busyEvent, idTokenEmail, pkceChallenge, SCOPE, SCOPE_GMAIL };

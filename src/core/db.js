@@ -629,6 +629,8 @@ const MIGRATIONS = [
   UPDATE sources SET ai_reach = CASE sensitivity WHEN 'private' THEN 'local' ELSE 'any' END,
                      mcp = CASE sensitivity WHEN 'private' THEN 0 ELSE 1 END,
                      read_level = CASE WHEN json_extract(config, '$.remote') THEN 'part' ELSE 'all' END;
+  INSERT OR IGNORE INTO index_meta (key, value) SELECT 'access:review:' || id, CAST(strftime('%s', 'now') AS INTEGER) * 1000 FROM sources;
+  INSERT INTO index_meta (key, value) SELECT 'access:notice', 'pending' WHERE EXISTS (SELECT 1 FROM sources WHERE kind <> 'native' AND id NOT LIKE 'src_imports_%');
   ALTER TABLE items ADD COLUMN ai_reach TEXT CHECK (ai_reach IS NULL OR ai_reach IN ('local', 'ask', 'any'));
   ALTER TABLE ai_runs ADD COLUMN source_ids TEXT NOT NULL DEFAULT '';
   CREATE TABLE access_log (
@@ -658,6 +660,53 @@ const MIGRATIONS = [
   DROP TABLE actions;
   ALTER TABLE actions_v2 RENAME TO actions;
   CREATE INDEX actions_state ON actions(state);
+  `,
+  // v27: live search and correlation (docs/access.md). live_cache: what a search sent to a service answered, keyed by the query AND a hash
+  // of the source's grant, so changing a grant never serves what the old one allowed (short life). items.origin 'live': a body opened
+  // from a live result; it expires (items.expires_at, from the grant's retention) unless pinned. item_mentions: who wrote or received an
+  // item (the item-side twin of `mentions`), so a person's page and a meeting's brief can find their mail. item_links: a person's own
+  // yes/no on "related mail and messages" of a meeting. blocked_addresses: addresses forgotten on purpose, never read again.
+  `
+  CREATE TABLE live_cache (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
+    key TEXT NOT NULL,
+    query TEXT NOT NULL DEFAULT '',
+    results TEXT NOT NULL DEFAULT '[]',
+    fetched_at INTEGER NOT NULL,
+    UNIQUE (source_id, key)
+  );
+  ALTER TABLE items ADD COLUMN origin TEXT NOT NULL DEFAULT 'sync' CHECK (origin IN ('sync', 'live'));
+  ALTER TABLE items ADD COLUMN expires_at INTEGER;
+  ALTER TABLE items ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX items_expires ON items(expires_at) WHERE expires_at IS NOT NULL;
+  CREATE TABLE item_mentions (
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    role TEXT NOT NULL CHECK (role IN ('from', 'to', 'cc', 'author')),
+    at INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_id, item_id, role)
+  );
+  CREATE INDEX item_mentions_item ON item_mentions(item_id);
+  CREATE INDEX item_mentions_entity ON item_mentions(entity_id, at DESC);
+  CREATE TABLE item_links (
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
+    item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    state TEXT NOT NULL CHECK (state IN ('linked', 'unlinked')),
+    PRIMARY KEY (note_id, item_id)
+  );
+  CREATE TABLE blocked_addresses (
+    address TEXT PRIMARY KEY,
+    created_at INTEGER NOT NULL
+  );
+  `,
+  // v28: what a proposed action is checked for (src/access/guards.js). flags: what looked wrong when it was proposed (a recipient who is not
+  // in the thread, a link that was not there before, material from another source). provenance: the sources its text was made from.
+  // args_hash: a hash of the arguments as shown; an approval that finds the arguments changed since refuses to run.
+  `
+  ALTER TABLE actions ADD COLUMN flags TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE actions ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE actions ADD COLUMN args_hash TEXT NOT NULL DEFAULT '';
   `,
 ];
 

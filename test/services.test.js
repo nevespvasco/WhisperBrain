@@ -250,7 +250,7 @@ test('the services API lists what can be connected, and says which already have 
   t.after(() => srv.close());
   const call = async (method, p, body) => { const r = await fetch(`http://127.0.0.1:${port}${p}`, { method, headers: { Cookie: `wb_token=${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json().catch(() => null) }; };
   const list = (await call('GET', '/api/services')).body;
-  assert.deepEqual(list.map((s) => s.kind).sort(), ['discord', 'github', 'gmail', 'linear', 'notion', 'slack']);
+  assert.deepEqual(list.map((s) => s.kind).sort(), ['discord', 'github', 'gmail', 'imap', 'linear', 'notion', 'outlook', 'slack']);
   assert.equal(list.find((s) => s.kind === 'github').ready, true);
   assert.equal(list.find((s) => s.kind === 'slack').ready, false);
   assert.equal((await call('POST', '/api/sources/check', { service: 'slack' })).status, 412);

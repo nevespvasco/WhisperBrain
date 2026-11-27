@@ -37,12 +37,21 @@ async function personPage(main, key) {
       <div class="note-actions"><button class="btn" data-act="search">${icon('search', 'sm')} ${t('Search what they said')}</button><button class="btn" data-act="merge" title="${esc(t('They are the same person as someone else in the list'))}">${icon('merge', 'sm')} ${t('Merge with…')}</button></div></div>
     ${identitiesHtml(p)}
     <div class="note-grid"><div class="stack loose">
+      <section class="panel" id="p-timeline"><div class="panel-head"><h3>${icon('clock')} ${t('Timeline')}</h3></div><div class="small muted">${t('Looking…')}</div></section>
       <section class="panel"><div class="panel-head"><h3>${icon('quote')} ${t('What they said')}</h3></div>${p.quotes.length ? `<div class="stack tight">${p.quotes.map((q) => `<a class="quote" href="#/note/${q.noteId}?tab=transcript&seg=${q.segmentId}"><div class="q">“${esc(q.text)}”</div><div class="src">${esc(q.noteTitle || t('Untitled meeting'))} · ${fmtDate(q.at, { day: 'numeric', month: 'short' })} ${fmtClock(q.startMs)}</div></a>`).join('')}</div>` : `<div class="small muted">${t('No named transcript lines yet.')}</div>`}</section>
       <section class="panel"><div class="panel-head"><h3>${icon('video')} ${t('Meetings')}</h3></div>${p.notes.length ? `<div class="list">${p.notes.map((n) => meetingRow(n)).join('')}</div>` : `<div class="small muted">—</div>`}</section></div>
       <aside class="note-aside">
         <section class="panel"><div class="panel-head"><h3>${icon('network')} ${t('Topics')}</h3></div>${p.topics.length ? `<div class="chips">${p.topics.map((x) => `<a class="chip" href="#/topic/${x.id}">${esc(x.name)} <span class="faint">${x.count}</span></a>`).join('')}</div>` : `<div class="small muted">${t('None yet.')}</div>`}</section>
         <section class="panel"><div class="panel-head"><h3>${icon('checksq')} ${t('Action items')}</h3></div>${p.actions.length ? `<div class="stack tight">${p.actions.slice(0, 15).map((a) => `<a class="quote" href="#/note/${a.noteId}?tab=summary"><div class="q small">${a.done ? '✓ ' : ''}${esc(a.text)}</div><div class="src">${esc(a.noteTitle || '')}${a.due ? ` · ${esc(a.due)}` : ''}</div></a>`).join('')}</div>` : `<div class="small muted">${t('None assigned.')}</div>`}</section>
       </aside></div></div>`;
+  api('GET', `/api/people/${encodeURIComponent(key)}/timeline?limit=40`).then((tl) => {
+    const box = main.querySelector('#p-timeline'); if (!box) return;
+    const ic = { meeting: 'video', mail: 'mail', message: 'hash', issue: 'checksq', note: 'file' };
+    const href = (e) => (e.type === 'meeting' ? `#/note/${e.id}` : `#/documents/${e.id}`);
+    box.innerHTML = `<div class="panel-head"><h3>${icon('clock')} ${t('Timeline')}</h3><span class="xsmall muted">${tl.meetings} ${t('meetings')} · ${tl.mail} ${t('mail and messages')}${tl.lastContact ? ` · ${t('last contact')} ${fmtDate(tl.lastContact, { day: 'numeric', month: 'short', year: 'numeric' })}` : ''}</span></div>
+      ${tl.entries.length ? `<div class="stack tight">${tl.entries.map((e) => `<a class="row small" style="gap:10px;align-items:center" href="${esc(href(e))}"><span class="muted" style="width:88px">${fmtDate(e.at, { day: 'numeric', month: 'short', year: '2-digit' })}</span>${icon(ic[e.type] || 'file', 'sm')}<span class="grow ellipsis">${esc(e.title)}</span>${e.sourceName ? `<span class="badge">${esc(e.sourceName)}</span>` : ''}</a>`).join('')}</div>` : `<div class="small muted">${t('Nothing yet.')}</div>`}
+      <div class="xsmall muted mt-s">${t('Meetings, mail and messages in one line. Mail only shows here when its source allows it, and only for people you have met.')} <a href="#/access">${t('Access & privacy')}</a></div>`;
+  }).catch(() => { main.querySelector('#p-timeline')?.remove(); });
   main.onclick = (e) => {
     const b = e.target.closest('[data-act]');
     if (b?.dataset.act === 'back') history.length > 1 ? history.back() : go('#/people');

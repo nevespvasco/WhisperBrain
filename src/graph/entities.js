@@ -89,6 +89,62 @@ class Entities {
     }
   }
 
+  // Link one mail or message to the people it is from and to. Only people WhisperBrain already knows (met in a meeting, or merged by an
+  // e-mail address): a newsletter or a no-reply sender never makes a person. Idempotent.
+  syncItem(itemId) {
+    const it = this.db.prepare("SELECT id, kind, meta, occurred_at FROM items WHERE id = ? AND deleted_at IS NULL").get(itemId);
+    this.db.prepare('DELETE FROM item_mentions WHERE item_id = ?').run(itemId);
+    if (!it) return 0;
+    const m = parse(it.meta, {});
+    const ins = this.db.prepare('INSERT OR IGNORE INTO item_mentions (entity_id, item_id, role, at) VALUES (?, ?, ?, ?)');
+    let n = 0;
+    const link = (list, role) => { for (const email of (Array.isArray(list) ? list : []).slice(0, 40)) { const id = this.resolve({ email, create: false }); if (id) { ins.run(id, it.id, role, it.occurred_at); n++; } } };
+    link(m.senders || (m.lastFrom ? [m.lastFrom] : []), 'from');
+    link(m.recipients || (m.people || []).filter((e) => e !== m.lastFrom), 'to');
+    return n;
+  }
+
+  // Items changed since `after` (a time), a batch at a time, for the job that keeps item_mentions current. -> the next `after`, or null
+  backfillItems(after = 0, size = 200) {
+    const rows = this.db.prepare("SELECT id, updated_at FROM items WHERE updated_at > ? AND kind = 'email' ORDER BY updated_at LIMIT ?").all(after, size);
+    if (!rows.length) return null;
+    this.tx(() => { for (const r of rows) this.syncItem(r.id); });
+    return rows[rows.length - 1].updated_at;
+  }
+
+  // What the person has with someone, newest first, across the sources the grants allow: mail and messages (item_mentions) as a list
+  // of { id, kind, title, at, role, sourceId, uri }. `allow(sourceId)` filters by access.
+  itemsOf(entityId, { limit = 30, allow = () => true } = {}) {
+    const ids = [entityId, ...this.db.prepare('SELECT id FROM entities WHERE merged_into = ?').all(entityId).map((r) => r.id)];
+    const rows = this.db.prepare(`SELECT i.id, i.kind, i.title, i.occurred_at AS at, i.source_id AS sourceId, i.uri, MIN(m.role) AS role FROM item_mentions m JOIN items i ON i.id = m.item_id
+      WHERE m.entity_id IN (${ids.map(() => '?').join(',')}) AND i.deleted_at IS NULL GROUP BY i.id ORDER BY i.occurred_at DESC LIMIT ?`).all(...ids, limit * 3);
+    return rows.filter((r) => allow(r.sourceId)).slice(0, limit);
+  }
+
+  // Forget a person: their one-to-one mail is deleted, every address of theirs is blocked from being read again, their identities and
+  // what links them to mail go. Meetings they were in stay (they are the person's own record); the count is returned so it can be said.
+  // -> { items, addresses, meetings }
+  forget(entityId, { items = null } = {}) {
+    const id = this.final(entityId) || entityId;
+    const ent = this.db.prepare('SELECT id FROM entities WHERE id = ?').get(id);
+    if (!ent) throw err('person not found', 404);
+    const emails = this.emailsOf(id);
+    let purged = 0;
+    for (const r of this.db.prepare('SELECT DISTINCT item_id AS id FROM item_mentions WHERE entity_id = ?').all(id)) {
+      const row = this.db.prepare('SELECT meta FROM items WHERE id = ?').get(r.id);
+      const people = (parse(row?.meta, {}).people || []).filter((e) => !emails.includes(e));
+      if (people.length <= 1) { if (items?.purgeItem?.(r.id)) purged++; }        // a thread with them and (at most) one other: theirs to forget
+    }
+    const meetings = this.noteIds(id).length;
+    this.tx(() => {
+      for (const e of emails) this.db.prepare('INSERT OR IGNORE INTO blocked_addresses (address, created_at) VALUES (?, ?)').run(e, this.now());
+      this.db.prepare('DELETE FROM item_mentions WHERE entity_id = ?').run(id);
+      this.db.prepare("DELETE FROM entity_identities WHERE entity_id = ? AND kind IN ('email', 'account')").run(id);
+    });
+    this.bus?.publish('people.changed', { id });
+    return { items: purged, addresses: emails.length, meetings };
+  }
+
   // Every meeting that is not yet reflected (for the start-up job): the next batch after `after` (a rowid), or null when done.
   backfillBatch(after = 0, size = 100) {
     const rows = this.db.prepare(`SELECT rowid AS rid, id FROM notes n WHERE rowid > ? AND (n.attendees <> '[]' OR EXISTS (SELECT 1 FROM note_speakers s WHERE s.note_id = n.id))
@@ -278,7 +334,7 @@ class Entities {
 
   // people nobody is in any meeting with any more (a name was corrected, a meeting deleted) are dropped, unless a merge needs them
   prune() {
-    this.db.prepare(`DELETE FROM entities WHERE merged_into IS NULL AND id NOT IN (SELECT entity_id FROM mentions)
+    this.db.prepare(`DELETE FROM entities WHERE merged_into IS NULL AND id NOT IN (SELECT entity_id FROM mentions) AND id NOT IN (SELECT entity_id FROM item_mentions)
       AND id NOT IN (SELECT merged_into FROM entities WHERE merged_into IS NOT NULL)
       AND id NOT IN (SELECT into_id FROM entity_merges WHERE undone_at IS NULL)`).run();
   }

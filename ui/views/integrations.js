@@ -12,6 +12,7 @@ const rpcLabel = (r) => (r.call ? rpcLine(r) : t(RPC_STATE[r.state] || r.state))
 
 export async function render(main) {
   const ints = S.integrations = await api('GET', '/api/integrations');
+  const tsrc = await api('GET', '/api/transcript-sources').catch(() => []);
   const s = S.settings;
   const g = ints.google;
   main.innerHTML = `<div class="page">
@@ -19,11 +20,12 @@ export async function render(main) {
     <div class="cols-2">
       ${card('google', '#4285f4', 'calendar', 'Google Calendar', g.connected ? `${t('Connected')} · ${esc(g.email || '')}` : t('See meetings, get reminded, recognise and record them'), g.connected, `
         ${g.connected ? `<div class="stack tight">${(g.calendars || []).length ? `<div class="xsmall muted strong">${t('Calendars to use')}</div><div class="picklist" style="max-height:200px">${g.calendars.map((c) => `<label><input type="checkbox" class="cbx" data-gcal="${esc(c.id)}" ${c.selected ? 'checked' : ''}><span class="dot" style="width:10px;height:10px;border-radius:50%;background:${esc(c.color || '#888')}"></span><span class="grow ellipsis">${esc(c.summary)}</span>${c.primary ? `<span class="badge">${t('primary')}</span>` : ''}</label>`).join('')}</div>` : ''}
+          <div class="field"><label for="g-detail">${t('What WhisperBrain sees of each event')}</label><select id="g-detail"><option value="full" ${(S.settings.google.calendarDetail || 'full') === 'full' ? 'selected' : ''}>${t('Everything: title, people, notes and join links')}</option><option value="busy" ${S.settings.google.calendarDetail === 'busy' ? 'selected' : ''}>${t('Only when I am busy')}</option></select><div class="hint">${t('“Only when I am busy” hides titles, people and links. Meetings can then no longer be recognised by their invitation.')}</div></div>
           <div class="row"><button class="btn sm" data-act="g-refresh">${icon('refresh', 'sm')} ${t('Refresh list')}</button><button class="btn sm danger-outline" data-act="g-disconnect">${t('Disconnect')}</button></div></div>` : `
         <div class="seg-ctl full" role="tablist"><button type="button" role="tab" data-gmode="oauth" aria-selected="true">${t('Sign in with Google')}</button><button type="button" role="tab" data-gmode="ical" aria-selected="false">${t('Secret iCal link')}</button></div>
         <div data-gpane="oauth" class="stack">
           ${g.builtIn ? `<p class="hint" style="margin:0">${t('Your browser opens so you can approve read-only access. There is nothing to copy or paste.')}</p>
-          <label class="row" style="gap:8px;align-items:center"><input type="checkbox" class="cbx" id="g-mail"><span class="small">${t('Also read my email (Gmail, read-only)')}</span></label>
+          <div class="xsmall muted">${t('This only reads your calendar. To read mail, add a mailbox under Folders & vaults: you choose there what is read and what Google is asked for.')} <a href="#/sources">${t('Folders & vaults')}</a></div>
           <div class="row"><button class="btn primary" data-act="g-connect">${icon('lock', 'sm')} ${t('Sign in with Google')}</button><span class="small muted" id="g-status"></span></div>
           <details><summary class="small muted" style="cursor:pointer">${t('Use my own Google client instead')}</summary><div class="stack" style="margin-top:8px">` : ''}
           <ol class="steps"><li>${t('In Google Cloud Console create a project and enable the')} <b>Google Calendar API</b>.</li><li>${t('Credentials → Create credentials → OAuth client ID → type')} <b>${t('Desktop app')}</b>.</li><li>${t('Paste the client ID and secret here and press Connect. Your browser opens to approve read-only access.')}</li></ol>
@@ -83,12 +85,32 @@ export async function render(main) {
         <div class="hint">${t('Each POST carries the meeting as JSON (summary, notes, action items, topics, transcript, Markdown). With a secret, it is signed in X-WhisperBrain-Signature (HMAC-SHA256).')}</div>
         <div class="row"><button class="btn" data-act="hook-add">${icon('plus', 'sm')} ${t('Add webhook')}</button></div>`)}
 
+      ${tsrc.map((x) => transcriptCard(x, s)).join('')}
+
       ${card('files', '#10b981', 'upload', t('Files'), t('Audio, video, transcripts (VTT, SRT, TXT, JSON), documents (Markdown, DOCX, HTML, CSV)'), true, `
         <div class="small muted">${t('Zoom, Teams and Meet transcript exports, Otter and other tools’ text exports, Whisper/AssemblyAI/Deepgram JSON and WhisperBrain backups are recognised with their speakers. Imported meetings are kept apart under “From outside”.')}</div>
         <div class="row"><button class="btn primary" data-act="import-files">${icon('upload', 'sm')} ${t('Import files')}</button></div>`)}
     </div></div>`;
   bind(main, ints);
   if (ints.linear.configured) loadTeams(ints).catch((e) => { const st = $('#l-status'); if (st) st.textContent = `✗ ${e.message}`; });
+}
+
+// The meeting platforms' own transcripts (Teams, Meet, Zoom): the app each person registered with the platform, then Sign in. Each one
+// reads only the transcript of a meeting you ask for; it is never read in the background unless you set that in Meetings & detection.
+const TS = {
+  teams: { color: '#5059c9', ic: 'video', setting: 'microsoft', hint: 'Register an app in Microsoft Entra (Azure) with the delegated permissions OnlineMeetings.Read and OnlineMeetingTranscript.Read.All, redirect http://localhost, and paste its id here. Some organisations need an admin to agree to these permissions.', tenant: true },
+  meet: { color: '#00897b', ic: 'video', setting: 'googleMeet', hint: 'In Google Cloud, enable the Google Meet API and make a Desktop-app OAuth client with the scope meetings.space.readonly. Paste its id and secret here.' },
+  zoom: { color: '#2d8cff', ic: 'video', setting: 'zoom', hint: 'Make a user-managed OAuth app at marketplace.zoom.us (cloud recording transcripts) and paste its id and secret here.' },
+};
+function transcriptCard(x, s) {
+  const d = TS[x.id]; if (!d) return '';
+  const c = s[d.setting] || {};
+  return card(`ts-${x.id}`, d.color, d.ic, `${x.label} ${t('transcripts')}`, x.connected ? t('Connected') : x.configured ? t('Set up — sign in to connect') : t('Fetch the platform’s own transcript of a meeting, with the names of who spoke'), x.connected, `
+    <div class="small muted">${t(d.hint)}</div>
+    ${field(`ts-id-${x.id}`, t('Client ID'), `<input id="ts-id-${x.id}" value="${esc(c.clientId || '')}" autocomplete="off" spellcheck="false">`)}
+    ${x.id !== 'teams' ? field(`ts-secret-${x.id}`, t('Client secret'), `<input id="ts-secret-${x.id}" type="password" value="${c.clientSecret ? MASK : ''}" autocomplete="off">`) : field('ts-tenant-teams', t('Tenant (organizations, common or an id)'), `<input id="ts-tenant-teams" value="${esc(c.tenant || 'organizations')}" autocomplete="off">`)}
+    <div class="row"><button class="btn primary" data-ts="save" data-id="${x.id}">${t('Save & sign in')}</button>${x.connected ? `<button class="btn" data-ts="off" data-id="${x.id}">${t('Disconnect')}</button>` : ''}<span class="small" id="ts-status-${x.id}"></span></div>
+    <div class="xsmall muted">${t('Experimental: not yet tried against the real platform. It reads the transcript of a meeting only when you ask for it.')}</div>`);
 }
 
 function card(key, color, ic, title, sub, connected, body) {
@@ -117,10 +139,26 @@ function bind(main, ints) {
     const b = e.target.closest('button');
     if (!b) return;
     const a = b.dataset.act;
+    if (b.dataset.ts) {
+      const id = b.dataset.id, setting = TS[id].setting, say = (msg, ok) => { const el = $(`#ts-status-${id}`); if (el) { el.textContent = msg; el.style.color = ok ? 'var(--ok)' : 'var(--danger)'; } };
+      try {
+        if (b.dataset.ts === 'off') { await api('DELETE', `/api/transcript-sources/${id}`); render(main); return; }
+        const patch = { clientId: $(`#ts-id-${id}`).value.trim() };
+        const sec = $(`#ts-secret-${id}`)?.value; if (sec && sec !== MASK) patch.clientSecret = sec.trim();
+        if (id === 'teams') patch.tenant = $('#ts-tenant-teams').value.trim() || 'organizations';
+        await save({ [setting]: { ...S.settings[setting], ...patch } });
+        const r = await api('POST', `/api/transcript-sources/${id}/connect`);
+        say(t('Waiting for you to approve in the browser…'), true);
+        if (r.authUrl) window.open(r.authUrl, '_blank', 'noopener');
+        const onEv = (ev) => { if (['transcript-source.connected', 'transcript-source.error'].includes(ev.detail.type) && ev.detail.data?.id === id) { window.removeEventListener('wb:event', onEv); render(main); } };
+        window.addEventListener('wb:event', onEv);
+      } catch (err) { say(err.message, false); }
+      return;
+    }
     try {
       if (a === 'g-connect') {
         b.disabled = true;
-        const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim(), gmail: !!$('#g-mail')?.checked });
+        const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim(), gmail: false });
         $('#g-status').innerHTML = `${t('Waiting for you to approve in the browser…')} ${r.opened ? '' : `<a href="${esc(r.authUrl)}" target="_blank" rel="noopener noreferrer">${t('Open the Google sign-in page')}</a>`}`;
         if (!r.opened) window.open(r.authUrl, '_blank', 'noopener');
         const onEv = (ev) => { if (ev.detail.type === 'google.connected' || ev.detail.type === 'google.error') { window.removeEventListener('wb:event', onEv); render(main); } };
@@ -205,6 +243,7 @@ function bind(main, ints) {
   main.onchange = async (e) => {
     try {
       if (e.target.dataset.gcal !== undefined) { const sel = $$('[data-gcal]', main).filter((x) => x.checked).map((x) => x.dataset.gcal); await api('PUT', '/api/google/calendars', { selected: sel }); S.settings = await api('GET', '/api/settings'); done(); }
+      else if (e.target.id === 'g-detail') { await save({ google: { calendarDetail: e.target.value } }); await api('GET', '/api/calendar/events?refresh=1').catch(() => {}); done(); }
       else if (e.target.id === 'n-auto') { await save({ notion: { autoExport: e.target.checked } }); done(); }
       else if (e.target.id === 'l-team') { const o = e.target.selectedOptions[0]; await save({ linear: { teamId: e.target.value, teamName: o?.dataset.name || '' } }); done(); }
       else if (e.target.dataset.hookAuto) { await save({ webhooks: S.settings.webhooks.map((w) => (w.id === e.target.dataset.hookAuto ? { ...w, auto: e.target.checked } : w)) }); done(); }

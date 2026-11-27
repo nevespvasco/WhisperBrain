@@ -6,19 +6,21 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { postWebhook } = require('../integrations/webhook');
+const { audit, needsSecondYes, argsHash } = require('../access/guards');
 
 const newId = () => `ac_${crypto.randomBytes(6).toString('hex')}`;
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
 const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
 
-const row = (r) => r && ({ id: r.id, kind: r.kind, title: r.title, args: parse(r.args, {}), state: r.state, origin: r.origin, assertionId: r.assertion_id, result: parse(r.result, null), error: r.error, createdAt: r.created_at, decidedAt: r.decided_at, expiresAt: r.expires_at ?? null });
+const row = (r) => r && ({ id: r.id, kind: r.kind, title: r.title, args: parse(r.args, {}), state: r.state, origin: r.origin, assertionId: r.assertion_id, result: parse(r.result, null), error: r.error, createdAt: r.created_at, decidedAt: r.decided_at, expiresAt: r.expires_at ?? null, flags: parse(r.flags, []), provenance: parse(r.provenance, []), needsSecondYes: needsSecondYes(parse(r.flags, [])) });
 const EXPIRE_MS = 7 * 86_400_000;   // a proposal nobody decided on in a week is no longer what anyone meant: it expires
 
 class Actions {
   // handlers: { kind: { label, build(input, deps) -> { title, args }, run(args, deps) -> result } }
   // allowed(kind, args) -> false when the source's grant no longer allows this action (src/access/grants.js); checked when proposing
   // AND again when running, so narrowing a grant stops a proposal that is still waiting.
-  constructor({ db, bus = null, handlers = {}, deps = {}, now = () => Date.now(), allowed = null, expireMs = EXPIRE_MS }) { Object.assign(this, { db, bus, handlers, deps, now, allowed, expireMs }); }
+  // onRun({ kind, args, ok, error }): told after every run (the access log)
+  constructor({ db, bus = null, handlers = {}, deps = {}, now = () => Date.now(), allowed = null, expireMs = EXPIRE_MS, onRun = null }) { Object.assign(this, { db, bus, handlers, deps, now, allowed, expireMs, onRun }); }
 
   get(id) { return row(this.db.prepare('SELECT * FROM actions WHERE id = ?').get(id)); }
   pending() { this.expire(); return this.db.prepare("SELECT * FROM actions WHERE state = 'pending' ORDER BY created_at").all().map(row); }
@@ -33,25 +35,34 @@ class Actions {
   kinds() { return Object.entries(this.handlers).map(([kind, h]) => ({ kind, label: h.label, ready: h.ready ? !!h.ready(this.deps) : true })); }
 
   // Make a proposal. It changes nothing anywhere.
-  propose(kind, input = {}, { origin = 'user', assertionId = null } = {}) {
+  // provenance: the source ids the proposal's text was made from. A handler's build() may return { outbound: { recipients, urls, text }, context:
+  // { people, text, sourceId } }: what the guards (src/access/guards.js) compare it with.
+  propose(kind, input = {}, { origin = 'user', assertionId = null, provenance = [] } = {}) {
     const h = this.handlers[kind];
     if (!h) throw err(`unknown action "${kind}"`);
     if (h.ready && !h.ready(this.deps)) throw err(`${h.label} is not connected yet.`, 412);
-    const { title, args } = h.build(input, this.deps);
+    const built = h.build(input, this.deps);
+    const { title, args } = built;
     if (this.allowed && !this.allowed(kind, args)) throw err(`What ${h.label} may do does not include this. Change it in Access first.`, 403);
+    const flags = built.outbound ? audit({ outbound: built.outbound, context: { ...(built.context || {}), typed: Array.isArray(input.typedRecipients) ? input.typedRecipients : [], provenance, sourceId: args.sourceId } }) : [];
     const id = newId();
-    this.db.prepare('INSERT INTO actions (id, kind, title, args, origin, assertion_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(id, kind, String(title).slice(0, 200), JSON.stringify(args), origin, assertionId, this.now(), this.expireMs ? this.now() + this.expireMs : null);
+    this.db.prepare('INSERT INTO actions (id, kind, title, args, origin, assertion_id, created_at, expires_at, flags, provenance, args_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, kind, String(title).slice(0, 200), JSON.stringify(args), origin, assertionId, this.now(), this.expireMs ? this.now() + this.expireMs : null, JSON.stringify(flags), JSON.stringify(provenance), argsHash(args));
     this.bus?.publish('actions.changed', { id });
     return this.get(id);
   }
 
   // A person said yes: run it once with the arguments that were shown. The row is CLAIMED first (pending -> running in one
   // statement), so a double click, two windows or a retry can never run it twice: only the call that changed the row runs it.
-  async approve(id) {
+  // confirmRisky: the second, separate yes for what the guards flagged as able to leak (a new recipient, material from another source)
+  async approve(id, { confirmRisky = false } = {}) {
     this.expire();
     const a = this.get(id);
     if (!a) throw err('not found', 404);
     if (a.state !== 'pending') throw err(`this action is already ${a.state}`, 409);
+    if (a.needsSecondYes && !confirmRisky) throw Object.assign(err('This needs a second, separate yes: it was flagged (see the warnings).', 409), { code: 'confirm-needed' });
+    const stored = this.db.prepare('SELECT args_hash AS h FROM actions WHERE id = ?').get(id)?.h;
+    if (stored && stored !== argsHash(a.args)) { this.db.prepare("UPDATE actions SET state = 'rejected', decided_at = ?, error = ? WHERE id = ? AND state = 'pending'").run(this.now(), 'its arguments changed after they were shown', id); this.bus?.publish('actions.changed', { id }); throw err('The action was changed after it was shown, so it was not run.', 409); }
     const h = this.handlers[a.kind];
     if (!h) throw err(`unknown action "${a.kind}"`, 409);
     if (this.allowed && !this.allowed(a.kind, a.args)) {
@@ -64,8 +75,10 @@ class Actions {
     try {
       const result = await h.run(a.args, this.deps);
       this.db.prepare("UPDATE actions SET state = 'done', result = ? WHERE id = ?").run(JSON.stringify(result ?? null), id);
+      try { this.onRun?.({ kind: a.kind, args: a.args, ok: true }); } catch { /* the log never breaks an action */ }
     } catch (e) {
       this.db.prepare("UPDATE actions SET state = 'failed', error = ? WHERE id = ?").run(String(e.message).slice(0, 500), id);
+      try { this.onRun?.({ kind: a.kind, args: a.args, ok: false, error: e.message }); } catch { /* idem */ }
     }
     this.bus?.publish('actions.changed', { id });
     return this.get(id);

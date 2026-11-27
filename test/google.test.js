@@ -286,7 +286,7 @@ test('google: disconnect revokes (best effort) and clears tokens but keeps the c
   const { gc, cfg } = rig(g, { refreshToken: 'rt-9', accessToken: 'at', expiresAt: T0 + 1, email: 'me@example.com', calendars: [{ id: 'x' }] });
   await gc.disconnect();
   assert.deepEqual(g.revoked, ['rt-9']);
-  assert.deepEqual({ ...cfg() }, { clientId: 'cid.apps.googleusercontent.com', clientSecret: 'shh', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false });   // and mail is no longer connected
+  assert.deepEqual({ ...cfg() }, { clientId: 'cid.apps.googleusercontent.com', clientSecret: 'shh', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], gmail: false, scopes: [], needsReconnect: false });   // and mail is no longer connected
   const offline = rig({ urls: { ...g.urls, revokeUrl: 'http://127.0.0.1:1/revoke' } }, { refreshToken: 'rt' });
   await offline.gc.disconnect();
   assert.equal(offline.cfg().refreshToken, '', 'a failed revoke still disconnects');
