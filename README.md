@@ -14,7 +14,7 @@
 **Type your notes, record the call, get a transcript that says _who_ said what.**<br>
 Then enhance the notes and chat with them using any LLM you choose.
 
-[Quick start](#quick-start) · [Features](#features) · [How it works](#how-it-works) · [Privacy](#privacy) · [Docs](#documentation) · [Development](#development)
+[Tour](#a-quick-tour) · [Quick start](#quick-start) · [Features](#features) · [How it works](#how-it-works) · [Privacy](#privacy) · [Docs](#documentation) · [Development](#development)
 
 </div>
 
@@ -24,9 +24,9 @@ WhisperBrain is a meeting notepad that keeps everything on your computer. Audio 
 
 <div align="center">
 
-![A meeting summary with overview, key points, speakers and topics](docs/screenshots/meeting-summary.png)
+![A meeting page: the AI summary with an overview and key-point cards, next to the speaker table with talk time, words per minute and talk/listen share](docs/screenshots/meeting-summary.png)
 
-![The transcript with each voice labelled, the timeline of who spoke, and dark mode](docs/screenshots/transcript.png)
+<sub>A meeting after the call: your notes and the transcript turned into an overview and key points, with who spoke, how fast and for how long.</sub>
 
 </div>
 
@@ -43,7 +43,7 @@ Microphone (**Me**) and system audio (**Them**) as separate channels, with live 
 <td width="33%" valign="top">
 
 ### 🗣️ Knows who spoke
-Voice prints, live clustering, one-click naming, voices remembered across meetings, and names read from the Meet or Discord call itself.
+Voice prints, live clustering, one-click naming, voices remembered across meetings, and names read from the Meet, Teams, Zoom or Discord call itself.
 
 </td>
 <td width="33%" valign="top">
@@ -74,6 +74,61 @@ Google Calendar, Notion, Obsidian, Linear, signed webhooks, and import or export
 </td>
 </tr>
 </table>
+
+## A quick tour
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+<a href="docs/screenshots/home.png"><img src="docs/screenshots/home.png" alt="The Today page: new meeting card, counters, recent meetings and the to-do list"></a>
+
+**Today.** Start an online, in-person or uploaded meeting from one card. Below it: how many meetings, open action items, topics and glossary terms you have, your recent meetings with their summaries, and a to-do list gathered from every call. The rail on the left holds the four doors (Today, Ask, Library, Setup) and the Record button.
+
+</td>
+<td width="50%" valign="top">
+
+<a href="docs/screenshots/transcript.png"><img src="docs/screenshots/transcript.png" alt="The transcript in dark mode with each speaker named, a coloured timeline and the speaker table"></a>
+
+**Transcript.** Every line carries its speaker. The coloured bar shows who spoke when; click a name to rename it or remember the voice, or merge two speakers. Glossary terms are underlined with their definition, and the side panel adds talk time, words per minute and how many questions each person asked.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+<a href="docs/screenshots/ask.png"><img src="docs/screenshots/ask.png" alt="Ask AI answering a question across meetings, with links to the meetings it used"></a>
+
+**Ask AI.** Ask across all your meetings in plain words ("what did we decide about the beta, and who owns what?"). The answer lists the meetings it was built from, and each one opens with a click. To ask about one meeting only, use that meeting's Chat tab.
+
+</td>
+<td valign="top">
+
+<a href="docs/screenshots/palette.png"><img src="docs/screenshots/palette.png" alt="The Ctrl K search palette showing meetings and who-said-it quotes for the word beta"></a>
+
+**Search (Ctrl K).** One box over meetings, transcript lines, topics, people, glossary, tags, action items and your notes and files. Filter chips narrow it down, and *Who said it* finds the exact quote, the person and the moment in the call.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+<a href="docs/screenshots/topics.png"><img src="docs/screenshots/topics.png" alt="The topic map: topics as dots joined when discussed in the same meeting, with themes by colour"></a>
+
+**Topics.** Subjects are pulled out of each meeting and reused across them, so meetings connect. The map joins topics discussed together and colours them by theme; Themes, Trends and List give other views, filtered by period.
+
+</td>
+<td valign="top">
+
+<a href="docs/screenshots/actions.png"><img src="docs/screenshots/actions.png" alt="Action items grouped by meeting, each with its owner"></a>
+
+**Action items.** Found in your meetings automatically, each with an owner and, when someone said one, a due date. Group them by meeting, tick them off, edit them, or send them to Linear.
+
+</td>
+</tr>
+</table>
+
+<sub>All screenshots use a throwaway workspace with fictional people and meetings. The summaries, topics and answers were made by a local `llama3.1:8b` through Ollama.</sub>
 
 ## Quick start
 
@@ -160,7 +215,8 @@ flowchart LR
 | **Record** | Mic ("Me") and system audio ("Them") as separate channels, live transcript, levels, pause/resume, echo removal ([details](docs/echo-cancellation.md)) |
 | **Live draft captions** | Optional streaming model shows dimmed draft words while people speak, replaced by the final text ([details](docs/live-draft-captions.md)) |
 | **Who is talking** | Voice prints per utterance, live clustering into *Speaker 1, 2…*, one-click naming with attendee suggestions, "remember this voice" across meetings, per-line reassignment |
-| **Names from the call** | On a Google Meet call, reads who is on the call and who is speaking from the meeting window (the browser's accessibility tree, or a small browser extension, with a local vision model as a last resort). Puts the right name on each voice, uses the people on the call as the number of voices, joins and splits voices where the names say so, and remembers voices named beyond doubt. See [docs/meeting-names.md](docs/meeting-names.md) |
+| **Names from the call** | On a Google Meet, Teams, Zoom or Discord call, reads who is on the call and who is speaking from the meeting window (the browser's accessibility tree, or a small browser extension, with a local vision model as a last resort; the Teams and Zoom desktop apps through the accessibility tree). Puts the right name on each voice, uses the people on the call as the number of voices, joins and splits voices where the names say so, and remembers voices named beyond doubt. The extension can also record only the call's browser tab as the "Them" channel, and after a Teams, Zoom or Meet recording WhisperBrain can offer the platform's own transcript. **None of the platforms' selectors has met a real call yet** (they are tested on simulated pages), so names may be missing until they are checked. See [docs/meeting-names.md](docs/meeting-names.md) |
+| **Discord without a bot** | Connects to your running Discord app over its local RPC to see who is in your voice channel and who is speaking, so voices get Discord names and the number of voices is known, with no bot to add to a server. Accounts are kept as people (`discord:<id>`). When the bot is in the same call, the bot is used instead. Not yet checked on a real call ([docs/discord-rpc.md](docs/discord-rpc.md)) |
 | **Speaker double-check** | When you press Stop, the recording is analysed again for **pitch and timbre** (MFCC voice colour, brightness) on top of the voice model: misjudged utterances are re-assigned, two people the voice model merged are split, one person it cut in two is rejoined, and pitch is kept so a saved voice is never matched to a clearly different voice. Runs only after capture ends, so live transcription is never slowed down |
 | **Discord bot** | A bot in your Discord voice channel hears every person on their own audio stream (a computer only plays one mixed sound), so overlapping speech is kept and each line carries the person's Discord name. Handles Discord's end-to-end encrypted calls (DAVE). Falls back to normal system audio when you are not in a call |
 | **Floating recorder** | While recording and WhisperBrain is minimised, hidden or behind another window, a small always-on-top icon (pulsing dot, timer, level) floats in the corner. Click it to read the live transcript with names, pause or stop, or jump back to the note; drag it anywhere |
@@ -243,7 +299,8 @@ Only three things differ per OS; everything else is shared code.
 | [Architecture](docs/architecture.md) | Module layout and per-OS platform adapters |
 | [Echo cancellation](docs/echo-cancellation.md) | The two layers, the Linux PipeWire helper, what is untested on macOS and Windows |
 | [Live draft captions](docs/live-draft-captions.md) | Streaming drafts, their cost, and how to measure it |
-| [Names from the meeting window](docs/meeting-names.md) | How speaker names are read from Meet, and what is verified |
+| [Names from the meeting window](docs/meeting-names.md) | How speaker names are read from Meet, Teams, Zoom and Discord, tab audio, platform transcripts, and what is verified |
+| [Discord without a bot](docs/discord-rpc.md) | Local RPC, how names reach the vote, what is measured and what needs a real call |
 | [Meeting assistant](docs/assistant.md) | Live suggestions, briefings, live summary, shortcuts, privacy, measurements |
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
