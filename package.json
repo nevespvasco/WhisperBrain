@@ -1,6 +1,6 @@
 {
   "name": "whisperbrain",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local-first AI notepad: record meetings, transcribe on-device, summarize and chat with your own LLM.",
   "main": "electron/main.js",
   "private": true,
