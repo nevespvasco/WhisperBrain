@@ -33,6 +33,10 @@ semana semanas mês meses ano anos hora horas minuto minutos gente pessoal ah eh
 bro bruh dude mate buddy man men woman girl boy lol lmao haha hahaha wow damn shit fuck fucking crap omg wtf yo sup huh
 nah yep yup nope cheers sorry welcome sir mam dear mano mana cara meu mano pah bué bue fixe fogo caramba puto porra
 merda carago pois pronto olha olhe ouve epá eá ya yá tás estás tou estou sabes percebes basicamente tipo
+zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen
+twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million billion first second third half double
+um dois duas três quatro cinco seis sete oito nove dez onze doze treze catorze quinze vinte trinta quarenta cinquenta sessenta
+setenta oitenta noventa cem mil milhão milhões além disso nisso disto desse dessa nesse nessa deste desta neste nesta dele dela deles delas comigo contigo
 `.split(/\s+/).filter(Boolean));
 
 // Words that are real but say nothing about a subject: a topic can never be only these.
@@ -48,6 +52,8 @@ empresa caso casos opção opções resultado resultados mudança mudanças info
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}'’\-]*/gu;
 const CONTRACTION = /['’](?:t|re|ll|ve|m|d)$|n['’]t$/i;
 const fold = (s) => s.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '');
+// words are looked up folded (no accents, lower case), so the lists must hold the folded form too: "também" was never matched
+for (const set of [STOP, GENERIC]) for (const w of [...set]) set.add(fold(w));
 
 // Phrase key used to match the same topic across meetings ("Pricing models" ≈ "pricing model").
 function phraseKey(s) {
@@ -61,6 +67,7 @@ function candidates(text) {
   for (const sentence of String(text).split(/[.!?;:\n()\[\]{}"“”,…]+/)) {
     const toks = sentence.match(WORD) || [];
     let run = [];
+    run.mid = [];
     const flush = () => {
       for (let i = 0; i < run.length; i++) {
         for (let n = 1; n <= 3 && i + n <= run.length; n++) {
@@ -69,20 +76,21 @@ function candidates(text) {
           const form = words.join(' ');
           const key = phraseKey(form);
           if (!key) continue;
-          const e = out.get(key) || { count: 0, forms: new Map(), caps: 0, n };
+          const e = out.get(key) || { count: 0, forms: new Map(), caps: 0, proper: 0, n };
           e.count++;
+          if (run.mid[i] && /^\p{Lu}/u.test(words[0])) e.proper++;   // capitalised mid-sentence: a name, not just a sentence start
           e.forms.set(form, (e.forms.get(form) || 0) + 1);
           if (words.every((w) => /^\p{Lu}/u.test(w))) e.caps++;
           out.set(key, e);
         }
       }
-      run = [];
+      run = []; run.mid = [];
     };
-    for (const tok of toks) {
-      if (CONTRACTION.test(tok)) { flush(); continue; } // don't, we're, I'll, it's … are never topics
+    toks.forEach((tok, ti) => {
+      if (CONTRACTION.test(tok)) { flush(); return; } // don't, we're, I'll, it's … are never topics
       const w = tok.replace(/['’]s$/i, '');
-      if (STOP.has(fold(w)) || /^\d+$/.test(w)) flush(); else run.push(w);
-    }
+      if (STOP.has(fold(w)) || /^\d+$/.test(w)) flush(); else { run.mid.push(ti > 0); run.push(w); }
+    });
     flush();
   }
   return out;
@@ -130,6 +138,13 @@ function extract(text, corpus = { df: new Map(), docs: 1 }, { max = 6, strict = 
     if (corpus.docs > 3 && df / corpus.docs > 0.6) score *= 0.3; // in most meetings: not a topic, just vocabulary
     const form = [...e.forms.entries()].sort((a, b) => b[1] - a[1])[0][0];
     if (strict && (!isTopicName(form) || GENERIC.has(fold(form)))) continue;
+    // a lone word is a subject only when it is a name or an acronym, turns up in other meetings too, or the meeting is plainly about it:
+    // "broke", "believe", "pushing" said a few times are just talk
+    if (strict && !multi) {
+      const name = e.proper >= 2 || /^\p{Lu}{2,6}$/u.test(form);
+      if (!name && df < 3 && e.count < 4) continue;
+      if (!name && /(?:ly|ed|mente)$/i.test(form)) continue;   // adverbs and past tenses ("technically", "mentioned") are never a subject
+    }
     scored.push({ key, name: tidy(form), score, count: e.count });
   }
   scored.sort((a, b) => b.score - a.score);

@@ -78,7 +78,7 @@ test('keyphrases: multi-word subjects beat filler words, and plural/singular sha
 test('topics are real subjects: chatter, contractions and vague words never become topics, old junk is pruned', (t) => {
   for (const bad of ['Bro', "Don't", 'Yeah', 'Meeting', 'Update', 'The pricing', "Let's go", 'dont']) assert.ok(!kp.isTopicName(bad), bad);
   for (const good of ['Frontend', 'Filmes', 'Hiring plan', 'API', 'Machine learning']) assert.ok(kp.isTopicName(good), good);
-  const text = "Bro, don't do that bro. Bro I told you. The frontend is slow, frontend build and the frontend tests. Filmes de terror, filmes antigos, filmes.";
+  const text = "Bro, don't do that bro. Bro I told you. The frontend is slow, frontend build and the frontend tests, frontend again. Filmes de terror, filmes antigos, filmes, filmes.";
   const names = kp.extract(text, undefined, { strict: true, max: 4 }).map((x) => x.name.toLowerCase());
   assert.ok(!names.includes('bro') && !names.some((n) => n.includes("don't")), names.join());
   assert.ok(names.includes('frontend') && names.includes('filmes'));

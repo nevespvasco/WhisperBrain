@@ -1,7 +1,7 @@
 // Chat with one meeting, or across all of them (answers link back to their source meetings).
 // The answers sit in a fixed-height box with its own scrollbar (ui/follow.js): a new answer is followed as it is written, scrolling
 // up to re-read stops that and shows a floating arrow back to the newest message. The page around it never moves.
-import { S, $, api, t, esc, icon, fail, toast } from '../lib.js';
+import { S, $, api, t, esc, icon, fail, toast, confirmDialog } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
@@ -17,11 +17,11 @@ const emptyHtml = (suggestions) => `<div class="chat-empty"><span class="ic-wrap
 
 // onLayout: called after the chat is drawn (again), so a page that sizes the box itself (the meeting page) can do so
 export function renderChat(root, history, { noteId, suggestions, placeholder, onLayout }) {
-  root.innerHTML = `<div class="chat-wrap"><div class="chat boxed" id="chatlog" tabindex="0">${history.length ? history.map(bubble).join('') : emptyHtml(suggestions)}</div>
+  root.innerHTML = `${history.length ? `<div class="chat-tools"><button class="btn ghost xs" type="button" data-clear="1">${icon('trash', 'sm')}${t('Clear chat')}</button></div>` : ''}<div class="chat-wrap"><div class="chat boxed" id="chatlog" tabindex="0">${history.length ? history.map(bubble).join('') : emptyHtml(suggestions)}</div>
       <button type="button" class="jump-latest" id="chat-jump" hidden title="${t('Go to the newest message')}" aria-label="${t('Go to the newest message')}">${icon('chevdown', 'sm')}</button></div>
     ${!S.state?.llmConfigured ? `<div class="banner mt-s small">${icon('sparkles')}<div class="grow">${t('Chat needs an AI model (Ollama or any OpenAI-compatible server).')}</div><a class="btn xs" href="#/settings/ai">${t('Set up AI')}</a></div>` : ''}
     <form class="chat-input" id="chatform"><textarea rows="1" placeholder="${esc(placeholder)}" aria-label="${esc(placeholder)}"></textarea>
-      ${history.length ? `<button class="btn ghost icon" type="button" data-clear="1" title="${t('Clear chat')}" aria-label="${t('Clear chat')}">${icon('trash', 'sm')}</button>` : ''}<button class="btn primary icon" type="submit" aria-label="${t('Send')}">${icon('arrowright')}</button></form>`;
+      <button class="btn primary icon" type="submit" aria-label="${t('Send')}">${icon('arrowright')}</button></form>`;
   const form = $('#chatform', root), ta = $('textarea', form), log = $('#chatlog', root);
   const fol = follow(log, $('#chat-jump', root));
   log.follow = fol;
@@ -53,7 +53,7 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
   root.onclick = async (e) => {
     const chip = e.target.closest('[data-q]');
     if (chip) send(chip.dataset.q);
-    if (e.target.closest('[data-clear]')) { await api('DELETE', `/api/chat${noteId ? `?noteId=${noteId}` : ''}`); history.length = 0; renderChat(root, history, { noteId, suggestions, placeholder, onLayout }); }
+    if (e.target.closest('[data-clear]')) { if (!await confirmDialog(t('Clear this conversation? The questions and answers are deleted and cannot be brought back.'), { ok: t('Clear chat'), title: t('Clear chat') })) return; await api('DELETE', `/api/chat${noteId ? `?noteId=${noteId}` : ''}`); history.length = 0; renderChat(root, history, { noteId, suggestions, placeholder, onLayout }); }
   };
   onLayout?.();
   requestAnimationFrame(() => fol.end());

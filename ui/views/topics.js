@@ -86,12 +86,12 @@ function prepare(ov, days) {
   const firsts = topics.map((x) => x.firstAt).filter(Boolean);
   // at least eight weeks on screen so a handful of meetings still reads as a timeline
   const start = days ? now - days * DAY : Math.min(firsts.length ? Math.min(...firsts) : now, now - 56 * DAY);
-  const themes = clusterize(topics, adj, byId);
+  const themes = clusterize(topics, adj, byId, ov.titles || {});
   return { topics, byId, edges, adj, keyEdges: backbone(topics, edges, byId), themes, start, end: now };
 }
 
 // Label propagation over the co-occurrence graph: topics that keep turning up together end up in one theme.
-function clusterize(topics, adj, byId) {
+function clusterize(topics, adj, byId, titles = {}) {
   const label = new Map(topics.map((x) => [x.id, x.id]));
   const order = [...topics].sort((a, b) => b.notes - a.notes || a.name.localeCompare(b.name));
   for (let it = 0; it < 15; it++) {
@@ -120,12 +120,20 @@ function clusterize(topics, adj, byId) {
     const notes = new Set(th.members.flatMap((x) => x.noteIds));
     const out = { i, lone: !!th.lone, color, topics: th.members, meetings: notes.size, dates: [...new Set(th.members.flatMap((x) => x.dates))],
       lastAt: Math.max(0, ...th.members.map((x) => x.lastAt || 0)),
-      name: th.lone ? t('Standalone topics') : th.members.slice(0, 2).map((x) => x.name).join(' · ') };
+      name: th.lone ? t('Standalone topics') : themeName(th.members, notes, titles) };
     for (const x of th.members) { x.color = color; x.theme = out; }
     return out;
   });
 }
 const sum = (list) => list.reduce((s, x) => s + x.notes, 0);
+
+// A theme is named after what it is about: the meeting it comes from when all its topics were raised in one meeting (and that
+// meeting has a title), otherwise its two most-discussed topics, phrases ahead of single words.
+function themeName(members, noteIds, titles) {
+  if (noteIds.size === 1) { const ti = titles[[...noteIds][0]]; if (ti) return short(ti, 42); }
+  const rank = (x) => x.notes * 10 + Math.min(3, x.name.split(/\s+/).length) * 3;
+  return [...members].sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name)).slice(0, 2).map((x) => x.name).join(' · ');
+}
 
 // The links worth drawing: a maximum spanning forest (every topic hangs off its strongest partner, so the map
 // stays connected without a hairball) plus any pairing that recurs across meetings.

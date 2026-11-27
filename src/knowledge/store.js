@@ -21,6 +21,7 @@ class Knowledge {
     this.entities = new Entities({ db, settings, bus });   // people: identities, merges, mentions (src/graph/entities.js)
     this.entities.attach();
     try { this.pruneJunkTopics(); } catch { /* best effort */ }
+    try { this.refreshOfflineTopics(); } catch { /* best effort */ }
     bus?.subscribe((e) => { if (['note.created', 'note.deleted', 'note.updated', 'recording.stopped'].includes(e.type)) this.corpus = null; });
   }
 
@@ -36,6 +37,20 @@ class Knowledge {
       }
     });
     return bad.length;
+  }
+
+  // Once per extraction rule set: meetings whose topics were all worked out offline (an AI run leaves a one-line summary on
+  // each topic, offline ones have none) are worked out again, so words the old rules let through ("broke", "billion",
+  // "sixty four") leave the topic list. Topics the user attached by hand, and AI-made ones, are not touched.
+  refreshOfflineTopics(rev = 1) {
+    const KEY = '_topicsRev';
+    const done = Number(this.db.prepare('SELECT value FROM settings WHERE key = ?').get(KEY)?.value) || 0;
+    if (done >= rev) return 0;
+    const ids = this.db.prepare(`SELECT note_id AS id FROM note_topics GROUP BY note_id
+      HAVING SUM(CASE WHEN auto = 1 AND summary <> '' THEN 1 ELSE 0 END) = 0 AND SUM(auto) > 0`).all().map((r) => r.id);
+    for (const id of ids) { try { this.autoTopics(id); } catch { /* next one */ } }
+    this.db.prepare('INSERT INTO settings(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(KEY, String(rev));
+    return ids.length;
   }
 
   changed(what, data = {}) { this.bus?.publish('knowledge.changed', { what, ...data }); }
@@ -317,7 +332,11 @@ class Knowledge {
       for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) { const key = `${list[i]}|${list[j]}`; w.set(key, (w.get(key) || 0) + 1); }
     }
     const edges = [...w].map(([key, weight]) => { const [source, target] = key.split('|'); return { source, target, weight }; });
-    return { since, meetings: byNote.size, topics, edges };
+    // meeting titles, so a theme that is one meeting's topics can carry that meeting's name
+    const titles = {};
+    const getTitle = this.db.prepare('SELECT title FROM notes WHERE id = ?');
+    for (const noteId of byNote.keys()) { const ti = String(getTitle.get(noteId)?.title || '').trim(); if (ti) titles[noteId] = ti; }
+    return { since, meetings: byNote.size, topics, edges, titles };
   }
 
   // Offline topics for one meeting (used when no LLM is configured, and for imported meetings).

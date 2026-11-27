@@ -272,6 +272,93 @@ export function pickFrom(anchor, items, { current, placeholder, custom, search =
   });
 }
 
+// A calendar to pick one day from, drawn in the app's own style (the system one ignores the theme). Resolves to 'YYYY-MM-DD',
+// '' when the date is cleared, or undefined when it is dismissed. min: first day that can be picked.
+export function pickDate(anchor, { current = '', min = '', clearable = true } = {}) {
+  closeMenu();
+  return new Promise((resolve) => {
+    const iso = (d) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+    const today = iso(new Date());
+    const parse = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(v || '') ? new Date(`${v}T12:00:00`) : null);
+    const start = parse(current) || parse(min > today ? min : today) || new Date();
+    let y = start.getFullYear(), mo = start.getMonth();
+    const m = document.createElement('div');
+    m.className = 'menu datepick';
+    m.setAttribute('role', 'dialog');
+    m.setAttribute('aria-label', t('Due date'));
+    const monthName = (d) => d.toLocaleDateString(loc(), { month: 'long', year: 'numeric' });
+    // Monday first, in the user's language
+    const wk = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(loc(), { weekday: 'narrow' }));
+    let settled = false;
+    const finish = (v) => { if (settled) return; settled = true; if (openMenu === m) { closeMenu(); anchor.focus?.(); } else m.remove(); resolve(v); };
+    const draw = (focusDay) => {
+      const first = new Date(y, mo, 1), lead = (first.getDay() + 6) % 7, days = new Date(y, mo + 1, 0).getDate();
+      const cells = [];
+      for (let i = 0; i < lead; i++) cells.push('<span></span>');
+      for (let d = 1; d <= days; d++) {
+        const v = iso(new Date(y, mo, d, 12));
+        const off = min && v < min;
+        cells.push(`<button type="button" class="dp-day${v === today ? ' today' : ''}${v === current ? ' sel' : ''}" data-v="${v}" ${off ? 'disabled' : ''} aria-label="${esc(new Date(y, mo, d).toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }))}" ${v === current ? 'aria-pressed="true"' : ''}>${d}</button>`);
+      }
+      const prevOff = min && iso(new Date(y, mo, 0, 12)) < min;
+      m.innerHTML = `<div class="dp-head"><button type="button" class="btn ghost icon sm" data-nav="-1" ${prevOff ? 'disabled' : ''} aria-label="${t('Previous month')}">${icon('chevleft', 'sm')}</button><div class="dp-title" aria-live="polite">${esc(monthName(first))}</div><button type="button" class="btn ghost icon sm" data-nav="1" aria-label="${t('Next month')}">${icon('chevright', 'sm')}</button></div>
+        <div class="dp-grid dp-wk" aria-hidden="true">${wk.map((w) => `<span>${esc(w)}</span>`).join('')}</div>
+        <div class="dp-grid">${cells.join('')}</div>
+        <div class="dp-foot"><button type="button" class="btn ghost xs" data-v="${today}" ${min && today < min ? 'disabled' : ''}>${t('Today')}</button>${clearable && current ? `<button type="button" class="btn ghost xs" data-v="">${t('Clear')}</button>` : ''}</div>`;
+      if (focusDay) (m.querySelector('.dp-day.sel:not(:disabled)') || m.querySelector('.dp-day.today:not(:disabled)') || m.querySelector('.dp-day:not(:disabled)'))?.focus();
+    };
+    draw();
+    document.body.append(m);
+    const r = anchor.getBoundingClientRect();
+    const place = () => {
+      const mw = m.offsetWidth, mh = m.offsetHeight;
+      const left = Math.max(8, Math.min(r.left, innerWidth - mw - 8));
+      let top = r.bottom + 6;
+      if (top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+      m.style.left = `${left}px`; m.style.top = `${top}px`;
+    };
+    place();
+    m.addEventListener('click', (e) => {
+      const nav = e.target.closest('[data-nav]');
+      if (nav) { mo += Number(nav.dataset.nav); if (mo < 0) { mo = 11; y--; } else if (mo > 11) { mo = 0; y++; } draw(); place(); m.querySelector(`[data-nav="${nav.dataset.nav}"]:not(:disabled)`)?.focus(); return; }
+      const b = e.target.closest('[data-v]');
+      if (b && !b.disabled) finish(b.dataset.v);
+    });
+    m.addEventListener('keydown', (e) => {
+      const day = document.activeElement?.closest?.('.dp-day');
+      const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+      if (day && step) {
+        e.preventDefault();
+        const d = new Date(`${day.dataset.v}T12:00:00`); d.setDate(d.getDate() + step);
+        if (min && iso(d) < min) return;
+        y = d.getFullYear(); mo = d.getMonth(); draw(); place();
+        m.querySelector(`[data-v="${iso(d)}"]`)?.focus();
+      } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(undefined); }
+      else if (e.key === 'Tab' && !m.contains(document.activeElement)) finish(undefined);
+    });
+    openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+    const obs = new MutationObserver(() => { if (!m.isConnected) { obs.disconnect(); finish(undefined); } });
+    obs.observe(document.body, { childList: true });
+    setTimeout(() => draw(true), 0);
+  });
+}
+
+// Every date field opens that calendar instead of the system one, same value and same change event
+async function openDate(inp, anchor = inp) {
+  if (inp.dataset.open) return;
+  inp.dataset.open = '1';
+  const v = await pickDate(anchor, { current: inp.value, min: inp.min, clearable: !inp.required });
+  delete inp.dataset.open;
+  if (v === undefined || v === inp.value) return;
+  inp.value = v;
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+  inp.dispatchEvent(new Event('change', { bubbles: true }));
+}
+const ownDate = (el) => el?.tagName === 'INPUT' && el.type === 'date' && !el.disabled && !el.readOnly && !el.closest('[data-native]');
+document.addEventListener('mousedown', (e) => { if (e.button === 0 && ownDate(e.target) && e.target.offsetParent) { e.preventDefault(); e.target.focus(); if (openAnchor === e.target) closeMenu(); else openDate(e.target); } }, true);
+document.addEventListener('keydown', (e) => { if (ownDate(e.target) && (e.key === ' ' || e.key === 'Enter' || (e.altKey && e.key === 'ArrowDown'))) { e.preventDefault(); openDate(e.target); } }, true);
+export { openDate };
+
 // Every <select> opens the app's own list instead of the system one (which ignores the theme): same value, same
 // change event, so the code that reads them is untouched. data-native keeps the system list where it matters.
 const selectItems = (sel) => {

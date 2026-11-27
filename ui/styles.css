@@ -429,6 +429,9 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 
 .chat { display: grid; gap: 12px; }
 .chat-wrap { position: relative; }
+.chat-tools { display: flex; justify-content: flex-end; margin-bottom: 4px; flex: none; }
+.chat-tools .btn { color: var(--faint); }
+.chat-tools .btn:hover { color: var(--danger); background: var(--danger-soft); }
 .chat.boxed { height: clamp(280px, calc(100vh - 400px), 720px); overflow-y: auto; align-content: start; overscroll-behavior: auto; padding: 2px 6px 2px 2px; outline: none; }
 .chat-empty { display: grid; justify-items: center; align-content: center; gap: 12px; text-align: center; min-height: 100%; padding: 20px; }
 .chat-empty .ic-wrap { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; background: var(--accent-softer); color: var(--accent); }
@@ -655,6 +658,17 @@ dialog.link-dlg .hint { display: flex; align-items: center; gap: 6px; flex-wrap:
 .menu .sep { height: 1px; background: var(--line); margin: 4px 2px; }
 .menu .mh { font-size: 11.5px; color: var(--faint); font-weight: 600; padding: 6px 10px 2px; }
 /* searchable list (people, every <select>) */
+.menu.datepick { display: block; width: 280px; padding: 10px; }
+.datepick .dp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.datepick .dp-title { font-weight: 650; font-size: 14px; text-transform: capitalize; }
+.datepick .dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.datepick .dp-wk span { text-align: center; font-size: 11.5px; font-weight: 600; color: var(--faint); padding: 4px 0; text-transform: uppercase; }
+.datepick .dp-day { justify-content: center; padding: 0; height: 34px; border-radius: 9px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.datepick .dp-day.today { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); font-weight: 650; }
+.datepick .dp-day.sel, .datepick .dp-day.sel:hover { background: var(--accent); color: var(--accent-ink); font-weight: 650; box-shadow: none; }
+.datepick .dp-day:disabled { opacity: .3; }
+.datepick .dp-foot { display: flex; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.datepick .dp-foot .btn { color: var(--accent); }
 .menu.picker { padding: 0; gap: 0; display: flex; flex-direction: column; overflow: hidden; max-height: min(420px, 70vh); max-width: min(380px, calc(100vw - 16px)); }
 .picker .pk-search { position: relative; padding: 8px; border-bottom: 1px solid var(--line); flex: none; }
 .picker .pk-search .ic { position: absolute; left: 19px; top: 18px; color: var(--faint); }

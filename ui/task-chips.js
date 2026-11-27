@@ -1,6 +1,6 @@
 // The two chips a task is added with, wherever tasks are added (a meeting's action items, Promises): who owns it and when
 // it is due. Due dates start today: a task is never due in the past.
-import { t, esc, icon, avatar, fmtDate, api, toast, fail } from './lib.js';
+import { t, esc, icon, avatar, fmtDate, api, toast, fail, openDate } from './lib.js';
 
 // A task is deleted at once (no "are you sure?"), and can be brought back for a few seconds: same text, owner, due date and state.
 export function offerUndo(a, onRestored) {
@@ -36,7 +36,7 @@ export function dueClick(e, due) {
   const input = due.querySelector('input');
   if (e.target.closest('[data-act="due-clear"]')) { input.value = ''; input.dispatchEvent(new Event('change', { bubbles: true })); return; }
   input.min = todayIso();
-  try { input.showPicker(); } catch { input.focus(); }
+  openDate(input, due);
 }
 
 // The chip shows the date in words; the hidden field holds it
