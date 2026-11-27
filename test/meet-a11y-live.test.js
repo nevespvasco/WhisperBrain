@@ -10,7 +10,7 @@ const { ROOT } = require('./helpers');
 
 const which = (c) => { try { return cp.execFileSync('sh', ['-c', `command -v ${c}`], { encoding: 'utf8' }).trim(); } catch { return ''; } };
 const BROWSERS = ['brave-browser', 'google-chrome-stable', 'google-chrome', 'chromium', 'chromium-browser', 'microsoft-edge'];
-const browser = BROWSERS.map(which).find((p) => p && !fs.realpathSync(p).startsWith('/snap/')) || '';
+const browser = process.env.WB_BROWSER_BIN || BROWSERS.map(which).find((p) => p && !fs.realpathSync(p).startsWith('/snap/')) || '';
 const helper = path.join(ROOT, 'build', 'atspi', 'whisperbrain-atspi');
 const missing = process.platform !== 'linux' ? 'not Linux' : process.env.WB_SKIP_BROWSER ? 'WB_SKIP_BROWSER is set'
   : !which('Xvfb') ? 'no Xvfb' : !which('dbus-run-session') ? 'no dbus-run-session' : !browser ? 'no Chromium-based browser (a snap cannot be used)' : !fs.existsSync(helper) ? 'helper not built (npm run build:atspi)' : '';

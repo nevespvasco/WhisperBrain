@@ -68,7 +68,7 @@ test('extension: the manifest asks for no more than it needs', () => {
 const which = (c) => { try { return cp.execFileSync('sh', ['-c', `command -v ${c}`], { encoding: 'utf8' }).trim(); } catch { return ''; } };
 // Google Chrome and Edge (the branded builds) ignore --load-extension in recent versions, so only Chromium-based builds that honour it can run this
 const BROWSERS = ['brave-browser', 'chromium', 'chromium-browser'];
-const browser = BROWSERS.map(which).find((p) => p && !fs.realpathSync(p).startsWith('/snap/')) || '';
+const browser = process.env.WB_BROWSER_BIN || BROWSERS.map(which).find((p) => p && !fs.realpathSync(p).startsWith('/snap/')) || '';
 const missing = process.platform !== 'linux' ? 'not Linux' : process.env.WB_SKIP_BROWSER ? 'WB_SKIP_BROWSER is set' : !which('Xvfb') ? 'no Xvfb' : !browser ? 'no Brave or Chromium that is not a snap (branded Chrome and Edge ignore --load-extension)' : '';
 
 test('live: the extension in a real browser tells the app the call, the people, the speaker and the captions', { skip: missing || false, timeout: 90000 }, () => {

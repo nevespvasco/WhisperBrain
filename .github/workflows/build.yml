@@ -19,6 +19,14 @@ jobs:
       - run: npm run build:atspi
       # Hardware/model integration tests skip themselves when PipeWire or a speech model is absent.
       - run: node scripts/fetch-models.js parakeet-tdt-110m-en
+      # The live browser tests need a browser that can load an extension from the command line and expose its tree to AT-SPI.
+      # Google's branded Chrome stopped loading --load-extension (version 137); Chrome for Testing is the build made for automation.
+      - name: Chrome for Testing (for the live browser tests)
+        run: |
+          npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/cft"
+          BIN="$(find "$RUNNER_TEMP/cft" -name chrome -type f | head -1)"
+          echo "browser: $BIN"; "$BIN" --version
+          echo "WB_BROWSER_BIN=$BIN" >> "$GITHUB_ENV"
       - run: npm test
 
   # The meeting assistant is plain JavaScript and must behave the same on a Mac: its tests run there too (no audio, no AI server needed).
