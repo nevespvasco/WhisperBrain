@@ -25,7 +25,7 @@ function commands(q) {
     { title: t('Start recording a new meeting'), run: () => window.wb.startRec?.(), kbd: 'Ctrl ⇧ R', icon: 'mic' },
     { title: t('Import files (audio, transcripts, documents)'), run: () => window.wb.openImport(), kbd: 'Ctrl I', icon: 'upload' },
     { title: t('Export meetings'), run: () => window.wb.openExport(), icon: 'download' },
-    { title: t('Ask AI across all meetings'), href: '#/chat', icon: 'sparkles' },
+    { title: t('Ask AI about anything'), href: '#/chat', icon: 'sparkles' },
     { title: t('Go to Topics'), href: '#/topics', icon: 'network', kbd: 'G T' },
     { title: t('Go to Glossary'), href: '#/glossary', icon: 'book', kbd: 'G L' },
     { title: t('Go to Action items'), href: '#/actions', icon: 'list', kbd: 'G A' },

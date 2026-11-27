@@ -236,6 +236,8 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare, items, live: liveSearch, visible: (sid) => { const s = items.source(sid); return !!s && s.enabled && s.readLevel !== 'none' && (s.expiresAt == null || s.expiresAt > Date.now()); } });
   const projects = new Projects({ db: conn, notes, items, assertions });
+  // Ask AI reaches the whole workspace, not only meetings (src/llm/workspace.js)
+  ai.workspace = { assertions, projects, items, entities: knowledge.entities, calendar };
   const supersession = new Supersession({ db: conn, assertions });
   // Every outbound action: the old ones (Linear, webhook, Obsidian), Gmail's, and the other services' (src/brain/actions-services.js)
   let SERVICE_HANDLERS = {};

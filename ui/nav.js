@@ -26,7 +26,7 @@ export const DOORS = [
   },
   {
     id: 'ask', label: 'Ask', icon: 'sparkles', href: '#/chat',
-    hint: 'Ask questions about all your meetings. Every answer links to where it came from.',
+    hint: 'Ask about anything: meetings, documents, messages, tasks, people, projects. Every answer links to where it came from.',
     sections: [{ links: [L('#/chat', 'Ask AI', 'sparkles', ['chat'])], note: 'To ask about one meeting only, open it and use its Chat tab.' }],
   },
   {

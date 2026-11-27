@@ -1,4 +1,4 @@
-// Chat with one meeting, or across all of them (answers link back to their source meetings).
+// Chat with one meeting, or across everything in the app (answers link back to the meetings, documents and records they cite).
 // The answers sit in a fixed-height box with its own scrollbar (ui/follow.js): a new answer is followed as it is written, scrolling
 // up to re-read stops that and shows a floating arrow back to the newest message. The page around it never moves.
 import { S, $, api, t, esc, icon, fail, toast, confirmDialog } from '../lib.js';
@@ -6,12 +6,28 @@ import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
 
-// where a source opens: a meeting at the line that was cited, or a note from a folder
-const hrefOf = (s) => (s.kind === 'live' ? (s.uri || '#') : s.kind === 'item' ? `#/documents/${s.id}` : `#/note/${s.id}${s.segmentId ? `?tab=transcript&seg=${s.segmentId}` : ''}`);
-const chip = (s) => `<a class="chip" href="${esc(hrefOf(s))}" ${s.kind === 'live' ? 'target="_blank" rel="noopener noreferrer"' : ''} title="${esc(s.title || '')}${s.untrusted ? ` — ${esc(t('unverified sender: what it says is only a claim'))}` : ''}">${icon(s.kind === 'item' || s.kind === 'live' ? 'mail' : 'link', 'sm')}${s.n ? `<b>[${s.n}]</b> ` : ''}${esc(s.title || t('Untitled meeting'))}${s.untrusted ? ` <span class="badge danger" title="${esc(t('Somebody you have not dealt with'))}">${t('unverified')}</span>` : ''}</a>${s.kind === 'item' || s.kind === 'live' ? `<button class="btn xs ghost" data-reply="${esc(s.kind === 'item' ? s.id : '')}" data-live="${esc(s.kind === 'live' ? `${s.sourceId}|${s.externalId}` : '')}" data-prov="${esc(s.sourceId || '')}" title="${t('Write a reply to this mail')}">${t('Reply…')}</button>` : ''}`;
+// where a source opens: a meeting at the line that was cited, a document, or the page of whatever else was cited
+const atLine = (id, seg) => `#/note/${id}${seg ? `?tab=transcript&seg=${seg}` : ''}`;
+const hrefOf = (s) => ({
+  live: () => s.uri || '#',
+  item: () => `#/documents/${s.id}`,
+  action: () => (s.noteId ? `#/note/${s.noteId}` : '#/actions'),
+  decision: () => (s.noteId ? atLine(s.noteId, s.segmentId) : '#/promises'),
+  commitment: () => (s.noteId ? atLine(s.noteId, s.segmentId) : '#/promises'),
+  person: () => `#/person/${encodeURIComponent(s.key || s.title || '')}`,
+  project: () => `#/project/${s.id}`,
+  topic: () => `#/topic/${s.id}`,
+  term: () => `#/term/${s.id}`,
+  event: () => '#/calendar',
+}[s.kind] || (() => atLine(s.id, s.segmentId)))();
+const KIND_ICON = { live: 'mail', item: 'file', action: 'checksq', decision: 'check', commitment: 'bolt', person: 'person', project: 'layers', topic: 'hash', term: 'book', event: 'calendar' };
+const KIND_LABEL = { live: 'Found live', item: 'Document', action: 'Action item', decision: 'Decision', commitment: 'Promise', person: 'Person', project: 'Project', topic: 'Topic', term: 'Glossary term', event: 'Calendar event' };
+const chipTitle = (s) => `${KIND_LABEL[s.kind] ? `${t(KIND_LABEL[s.kind])}: ` : ''}${s.title || ''}${s.untrusted ? ` — ${t('unverified sender: what it says is only a claim')}` : ''}`;
+const chip = (s) => `<a class="chip" href="${esc(hrefOf(s))}" ${s.kind === 'live' ? 'target="_blank" rel="noopener noreferrer"' : ''} title="${esc(chipTitle(s))}">${icon(KIND_ICON[s.kind] || 'link', 'sm')}${s.n ? `<b>[${s.n}]</b> ` : ''}${esc(s.title || t('Untitled meeting'))}${s.untrusted ? ` <span class="badge danger" title="${esc(t('Somebody you have not dealt with'))}">${t('unverified')}</span>` : ''}</a>${s.mail ? `<button class="btn xs ghost" data-reply="${esc(s.kind === 'item' ? s.id : '')}" data-live="${esc(s.kind === 'live' ? `${s.sourceId}|${s.externalId}` : '')}" data-prov="${esc(s.sourceId || '')}" title="${t('Write a reply to this mail')}">${t('Reply…')}</button>` : ''}`;
 const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map(chip).join('')}</div>` : '');
 const searchedHtml = (searched) => (searched?.length ? `<div class="xsmall muted" style="margin-top:6px">${icon('search', 'sm')} ${searched.map((x) => t('Searched {name} for: {q}', { name: esc(x.source), q: `“${esc(x.query)}”` })).join(' · ')}</div>` : '');
-const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${hrefOf(s)}" title="${esc(s.title || '')}">${n}</a>` : m; });
+// [1] in an answer becomes a link to what it cites; a number with nothing behind it stays plain text
+const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${hrefOf(s)}" title="${esc(chipTitle(s))}">${n}</a>` : m; });
 const bubble = (m) => `<div class="bubble ${m.role}">${m.role === 'user' ? esc(m.content) : withCites(renderMarkdown(m.content), m.sources) + sourcesHtml(m.sources)}</div>`;
 const emptyHtml = (suggestions) => `<div class="chat-empty"><span class="ic-wrap">${icon('sparkles')}</span><div class="muted small">${t('Ask a question, or start from one of these:')}</div>
   <div class="chips">${suggestions.map((q) => `<button class="chip" data-q="${esc(q)}">${icon('sparkles', 'sm')}${esc(q)}</button>`).join('')}</div></div>`;
@@ -74,6 +90,6 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
 
 export async function render(main) {
   const history = await api('GET', '/api/chat');
-  main.innerHTML = `<div class="page narrow chat-page"><div class="page-head"><div><h1>${t('Ask AI')}</h1><div class="sub">${t('Questions across every meeting — answers cite the meetings they come from.')}</div></div></div><div class="panel" id="gchat"></div></div>`;
-  renderChat($('#gchat'), history, { noteId: null, suggestions: [t('Summarise the last meeting'), t('What did we decide this week?'), t('Open action items across meetings'), t('Which topics keep coming up?'), t('Summarise everything about pricing')], placeholder: t('Ask across all your meetings…') });
+  main.innerHTML = `<div class="page narrow chat-page"><div class="page-head"><div><h1>${t('Ask AI')}</h1><div class="sub">${t('Questions across everything — meetings, documents, messages, action items, decisions, people, projects and your calendar. Answers cite where they come from.')}</div></div></div><div class="panel" id="gchat"></div></div>`;
+  renderChat($('#gchat'), history, { noteId: null, suggestions: [t('Summarise the last meeting'), t('What did we decide this week?'), t('What do I owe people?'), t('Open action items'), t('What is on my calendar this week?'), t('Summarise my latest e-mails'), t('Which topics keep coming up?')], placeholder: t('Ask about anything in WhisperBrain…') });
 }

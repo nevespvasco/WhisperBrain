@@ -150,8 +150,8 @@ test('Ask: excerpts are numbered, only given numbers can be cited, and the sourc
   t.after(() => llm.close());
   app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: llm.url, model: 'fake-model' } });
   const res = await app.ai.chat(null, 'When does the mobile app launch?');
-  assert.match(seen, /Excerpts that may be relevant/);
-  assert.match(seen, /\[1\] (Note|Meeting)/);
+  assert.match(seen, /Numbered sources that may be relevant/);
+  assert.match(seen, /\[1\] (Document|Meeting)/);
   assert.ok(!res.answer.includes('[9]'), 'a number that was never given is removed');
   assert.equal(res.answer.includes('[1]'), true);
   const cited = res.sources.filter((s) => s.n);
