@@ -37,6 +37,12 @@ class SignalHub extends EventEmitter {
   ingest(msg, { source = 'extension', kind = null, lagMs = null } = {}) {
     const m = normalizeSignal(msg);
     const k = kind || this.sources.get(source)?.kind || source;
+    // the platform's own app, asked over RPC, says exactly what is going on: what a page of the same platform shows is not heard
+    if (k !== 'rpc' && this.authoritative().includes(m.platform)) {
+      const s = this.sources.get(source) || this.report(source, { kind: k, state: 'connected' });
+      s.ignored = (s.ignored || 0) + 1;
+      return m;
+    }
     const s = this.sources.get(source) || this.report(source, { kind: k, state: 'connected' });
     s.lastAt = this.now();
     s.messages++;
@@ -63,9 +69,12 @@ class SignalHub extends EventEmitter {
       // every call some source says is going on (one per platform)
       calls: [...this.calls.values()].filter(fresh).map((c) => ({ ...c })),
       // platforms whose own app says exactly what is going on: what other sources only guess is not believed for them
-      authoritative: [...new Set(sources.filter((s) => s.kind === 'rpc' && s.state === 'connected' && s.platform).map((s) => s.platform))],
+      authoritative: this.authoritative(),
     };
   }
+
+  // platforms whose own app is connected over RPC (see status().authoritative)
+  authoritative() { return [...new Set([...this.sources.values()].filter((s) => s.kind === 'rpc' && s.state === 'connected' && s.platform).map((s) => s.platform))]; }
 
   // true when some source has been heard from lately: other, weaker sources (the screen reader) should stay idle
   anyConnected(except = []) {

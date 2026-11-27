@@ -1,15 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "WhisperBrain for Google Meet",
-  "description": "Tells the WhisperBrain app, on this computer only, who is on your Google Meet call and who is speaking, so it can name the voices in your transcript.",
+  "name": "WhisperBrain for meetings",
+  "description": "Tells the WhisperBrain app, on this computer only, who is on your call (Google Meet, Teams, Zoom or Discord in the browser) and who is speaking, so it can name the voices in your transcript.",
   "version": "0.1.0",
   "minimum_chrome_version": "110",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [
-    { "matches": ["https://meet.google.com/*"], "js": ["selectors.js", "reader.js", "content.js"], "run_at": "document_idle", "all_frames": false }
+    { "matches": ["https://meet.google.com/*", "https://teams.microsoft.com/*", "https://teams.live.com/*", "https://*.zoom.us/wc/*", "https://discord.com/channels/*"], "js": ["selectors.js", "reader.js", "content.js"], "run_at": "document_idle", "all_frames": false }
   ],
   "options_ui": { "page": "options.html", "open_in_tab": true },
-  "action": { "default_title": "WhisperBrain for Google Meet", "default_popup": "options.html" }
+  "action": { "default_title": "WhisperBrain for meetings", "default_popup": "options.html" }
 }

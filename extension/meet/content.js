@@ -4,7 +4,7 @@
   const R = self.WbMeetReader;
   const differ = new R.Differ();
   // which platform this page is: the entry of self.WB_PLATFORMS whose host it is on (Google Meet when none says)
-  const platform = Object.keys(self.WB_PLATFORMS).find((id) => self.WB_PLATFORMS[id].hosts.includes(location.hostname)) || 'meet';
+  const platform = Object.keys(self.WB_PLATFORMS).find((id) => self.WB_PLATFORMS[id].hosts.some((h) => location.hostname === h || location.hostname.endsWith('.' + h))) || 'meet';
   let selectors = self.WB_PLATFORMS[platform].selectors;
   let timer = null;
   let lastTick = 0;
@@ -30,7 +30,9 @@
 
   // your own selectors for this page: the old key is Google Meet's, the others have the platform in the key
   const key = platform === 'meet' ? 'selectors' : 'selectors-' + platform;
-  chrome.storage.local.get(key, (v) => {
+  chrome.storage.local.get([key, 'platformsOff'], (v) => {
+    // the person can switch each platform off in the extension's options: then this page is not read at all
+    if (v && Array.isArray(v.platformsOff) && v.platformsOff.includes(platform)) return;
     if (v && v[key]) { try { selectors = { ...selectors, ...JSON.parse(v[key]) }; } catch (e) { /* a broken override is ignored */ } }
     new MutationObserver(soon).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     setInterval(soon, 1000);

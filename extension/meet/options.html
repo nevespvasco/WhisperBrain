@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>WhisperBrain for Google Meet</title>
+<html lang="en"><head><meta charset="utf-8"><title>WhisperBrain for meetings</title>
 <style>
   :root { color-scheme: light dark; --fg: #1d1b2b; --bg: #f7f5ff; --muted: #6b6785; --card: #fff; --line: #ddd8f0; --ok: #1b7f4d; --bad: #c0392b; --accent: #5b4bd5; }
   @media (prefers-color-scheme: dark) { :root { --fg: #ece9ff; --bg: #17151f; --muted: #a9a4c4; --card: #211e2e; --line: #353147; --ok: #5ed39b; --bad: #ff8a7a; --accent: #9c8cff; } }
@@ -10,13 +10,15 @@
   label { display: block; font-weight: 600; margin-bottom: 6px; }
   input, textarea { width: 100%; box-sizing: border-box; font: 13px ui-monospace, monospace; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; }
   textarea { min-height: 110px; }
+  .plat { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 4px 0; } .plat input { width: auto; }
+  select { font: inherit; padding: 6px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: inherit; }
   button { margin-top: 10px; padding: 8px 14px; border-radius: 8px; border: 0; background: var(--accent); color: #fff; font-weight: 600; cursor: pointer; }
   button.quiet { background: transparent; color: var(--accent); border: 1px solid var(--line); }
   #status { font-weight: 600; } #status.ok { color: var(--ok); } #status.bad { color: var(--bad); }
   small { color: var(--muted); display: block; margin-top: 6px; }
 </style></head>
 <body><main>
-  <h1>WhisperBrain for Google Meet</h1>
+  <h1>WhisperBrain for meetings</h1>
   <p>Tells the WhisperBrain app on this computer who is on your call and who is speaking. Nothing leaves this computer.</p>
   <div class="card">
     <div>Status: <span id="status">checking…</span></div>
@@ -26,9 +28,16 @@
     <button id="save">Pair</button>
   </div>
   <div class="card">
-    <label for="sel">Page selectors (advanced)</label>
+    <label>Pages to read</label>
+    <div id="plats"></div>
+    <small>Switch a platform off and its pages are not read at all. The extension only asks the browser for these sites.</small>
+  </div>
+  <div class="card">
+    <label for="platSel">Page selectors (advanced)</label>
+    <select id="platSel"></select>
+    <label for="sel" style="margin-top:10px">Selectors for that platform</label>
     <textarea id="sel" spellcheck="false" placeholder='{ "tile": ["[data-participant-id]"] }'></textarea>
-    <small>If names stop arriving after Google changes Meet, a corrected set of selectors goes here (JSON). It is merged over the built-in one.</small>
+    <small>If names stop arriving after a platform changes its page, a corrected set of selectors for it goes here (JSON). It is merged over the built-in one. The built-in ones for Teams, Zoom and Discord have not been checked against a real call yet.</small>
     <button id="saveSel" class="quiet">Save selectors</button> <button id="clearSel" class="quiet">Use the built-in</button>
   </div>
-</main><script src="options.js"></script></body></html>
+</main><script src="selectors.js"></script><script src="options.js"></script></body></html>

@@ -15,7 +15,7 @@ const FAKE = {
 };
 
 test('registry: Google Meet is the only shipped platform and the default', () => {
-  assert.deepEqual(PLATFORMS.list().map((p) => p.id), ['meet', 'discord'], 'Meet, and Discord (served by RPC, not by a page)');
+  assert.deepEqual(PLATFORMS.list().map((p) => p.id), ['meet', 'teams', 'zoom', 'discord'], 'Meet, Teams and Zoom in the browser, and Discord (by RPC and in the browser)');
   assert.equal(DEFAULT_PLATFORM, 'meet');
   const meet = PLATFORMS.get('meet');
   assert.equal(meet.name, 'Google Meet');
@@ -256,8 +256,8 @@ test('status: the sources are listed per platform, with the messages each platfo
   svc.hub.ingest({ type: 'speaker', name: 'Ana' }, { source: 'extension', kind: 'extension' });
   svc.hub.ingest({ type: 'speaker', name: 'Bruno' }, { source: 'extension', kind: 'extension' });
   const st = svc.status();
-  assert.deepEqual(st.platforms.map((p) => p.id), ['meet', 'discord', 'fakecall']);
-  const [meet, , fake] = st.platforms;
+  assert.deepEqual(st.platforms.map((p) => p.id), ['meet', 'teams', 'zoom', 'discord', 'fakecall']);
+  const meet = st.platforms[0], fake = st.platforms.at(-1);
   assert.equal(meet.name, 'Google Meet');
   assert.equal(meet.verified, false, 'the shipped Meet selectors are still a guess');
   assert.equal(fake.verified, true);
@@ -283,11 +283,56 @@ test('extension: it runs on the pages the registry lists, knows each platform\'s
   assert.deepEqual([...Object.keys(ctx.self.WB_PLATFORMS)].sort(), served.map((p) => p.id).sort());
   for (const p of served) {
     const e = ctx.self.WB_PLATFORMS[p.id];
-    assert.ok(e.selectors && Array.isArray(e.selectors.tile), `${p.id} has selectors`);
+    assert.ok(e.selectors && (Array.isArray(e.selectors.tile) || typeof e.selectors.tile === 'string'), `${p.id} has selectors`);
     assert.deepEqual([...e.matches], p.extension.matches, `${p.id}: the extension and the registry say the same pages`);
   }
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
   assert.deepEqual(manifest.content_scripts[0].matches.sort(), served.flatMap((p) => p.extension.matches).sort());
   assert.match(fs.readFileSync(path.join(root, 'content.js'), 'utf8'), /platform/, 'the content script says the platform');
   assert.equal(ctx.self.WB_MEET_SELECTORS, ctx.self.WB_PLATFORMS.meet.selectors, 'the old name still works');
+});
+
+// ---- the web platforms: Teams, Zoom, Discord in the browser ----
+test('registry: Teams, Zoom and Discord in the browser are entries with their pages, default lags and nothing else to change', () => {
+  const teams = PLATFORMS.get('teams'), zoom = PLATFORMS.get('zoom'), discord = PLATFORMS.get('discord');
+  assert.equal(teams.name, 'Microsoft Teams');
+  assert.equal(PLATFORMS.fromUrl('https://teams.microsoft.com/v2/')?.id, 'teams', 'work or school');
+  assert.equal(PLATFORMS.fromUrl('https://teams.live.com/v2/')?.id, 'teams', 'personal');
+  assert.equal(PLATFORMS.fromUrl('https://app.zoom.us/wc/123456789/start')?.id, 'zoom');
+  assert.equal(PLATFORMS.fromUrl('https://discord.com/channels/1/2')?.id, 'discord');
+  assert.equal(PLATFORMS.fromUrl('https://meet.google.com/abc-defg-hij')?.id, 'meet');
+  for (const p of [teams, zoom, discord]) assert.ok(p.extension.matches.length >= 1, p.id);
+  assert.ok(teams.lagMs.extension > 0 && zoom.lagMs.extension > 0 && discord.lagMs.extension > 0);
+  assert.equal(discord.rpc, true, 'Discord is still served by RPC too');
+});
+
+test('roster: one made only of the people whose tile is on the screen says so, and is never a head count', () => {
+  const partial = normalize({ type: 'roster', participants: [{ name: 'Ana' }], partial: true });
+  assert.equal(partial.partial, true);
+  assert.equal('partial' in normalize({ type: 'roster', participants: [{ name: 'Ana' }] }), false, 'a full roster says nothing more than before');
+  let now = 0;
+  const hub = new SignalHub();
+  const col = new MeetingCollector({ hub, elapsed: () => now });
+  hub.ingest({ type: 'roster', participants: [{ name: 'Vasco', self: true }, { name: 'Ana' }, { name: 'Bruno' }], partial: true, platform: 'zoom' }, { source: 'extension', kind: 'extension' });
+  assert.equal(col.expectedVoices(), null, 'not everybody is on the screen: the head count is not known');
+  assert.deepEqual(col.roster().map((p) => p.name), ['Vasco', 'Ana', 'Bruno'], 'the names still help the vote');
+  now = 1000;
+  hub.ingest({ type: 'roster', participants: [{ name: 'Vasco', self: true }, { name: 'Ana' }, { name: 'Bruno' }, { name: 'Carla' }], platform: 'zoom' }, { source: 'extension', kind: 'extension' });
+  assert.equal(col.expectedVoices(), 3, 'the panel is open: now it is a head count');
+});
+
+test('hub: while the platform\'s own app is connected over RPC, a browser page of the same platform says nothing the vote would hear', () => {
+  const hub = new SignalHub();
+  const heard = [];
+  hub.on('signal', (s) => heard.push([s.msg.platform, s.msg.type, s.kind]));
+  hub.ingest({ type: 'speaker', name: 'Ana', platform: 'discord' }, { source: 'extension', kind: 'extension' });
+  hub.report('discord-rpc', { kind: 'rpc', state: 'connected', platform: 'discord' });
+  hub.ingest({ type: 'speaker', name: 'Bruno', platform: 'discord' }, { source: 'extension', kind: 'extension' });
+  hub.ingest({ type: 'speaker', name: 'Carla', platform: 'meet' }, { source: 'extension', kind: 'extension' });
+  hub.ingest({ type: 'speaker', name: 'Dora', platform: 'discord' }, { source: 'discord-rpc', kind: 'rpc' });
+  assert.deepEqual(heard, [['discord', 'speaker', 'extension'], ['meet', 'speaker', 'extension'], ['discord', 'speaker', 'rpc']]);
+  assert.equal(hub.sources.get('extension').ignored, 1);
+  hub.report('discord-rpc', { kind: 'rpc', state: 'waiting', platform: 'discord' });
+  hub.ingest({ type: 'speaker', name: 'Eva', platform: 'discord' }, { source: 'extension', kind: 'extension' });
+  assert.equal(heard.length, 4, 'RPC gone: the page speaks again');
 });

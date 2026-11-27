@@ -52,12 +52,37 @@ const DISCORD = {
   id: 'discord',
   name: 'Discord',
   short: 'Discord',
-  recognise: {},
+  recognise: { urls: ['^https://(?:[\\w-]+\\.)?discord\\.com/channels/'] },
   apps: {},
   selectors: null,
+  extension: { matches: ['https://discord.com/channels/*'] },   // the call view of the web client; steps aside while RPC is connected
   rpc: true,
   accounts: true,        // the ids it gives people are their account ids on Discord, the same ones the bot and the web page show (discord:<id>)
-  lagMs: { rpc: 150 },   // NOT measured yet (needs a real call, see docs/discord-rpc.md); replace with the measurement
+  lagMs: { rpc: 150, extension: 300 },   // rpc: NOT measured yet (needs a real call, see docs/discord-rpc.md); replace with the measurement
+};
+
+// The meeting platforms of the browser extension (extension/meet): the page's DOM is read there (selectors live in the extension, see
+// extension/meet/selectors.js, and are checked against these pages by test/meet-platforms.test.js). NOT checked against a real call yet.
+const TEAMS = {
+  id: 'teams',
+  name: 'Microsoft Teams',
+  short: 'Teams',
+  recognise: { urls: ['^https://teams\\.(?:microsoft|live)\\.com/'] },   // work or school, and personal
+  apps: {},
+  selectors: null,
+  extension: { matches: ['https://teams.microsoft.com/*', 'https://teams.live.com/*'] },
+  lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },   // the extension's is a guess: it has not been measured on a real call
+};
+
+const ZOOM = {
+  id: 'zoom',
+  name: 'Zoom',
+  short: 'Zoom',
+  recognise: { urls: ['^https://(?:[\\w-]+\\.)?zoom\\.us/wc/'], code: '/wc/(?:join/)?([0-9]{9,11})' },   // the web client ("join from your browser")
+  apps: {},
+  selectors: null,
+  extension: { matches: ['https://*.zoom.us/wc/*'] },
+  lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },
 };
 
 const unique = (xs) => [...new Set(xs)];
@@ -113,6 +138,6 @@ class PlatformRegistry {
   lag(id, kind) { return this.get(id)?.lagMs?.[kind] ?? null; }
 }
 
-const PLATFORMS = new PlatformRegistry([MEET, DISCORD]);
+const PLATFORMS = new PlatformRegistry([MEET, TEAMS, ZOOM, DISCORD]);
 
 module.exports = { PlatformRegistry, PLATFORMS, DEFAULT_PLATFORM, platformId };

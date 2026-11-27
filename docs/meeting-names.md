@@ -49,6 +49,18 @@ The helper runs only while a recording does.
 
 The extension's door is **not** the app's API: it has its own port and its own secret, accepts calls only from browser extensions (a web page cannot call it even with the secret), and only accepts meeting signals. *New code* in Settings cuts off every extension paired with the old one.
 
+#### Teams, Zoom and Discord in the browser
+
+The same extension reads **Microsoft Teams** (teams.microsoft.com for work or school, teams.live.com for personal), **Zoom's web client** (the "join from your browser" client, app.zoom.us/wc/...) and **Discord in the browser** (discord.com/channels/...), each one an entry of the platform registry and of `extension/meet/selectors.js`. In the extension's options each platform can be switched off, and its selectors corrected without a rebuild (the key is `selectors` for Google Meet, `selectors-<platform>` for the others).
+
+| Platform | Roster | Who speaks | Captions with a name | Notes |
+|---|---|---|---|---|
+| Teams | the People panel; the tiles on the screen when it is closed | the speaking indicator on a tile | yes, when the person turns captions on | work and personal layouts |
+| Zoom (web) | the participants panel; the tiles on the screen when it is closed | the frame Zoom outlines, gallery and speaker view | when the host enabled them | |
+| Discord (web) | the people of the call view | the speaking mark on a tile | no | **only the call view**: the sidebar lists people of other channels and is never read. The Discord user id is read from each avatar's address, so the person is the same one as in RPC and in the bot (`discord:<id>`). Not heard while the Discord app is connected over RPC |
+
+A roster made only of the visible tiles says so (`partial`): it names people but is never used as a head count. **None of the selectors for Teams, Zoom and Discord has been checked against a real call** (`verified: false`); they are tested against simulated pages that follow what the selectors expect (`test/fixtures/pages`, read by the real reader in a real browser). A selector that finds nothing gives "no names", never an error.
+
 ### A look at the window (last resort)
 
 If neither of the above is connected, and you switched it on, WhisperBrain takes a picture of the meeting window every couple of seconds and asks your AI model (Settings → AI) who is speaking. The picture goes where your LLM setting points, so use a model that runs on this computer and can see pictures. It runs only while a recording does, and skips pictures that did not change. macOS asks for the Screen Recording permission.
@@ -65,6 +77,7 @@ If neither of the above is connected, and you switched it on, WhisperBrain takes
 
 Everything above was exercised on Linux with a mock Meet page and a real Chromium-based browser. These have **not** been run and need a person on the right system:
 
+- [ ] **Real calls for Teams (work and personal account), Zoom web (gallery and speaker view, panel open and closed) and Discord web (a server channel and a DM)**: run `npm run a11y:dump`-style capture of the page (or open the extension's options and the browser's inspector) and correct `extension/meet/selectors.js`; then set `verified: true`.
 - [ ] **A real Google Meet call**, any system: the extension reads the people and the highlight; the accessibility tree has names and the speaking state (the spike: capture with `npm run a11y:dump`); live captions are readable.
 - [ ] **macOS**: `npm run build:ax` builds; the Accessibility prompt is never raised by a recording (the watching helper restarts with each one); press the permission button or add the helper by hand and, once allowed, snapshots flow without restarting the app; a Meet call is detected from the browser window; Arc/Brave/Edge/Chrome.
 - [ ] **Windows**: `powershell -File native/windows/whisperbrain-uia.ps1 -Mode selftest` compiles the C#; `-Mode dump` during a call shows the page's `Document` and its nodes; no console window appears from the app.

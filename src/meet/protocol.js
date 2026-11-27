@@ -6,7 +6,7 @@
 //   extension that is already paired keeps working.
 //
 //   { type: 'speaker', name: 'Ana' | null, id?, self? }     who is the active speaker now (null: nobody)
-//   { type: 'roster', participants: [{ name, id?, self? }] } who is in the call (all of them, you included)
+//   { type: 'roster', participants: [{ name, id?, self? }], partial? } who is in the call (all of them, you included; partial: only those shown)
 //   { type: 'meeting', inCall: bool, code?, title? }         joined or left a call
 //   { type: 'caption', name, text, final? }                  one caption line, name and words together
 //
@@ -65,7 +65,8 @@ function normalize(msg) {
         seen.add(key);
         participants.push(p);
       }
-      return { type: 'roster', participants };
+      // partial: only the people whose tile is on the screen, not everybody on the call (so it says who is there, never how many)
+      return { type: 'roster', participants, ...(msg.partial ? { partial: true } : {}) };
     }
     case 'meeting':
       return { type: 'meeting', inCall: !!msg.inCall, code: str(msg.code, 40), title: str(msg.title, 200) };
