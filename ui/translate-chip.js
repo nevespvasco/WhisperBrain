@@ -80,13 +80,32 @@ async function pickOther() {
   });
 }
 
-export async function translateMenu(anchor) {
+// A meeting that is already recorded: translate its transcript now and show it (the note view reads ?tr=). Translation is
+// switched on if it was off; live translation is left as it was.
+async function translateNote(noteId, code) {
+  const c = cfg();
+  if (!c?.enabled || !c.targets?.includes(code)) {
+    // translation was off: turning it on for this meeting must not also start translating the next recording live
+    const live = c?.enabled ? {} : { live: false };
+    try { S.settings = await api('PUT', '/api/settings', { translation: { enabled: true, ...live, targets: [...(c?.targets || []).filter((x) => x !== code), code].slice(-8) } }); } catch (e) { fail(e); return; }
+  }
+  const h = `#/note/${noteId}?tab=transcript&tr=${encodeURIComponent(code)}`;
+  if (location.hash === h) window.dispatchEvent(new HashChangeEvent('hashchange')); else go(h);
+}
+
+// noteId: the recorded meeting on screen, if any; it gets its own "Translate this meeting" section first.
+export async function translateMenu(anchor, { noteId } = {}) {
   const all = await languages();
   const name = (c) => all.find((l) => l.code === c)?.name || c;
   const lang = liveLanguage();
   const noAi = !S.settings?.llm?.baseUrl;
   const mine = cfg()?.targets?.length ? cfg().targets : COMMON;
   menu(anchor, [
+    ...(noteId ? [
+      { header: t('Translate this meeting') },
+      ...mine.map((c) => ({ label: name(c), icon: 'globe', disabled: noAi, run: () => translateNote(noteId, c) })),
+      'sep',
+    ] : []),
     { header: t('Translate while recording') },
     ...(noAi ? [{ label: t('Needs an AI server: set one up'), icon: 'sparkles', run: () => go('#/settings/ai') }, 'sep'] : []),
     { label: t('Don’t translate'), icon: 'x', selected: !lang, run: () => choose(null) },

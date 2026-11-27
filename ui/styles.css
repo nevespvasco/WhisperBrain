@@ -366,7 +366,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .act-list { max-height: 360px; overflow-y: auto; overscroll-behavior: contain; margin: 0 -4px; padding: 0 4px; scrollbar-gutter: stable; }
 .act-add { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px dashed var(--line); border-radius: 12px; background: var(--card); transition: border-color .12s; }
 .act-add:focus-within { border-style: solid; border-color: var(--accent-line); }
-.act-add #a-new { border: 0; background: transparent; box-shadow: none; padding: 2px 0; height: 28px; font-size: 14px; }
+.act-add > input:not([type]) { border: 0; background: transparent; box-shadow: none; padding: 2px 0; height: 28px; font-size: 14px; }
 .act-add-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .act-add-bar .chip > .ellipsis { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .act-add-bar .chip .av { margin-left: -6px; }

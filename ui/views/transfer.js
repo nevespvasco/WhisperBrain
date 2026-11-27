@@ -154,7 +154,8 @@ export async function openExport(ids = null) {
   const title = single ? t('Export & share') : many.length ? t('Export {n} meetings', { n: many.length }) : t('Export all meetings');
   return modal({
     title, wide: true,
-    body: `<div class="field"><span class="lbl">${t('Where to')}</span><div class="opt-grid">${dests.map(([k, l, ic, s]) => `<button type="button" class="opt ${k === 'download' ? 'on' : ''}" data-dest="${esc(k)}" ${(['notion', 'obsidian', 'linear'].includes(k) && !ints[k]?.configured) ? 'data-off="1"' : ''}>${icon(ic)}<b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div></div>
+    body: `<div class="field"><span class="lbl">${t('Where to')}</span><div class="opt-grid">${dests.map(([k, l, ic, s]) => `<button type="button" class="opt ${k === 'download' ? 'on' : ''}" data-dest="${esc(k)}" ${(['notion', 'obsidian', 'linear'].includes(k) && !ints[k]?.configured) ? 'data-off="1"' : ''}>${icon(ic)}<b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div>
+        <div id="exp-off" class="row" hidden style="gap:8px;align-items:center;margin-top:8px"><span class="small muted grow" id="exp-off-txt"></span><button type="button" class="btn sm" id="exp-connect">${icon('plug', 'sm')} ${t('Connect in Integrations')}</button></div></div>
       <div class="field" id="fmt-field"><span class="lbl">${t('Format')}</span><div class="opt-grid">${FORMATS.filter(([k]) => single || k !== 'pdf').map(([k, l, ic, s]) => `<button type="button" class="opt ${k === 'md' ? 'on' : ''}" data-fmt="${k}" ${k === 'pdf' && !S.state?.pdf ? 'title="' + t('Uses the print dialog in the browser') + '"' : ''}>${icon(ic)}<b>${esc(l)}</b><span>${esc(s)}</span></button>`).join('')}</div></div>
       <div id="linear-opts" hidden class="stack"><div class="seg-ctl" role="tablist"><button type="button" role="tab" data-lmode="issue" aria-selected="true">${t('One issue with the summary')}</button><button type="button" role="tab" data-lmode="actions" aria-selected="false">${t('An issue per open action item')}</button></div></div>
       ${langs.length ? `<div class="field"><span class="lbl">${t('Translation')}</span><div class="row" style="gap:8px"><select id="exp-lang" aria-label="${esc(t('Language'))}"><option value="">${t('Original only')}</option>${langs.map((c) => `<option value="${esc(c)}">${esc(langName(c))}</option>`).join('')}</select>
@@ -164,13 +165,25 @@ export async function openExport(ids = null) {
     foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" id="exp-go">${icon('share', 'sm')} ${t('Export')}</button>`,
     onMount: (d, close) => {
       let dest = 'download', fmt = 'md', lmode = 'issue';
+      // The cards only choose; the button says what will happen, so "Copy" is not mistaken for done.
+      const goLabel = () => {
+        const [ic, label] = dest === 'download' ? ['download', t('Download')] : dest === 'copy' ? ['copy', t('Copy to clipboard')] : dest === 'email' ? ['mail', t('Open in mail app')]
+          : dest === 'print' ? ['printer', t('Print')] : dest.startsWith('hook:') ? ['webhook', t('Send')] : ['share', t('Send to {dest}', { dest: dests.find(([k]) => k === dest)?.[1] || dest })];
+        $('#exp-go', d).innerHTML = `${icon(ic, 'sm')} ${esc(label)}`;
+      };
+      goLabel();
+      $('#exp-connect', d).onclick = () => { close(); go('#/integrations'); };
       d.addEventListener('click', (e) => {
         const o = e.target.closest('[data-dest]');
         if (o) {
-          if (o.dataset.off) { close(); go('#/integrations'); return; }
+          // not connected: say so here instead of leaving the dialog
+          const off = $('#exp-off', d);
+          if (o.dataset.off) { $('#exp-off-txt', d).textContent = t('{name} is not connected yet.', { name: o.querySelector('b').textContent }); off.hidden = false; return; }
+          off.hidden = true;
           dest = o.dataset.dest; $$('[data-dest]', d).forEach((x) => x.classList.toggle('on', x === o));
           $('#fmt-field', d).hidden = !['download'].includes(dest);
           $('#linear-opts', d).hidden = dest !== 'linear';
+          goLabel();
         }
         const f = e.target.closest('[data-fmt]');
         if (f) { fmt = f.dataset.fmt; $$('[data-fmt]', d).forEach((x) => x.classList.toggle('on', x === f)); }

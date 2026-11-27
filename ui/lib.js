@@ -165,6 +165,7 @@ export function closeMenu() { openMenu?.remove(); openAnchor?.removeAttribute('a
 export const menuIsOpen = () => !!openMenu;
 // items: [{ label, icon, run, danger, disabled, selected, href } | 'sep' | { header }]
 export function menu(anchor, items, { align = 'start' } = {}) {
+  if (toggledOff?.anchor === anchor && Date.now() - toggledOff.at < 600) { toggledOff = null; return null; }
   closeMenu();
   const m = document.createElement('div');
   m.className = 'menu';
@@ -181,8 +182,13 @@ export function menu(anchor, items, { align = 'start' } = {}) {
   const mw = m.offsetWidth, mh = m.offsetHeight;
   let left = align === 'end' ? r.right - mw : r.left;
   left = Math.max(8, Math.min(left, innerWidth - mw - 8));
+  // below the button if it fits, else above; a menu taller than either side scrolls on the roomier one
+  const below = innerHeight - 8 - (r.bottom + 6), above = r.top - 6 - 8;
   let top = r.bottom + 6;
-  if (top + mh > innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  if (mh > below) {
+    if (mh <= above) top = r.top - 6 - mh;
+    else { const room = Math.max(below, above); m.style.maxHeight = `${room}px`; m.style.overflowY = 'auto'; top = below >= above ? r.bottom + 6 : 8; }
+  }
   m.style.left = `${left}px`; m.style.top = `${top}px`;
   m.addEventListener('click', async (e) => {
     const el = e.target.closest('[data-i]');
@@ -203,7 +209,13 @@ export function menu(anchor, items, { align = 'start' } = {}) {
   setTimeout(() => m.querySelector('button:not(:disabled), a')?.focus(), 0);
   return m;
 }
-document.addEventListener('mousedown', (e) => { if (openMenu && !openMenu.contains(e.target)) closeMenu(); });
+// Pressing the button that opened the menu closes it (the press closes it here; the click that follows must not reopen it).
+let toggledOff = null;
+document.addEventListener('mousedown', (e) => {
+  if (!openMenu || openMenu.contains(e.target)) return;
+  toggledOff = openAnchor?.contains(e.target) ? { anchor: openAnchor, at: Date.now() } : null;
+  closeMenu();
+});
 window.addEventListener('resize', closeMenu);
 document.addEventListener('scroll', (e) => { if (!openMenu?.contains(e.target)) closeMenu(); }, true);
 

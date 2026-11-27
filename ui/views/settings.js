@@ -323,7 +323,8 @@ function bind(main, sec, body) {
       const patch = f(e.target.type === 'checkbox' ? e.target.checked : e.target.value);
       if (!patch) return;
       await save(patch);
-      if (['set-lang', 'set-speakers', 'set-collapsed'].includes(e.target.id)) location.reload();
+      if (e.target.id === 'set-collapsed') { document.getElementById('app')?.classList.toggle('collapsed', !!S.settings.sidebarCollapsed); done(t('Saved')); }   // a class on the app: no reload needed
+      else if (['set-lang', 'set-speakers'].includes(e.target.id)) location.reload();
       else if (e.target.id.startsWith('tr-')) rerender();   // the list of languages, and what shows when translation is on
       else done(t('Saved'));
     } catch (err) { fail(err); }

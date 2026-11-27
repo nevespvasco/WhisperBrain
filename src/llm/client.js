@@ -15,7 +15,7 @@ function normalizeBase(url) {
 
 // Reasoning models emit <think>…</think>; hide it from notes. Stateful so tags may be split across chunks.
 class ThinkFilter {
-  constructor() { this.inside = false; this.buf = ''; }
+  constructor() { this.inside = false; this.buf = ''; this.saw = false; }
   push(text) {
     this.buf += text;
     let out = '';
@@ -27,7 +27,7 @@ class ThinkFilter {
         this.inside = false;
       } else {
         const start = this.buf.indexOf('<think>');
-        if (start >= 0) { out += this.buf.slice(0, start); this.buf = this.buf.slice(start + 7); this.inside = true; continue; }
+        if (start >= 0) { out += this.buf.slice(0, start); this.buf = this.buf.slice(start + 7); this.inside = true; this.saw = true; continue; }
         // keep a possible partial "<think" at the end
         const keep = partialTagLength(this.buf, '<think>');
         out += this.buf.slice(0, this.buf.length - keep);
@@ -81,36 +81,61 @@ class LlmClient {
     return res;
   }
 
+  // Ollama's OpenAI endpoint switches a reasoning model's thinking off with reasoning_effort "none" (it ignores `think`).
+  // Other servers are not sent it: OpenAI rejects reasoning_effort for models that do not reason.
+  static isOllama(cfg) { return cfg.provider === 'ollama' || /:11434(\/|$)/.test(String(cfg.baseUrl || '')); }
+
   // Async generator of text deltas.
-  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty } = {}) {
+  // reasoning: 'off' asks the server not to think first (short, structured replies: titles, JSON). Whatever is asked, a
+  // reply that ended on the token cap while still thinking, with no answer yet, is tried once more: without thinking
+  // (Ollama) or with a larger cap. If that is empty too it is an error, never a silent empty answer.
+  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning } = {}) {
     const cfg = this.getConfig();
     const model = await this.resolveModel(cfg);
+    const ollama = LlmClient.isOllama(cfg);
     // Always cap the reply: a small local model can fall into a repeat loop, and without a cap Ollama keeps
     // generating forever (it shifts the context), holding its single slot so every later request waits.
     const body = { model, messages, stream: true, temperature: temperature ?? cfg.temperature, max_tokens: maxTokens || DEFAULT_MAX_TOKENS };
     if (frequencyPenalty) body.frequency_penalty = frequencyPenalty;
+    if (reasoning === 'off' && ollama) body.reasoning_effort = 'none';
+    for (let attempt = 0; ; attempt++) {
+      const run = { yielded: false, thought: false, finish: null };
+      for await (const t of this.attempt(cfg, body, signal, run)) { run.yielded = true; yield t; }
+      if (run.yielded || run.finish !== 'length' || !run.thought) return;
+      if (attempt > 0) throw new LlmError(`The model "${model}" used its whole reply budget thinking and gave no answer. Pick a model that does not reason first in Settings → AI.`, { code: 'thinking-cutoff' });
+      if (ollama && body.reasoning_effort !== 'none') body.reasoning_effort = 'none';
+      else body.max_tokens = Math.max(body.max_tokens * 8, 2048);
+    }
+  }
+
+  async *attempt(cfg, body, signal, run) {
     const res = await this.request(`${normalizeBase(cfg.baseUrl)}/chat/completions`, { method: 'POST', headers: this.headers(cfg), body: JSON.stringify(body), signal });
     const filter = new ThinkFilter();
     const decoder = new TextDecoder();
     let buf = '';
-    for await (const chunk of res.body) {
-      buf += decoder.decode(chunk, { stream: true });
-      let nl;
-      while ((nl = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, nl).trim();
-        buf = buf.slice(nl + 1);
-        if (!line.startsWith('data:')) continue;
-        const data = line.slice(5).trim();
-        if (data === '[DONE]') { const tail = filter.flush(); if (tail) yield tail; return; }
-        let json;
-        try { json = JSON.parse(data); } catch { continue; }
-        if (json.error) throw new LlmError(`LLM error: ${json.error.message || JSON.stringify(json.error)}`);
-        const delta = json.choices?.[0]?.delta?.content;
-        if (delta) { const t = filter.push(delta); if (t) yield t; }
+    try {
+      for await (const chunk of res.body) {
+        buf += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { const tail = filter.flush(); if (tail.trim() || (run.yielded && tail)) yield tail; return; }
+          let json;
+          try { json = JSON.parse(data); } catch { continue; }
+          if (json.error) throw new LlmError(`LLM error: ${json.error.message || JSON.stringify(json.error)}`);
+          const choice = json.choices?.[0];
+          if (choice?.finish_reason) run.finish = choice.finish_reason;
+          if (choice?.delta?.reasoning || choice?.delta?.reasoning_content) run.thought = true;
+          const delta = choice?.delta?.content;
+          if (delta) { const t = filter.push(delta); if (t && (run.yielded || t.trim())) yield t; }
+        }
       }
-    }
-    const tail = filter.flush();
-    if (tail) yield tail;
+      const tail = filter.flush();
+      if (tail.trim() || (run.yielded && tail)) yield tail;
+    } finally { if (filter.saw) run.thought = true; }
   }
 
   async complete(messages, opts) {
@@ -125,7 +150,7 @@ class LlmClient {
       const models = await this.listModels();
       const model = cfg.model || models[0] || '';
       if (!model) return { ok: false, error: 'Connected, but the server has no models.', models };
-      const reply = await this.complete([{ role: 'user', content: 'Reply with the single word: ok' }], { maxTokens: 16, temperature: 0 });
+      const reply = await this.complete([{ role: 'user', content: 'Reply with the single word: ok' }], { maxTokens: 16, temperature: 0, reasoning: 'off' });
       return { ok: true, model, models, reply: reply.slice(0, 40) };
     } catch (e) {
       return { ok: false, error: e.message, code: e.code };

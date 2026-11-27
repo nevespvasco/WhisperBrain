@@ -21,6 +21,8 @@ Rules:
 - Glossary: when a term is in EXISTING TERMS, reuse its spelling; define it only from context.
 - Write values in the language the meeting was held in.
 - Action items are copied into other tools: plain text only, no links and no markup.
+- An action item is a task someone in the meeting said they (or a named person) would do, or that was clearly agreed. Requirements, job descriptions, advice and topics discussed are not tasks: do not turn them into tasks. When the content is a document or message rather than a conversation, actionItems is usually empty.
+- owner: only a person the content names as doing the task; otherwise "". Never a made-up team or role.
 - ${UNTRUSTED}`;
 
 function insightsMessages({ note, transcript, existingTopics = [], existingTerms = [], userName = '' }) {

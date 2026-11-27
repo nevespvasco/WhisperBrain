@@ -8,6 +8,7 @@ import { preflightOn, preflightHtml, preflightAct, warmPreflight } from '../pref
 import { openExport } from './transfer.js';
 import { renderChat } from './chat.js';
 import { follow } from '../follow.js';
+import { todayIso, dueText, dueChip, ownerChip, dueClick, setDue } from '../task-chips.js';
 import { assistantSlot, dropAssistant } from './assistant-panel.js';
 
 const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', 'waves'], ['notes', 'Notes', 'edit'], ['snippets', 'Snippets', 'star'], ['chat', 'Chat', 'chat']];
@@ -23,6 +24,8 @@ export async function render(main, { parts, params }) {
   N.offer = await api('GET', `/api/notes/${id}/platform-transcript`).catch(() => ({ state: 'none' }));
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
   await trInit();
+  const wantTr = params.get('tr');   // "Translate this meeting" in the top bar
+  if (wantTr && trOn()) await trSelect(wantTr, { render: false });
   if (preflightOn(N.note, N.segs)) await warmPreflight();   // the devices and languages its chips list
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
@@ -89,14 +92,14 @@ async function trStart(lang) {
   const r = await api('POST', `/api/notes/${N.id}/translate`, { lang });
   if (r.started || r.running) N.tr.job = { lang, done: 0, total: r.total };
 }
-async function trSelect(lang) {
+async function trSelect(lang, { render = true } = {}) {
   N.tr.lang = lang;
   try {
     await trLoad(lang);
     if (lang && N.tr.view === 'original') N.tr.view = 'both';
     if (lang && !N.tr.info.running.some((r) => r.lang === lang) && N.segs.some((s) => /\p{L}/u.test(s.text) && !N.tr.text.has(s.id))) await trStart(lang);
   } catch (e) { fail(e); }
-  if (N.tab === 'transcript') renderTab();
+  if (render && N.tab === 'transcript') renderTab();
 }
 const trProgress = () => (N.tr.job ? `<span class="xsmall muted" id="tr-progress">${esc(t('Translating {done} of {total}…', { done: N.tr.job.done, total: N.tr.job.total }))}</span><button class="btn xs ghost" data-tr-cancel>${t('Stop')}</button>` : '');
 // The languages to pick from: the ones chosen in settings and the ones this meeting has, then the rest
@@ -206,17 +209,6 @@ const streamingHtml = () => `<div class="typing">${renderMarkdown(S.streaming.te
 
 // Action items read as a list; one at a time is opened for editing with the pencil (text, owner, due date), so a stray
 // click never changes a task. Due dates start today: a task is never due in the past.
-const todayIso = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
-function dueText(due) {
-  const today = todayIso(), tomorrow = new Date(Date.parse(today) + 864e5).toISOString().slice(0, 10);
-  if (due === today) return t('Today');
-  if (due === tomorrow) return t('Tomorrow');
-  const d = new Date(`${due}T12:00:00`);
-  return fmtDate(d.getTime(), { day: 'numeric', month: 'short', ...(d.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}) });
-}
-// One calendar: the chip is the button, the date field inside it is only there to open the system date picker
-const dueChip = (id, due) => `<span class="chip act-due${due ? ' on' : ''}" title="${t('Due date')}">${icon('calendar', 'sm')}<span class="dl">${due ? esc(dueText(due)) : t('Due date')}</span><input type="date" id="${id}" min="${todayIso()}" value="${esc(due || '')}" aria-label="${t('Due date')}" tabindex="-1">${due ? `<button type="button" class="x" data-act="due-clear" aria-label="${t('No due date')}">${icon('x', 'sm')}</button>` : ''}</span>`;
-const ownerChip = (act, owner) => `<button type="button" class="chip${owner ? ' on' : ''}" data-act="${act}" aria-haspopup="listbox">${owner ? avatar(owner, { cls: 'xs' }) : icon('user', 'sm')}<span class="ellipsis">${owner ? esc(owner) : t('Unassigned')}</span>${icon('chevdown', 'sm')}</button>`;
 
 function actionsHtml() {
   const today = todayIso();
@@ -262,11 +254,6 @@ function actionPeople() {
 }
 function pickOwner(anchor, current) {
   return pickFrom(anchor, [{ value: '', label: t('Unassigned') }, ...actionPeople()], { current, placeholder: t('Search people or type a name…'), custom: t('Assign to “{name}”'), search: true, width: 280 });
-}
-// The chip shows the date in words; the hidden field holds it
-function setDue(input) {
-  const chip = input.closest('.act-due');
-  chip.outerHTML = dueChip(input.id, input.value && input.value >= todayIso() ? input.value : '');
 }
 
 // After a Teams, Zoom or Meet recording: fetch the platform's own transcript, which names every line (src/transcripts/offer.js)
@@ -586,14 +573,7 @@ function bind(main) {
       return;
     }
     const due = e.target.closest('.act-due');
-    if (due) {
-      e.preventDefault();
-      const input = $('input', due);
-      if (e.target.closest('[data-act="due-clear"]')) { input.value = ''; input.dispatchEvent(new Event('change', { bubbles: true })); return; }
-      input.min = todayIso();
-      try { input.showPicker(); } catch { input.focus(); }
-      return;
-    }
+    if (due) { dueClick(e, due); return; }
     const tv = e.target.closest('[data-tr-view]');
     if (tv) { N.tr.view = tv.dataset.trView; renderTab(); return; }
     if (e.target.closest('[data-tr-cancel]')) { const j = N.tr.job; N.tr.job = null; if (j) await api('POST', `/api/notes/${N.id}/translate/cancel`, { lang: j.lang }).catch(() => {}); renderTab(); return; }

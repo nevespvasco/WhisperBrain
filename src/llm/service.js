@@ -51,7 +51,7 @@ class AiService {
           transcript = retrieve.pick(note.title + ' ' + note.body + ' ' + note.summary, lines, Math.floor(budget * 0.7)).map((w) => w.text).join('\n…\n');
         }
         const messages = ins.insightsMessages({ note, transcript, existingTopics: k.topics({ limit: 120 }).map((t) => t.name), existingTerms: k.glossary().map((g) => g.term), userName: this.settings.get('userName') });
-        data = ins.parseInsights(await this.llm.complete(messages, { signal, temperature: 0.1 }));
+        data = ins.parseInsights(await this.llm.complete(messages, { signal, temperature: 0.1, reasoning: 'off' }));
         if (data) mode = 'llm';
         else error = 'The model did not return valid JSON; used offline extraction instead.';
       } catch (e) {
@@ -127,13 +127,20 @@ class AiService {
     return this.notes.get(noteId);
   }
 
+  // A title from the summary, else the user's notes, else the transcript. Throws (status 422/502) rather than returning
+  // the note untouched, so "Generate a title" can say why nothing changed.
   async autoTitle(noteId, { summary, transcript, signal } = {}) {
     const note = this.notes.get(noteId);
     if (!note) return null;
-    let title = await this.llm.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript: transcript ?? '' }), { signal, temperature: 0.2, maxTokens: 40 });
-    title = title.split('\n')[0].replace(/^["'#*\s]+|["'.\s]+$/g, '').slice(0, 100);
-    if (title) return this.notes.update(noteId, { title });
-    return note;
+    transcript ??= prompts.formatTranscript(this.notes.segments(noteId)).slice(0, 3000);
+    if (!(summary ?? note.summary ?? '').trim() && !(note.body || '').trim() && !transcript.trim()) {
+      throw Object.assign(new Error('Nothing to make a title from yet: this meeting has no summary, notes or transcript.'), { status: 422 });
+    }
+    let title = await this.llm.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript }), { signal, temperature: 0.2, maxTokens: 40, reasoning: 'off' });
+    title = title.split('\n')[0].replace(/^["'#*\s]+|["'.\s]+$/g, '')
+      .replace(/^(?:meeting\s+)?title\s*:\s*|^(?:t[íi]tulo(?:\s+da\s+reuni[ãa]o)?)\s*:\s*/i, '').replace(/^["'*\s]+|["'*\s]+$/g, '').slice(0, 100);   // "Meeting Title: …"
+    if (!title) throw Object.assign(new Error('The AI did not return a title. Try again, or pick another model in Settings → AI.'), { status: 502 });
+    return this.notes.update(noteId, { title });
   }
 
   // Pieces of text from meetings and notes that may answer the question, numbered for citing. A private source is left out when the AI

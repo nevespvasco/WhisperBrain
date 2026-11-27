@@ -153,7 +153,7 @@ sidebar.addEventListener('click', async (e) => {
         { label: t('Settings'), icon: 'settings', href: '#/settings' },
         ...(S.lock?.enabled ? ['sep', { label: t('Lock now'), icon: 'lock', run: async () => { await api('POST', '/api/lock/lock'); showLock(); } }] : []),
       ]);
-      m.style.minWidth = `${el.offsetWidth}px`;
+      if (m) m.style.minWidth = `${el.offsetWidth}px`;
     }
     else if (a === 'side-toggle') { const k = e.target.closest('[data-group]').dataset.group; try { localStorage.setItem(`wb.side.${k}`, sideClosed(k) ? '1' : '0'); } catch { /* remembered for this view only */ } renderSidebar(); }
     else if (a === 'side-all') { const k = e.target.closest('[data-group]').dataset.group; if (!sideAll.delete(k)) sideAll.add(k); renderSidebar(); if (sideAll.has(k)) sidebar.querySelector(`[data-group="${k}"] .side-list`)?.scrollIntoView({ block: 'nearest' }); }
@@ -197,7 +197,10 @@ topbar.addEventListener('click', async (e) => {
   if (a === 'drawer') setDrawer(!appEl.classList.contains('drawer'));
   else if (a === 'search') openPalette();
   else if (a === 'import') openImport();
-  else if (a === 'translate') translateMenu(e.target.closest('[data-top]'));
+  else if (a === 'translate') {
+    const noteId = /^#\/note\/([\w-]+)/.exec(location.hash)?.[1];
+    translateMenu(e.target.closest('[data-top]'), { noteId: noteId && !(S.rec.active && S.rec.noteId === noteId) ? noteId : undefined });
+  }
   else if (a === 'record') startRecording(null);
   else if (a === 'live') go(`#/note/${S.rec.noteId}`);
   else if (a === 'detected') recordDetected(S.detector);

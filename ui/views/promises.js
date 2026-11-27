@@ -1,9 +1,10 @@
 // Promises: what you owe, what others owe you, and what was decided: only what a person accepted. Each line opens the words it came from.
-import { S, api, t, esc, icon, fail, done, empty, fmtDate, fmtClock, menu } from '../lib.js';
+import { S, api, t, esc, icon, fail, done, empty, fmtDate, fmtClock, menu, pickFrom } from '../lib.js';
+import { todayIso, dueChip, ownerChip, dueClick, setDue } from '../task-chips.js';
 
 let tab = 'mine';
 const day = (ms) => fmtDate(ms, { day: 'numeric', month: 'short' });
-const src = (a) => `<a class="quote-src" href="#/note/${a.noteId}?tab=transcript${a.segmentId ? `&seg=${a.segmentId}` : ''}" title="${esc(a.quote || '')}">${icon('quote', 'sm')} ${a.startMs != null ? fmtClock(a.startMs) : t('meeting')}</a>`;
+const src = (a) => (!a.noteId ? t('added by you') : `<a class="quote-src" href="#/note/${a.noteId}?tab=transcript${a.segmentId ? `&seg=${a.segmentId}` : ''}" title="${esc(a.quote || '')}">${icon('quote', 'sm')} ${a.startMs != null ? fmtClock(a.startMs) : t('meeting')}</a>`);
 
 export async function render(main) {
   const draw = async () => {
@@ -20,13 +21,31 @@ export async function render(main) {
       <div class="seg-ctl mb" role="tablist">${[['mine', t('I owe'), open.mine.length], ['theirs', t('Owed to me'), open.theirs.length], ['decisions', t('Decisions'), decisions.length], ['finished', t('Done'), finished.length]].map(([k, l, n]) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${tab === k}">${l}${n ? ` <span class="faint">${n}</span>` : ''}</button>`).join('')}</div>
       <section class="panel">${rows.length ? rows.map(row).join('') : empty('check', t('Nothing here'), tab === 'decisions' ? t('Decisions you accept from the Inbox are listed here.') : t('Promises you accept from the Inbox appear here.'))}</section>
       <section class="panel mt"><div class="panel-head"><h3>${icon('plus')} ${t('Add one yourself')}</h3></div>
-        <div class="formgrid"><div class="field"><label for="pm-text">${t('What')}</label><input id="pm-text" placeholder="${t('Send the contract to Rui')}"></div><div class="field"><label for="pm-owner">${t('Who')}</label><input id="pm-owner" value="${esc(S.settings.userName || '')}"></div>
-        <div class="field"><label for="pm-due">${t('By')} <span class="faint">(${t('optional')})</span></label><input id="pm-due" placeholder="${t('Friday, tomorrow, 2026-12-04…')}"></div></div>
-        <div class="row"><button class="btn primary" data-add>${t('Add')}</button></div></section></div>`;
+        <form class="act-add" id="pm-add">
+          <input id="pm-text" autocomplete="off" placeholder="${t('Send the contract to Rui')}" aria-label="${t('What')}">
+          <div class="act-add-bar">${ownerChip('pm-owner', owner)}${dueChip('pm-due', due)}<span class="spacer"></span>
+            <button class="btn sm primary" data-add disabled>${icon('plus', 'sm')} ${t('Add')}</button></div>
+        </form></section></div>`;
   };
+  // who and when stay chosen between redraws and for the next promise, like a meeting's action items
+  let owner = S.settings.userName || '', due = '';
   await draw();
+  main.oninput = (e) => { if (e.target.id === 'pm-text') main.querySelector('[data-add]').disabled = !e.target.value.trim(); };
+  main.onsubmit = (e) => { if (e.target.id === 'pm-add') { e.preventDefault(); main.querySelector('[data-add]').click(); } };
   main.onclick = async (e) => {
     const tb = e.target.closest('[data-tab]'); if (tb) { tab = tb.dataset.tab; return draw(); }
+    const dc = e.target.closest('.act-due'); if (dc) { dueClick(e, dc); return; }
+    const oc = e.target.closest('[data-act="pm-owner"]');
+    if (oc) {
+      const people = await api('GET', '/api/people').catch(() => []);
+      const me = S.settings.userName || '';
+      const seen = new Set(me ? [me.toLowerCase()] : []);
+      const items = [{ value: '', label: t('Unassigned') }, ...(me ? [{ value: me, label: me, hint: t('Me'), avatar: me }] : []),
+        ...(Array.isArray(people) ? people : people.people || []).map((p) => String(p.name || '').trim()).filter((n) => n && !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase())).map((n) => ({ value: n, label: n, avatar: n }))];
+      const v = await pickFrom(oc, items, { current: owner, placeholder: t('Search people or type a name…'), custom: t('Assign to “{name}”'), search: true, width: 280 });
+      if (v != null) { owner = v.trim(); oc.outerHTML = ownerChip('pm-owner', owner); }
+      return;
+    }
     const lb = e.target.closest('[data-send]');
     if (lb) {
       const propose = async (kind) => { try { await api('POST', '/api/outbound', { kind, assertionId: lb.dataset.send }); done(t('Proposed. Approve it in the Inbox to send it.')); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); } };
@@ -34,11 +53,14 @@ export async function render(main) {
       return;
     }
     if (e.target.closest('[data-add]')) {
-      const text = main.querySelector('#pm-text').value.trim(); if (!text) return;
-      try { await api('POST', '/api/assertions', { kind: 'commitment', text, owner: main.querySelector('#pm-owner').value.trim(), dueText: main.querySelector('#pm-due').value.trim() }); done(t('Added')); await draw(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
+      const input = main.querySelector('#pm-text'), text = input.value.trim();
+      if (!text) { input.focus(); return; }
+      // the date chip gives a day; it is due by the end of that day
+      try { await api('POST', '/api/assertions', { kind: 'commitment', text, owner, dueText: due, dueAt: due ? new Date(`${due}T23:59:59`).getTime() : null }); done(t('Added')); await draw(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
     }
   };
   main.onchange = async (e) => {
+    if (e.target.id === 'pm-due') { due = e.target.value && e.target.value >= todayIso() ? e.target.value : ''; setDue(e.target); return; }
     if (!e.target.matches('[data-done]')) return;
     try { await api('POST', `/api/assertions/${e.target.closest('.promise').dataset.id}/done`); await draw(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
   };

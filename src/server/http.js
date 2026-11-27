@@ -152,7 +152,10 @@ function createRoutes(app) {
       onDelta: (d) => sse.send('delta', { text: d }), onStage: (s) => sse.send('stage', s),
     }) };
   });
-  add('POST', '/api/notes/:id/title', async ({ params }) => { noteOr404(params.id); return app.ai.autoTitle(params.id); });
+  add('POST', '/api/notes/:id/title', async ({ params }) => {
+    noteOr404(params.id);
+    try { return await app.ai.autoTitle(params.id); } catch (e) { throw e instanceof HttpError ? e : new HttpError(e.status === 422 ? 422 : 502, e.message); }
+  });
   add('POST', '/api/notes/:id/import-audio', async ({ params, req, query }) => {
     noteOr404(params.id);
     if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
