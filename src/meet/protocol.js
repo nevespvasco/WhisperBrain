@@ -2,12 +2,17 @@
 // What a meeting source tells the app. Sources are the Chrome extension, the accessibility readers (Linux AT-SPI, macOS
 // AX, Windows UI Automation) and the screen reader; they all speak this one format, so everything after it is shared.
 //
+//   Every message also carries `platform` (platforms.js id: 'meet', ...); one without is read as Google Meet, so an
+//   extension that is already paired keeps working.
+//
 //   { type: 'speaker', name: 'Ana' | null, id?, self? }     who is the active speaker now (null: nobody)
 //   { type: 'roster', participants: [{ name, id?, self? }] } who is in the call (all of them, you included)
 //   { type: 'meeting', inCall: bool, code?, title? }         joined or left a call
 //   { type: 'caption', name, text, final? }                  one caption line, name and words together
 //
 // Times are never sent: the app stamps a message when it arrives and subtracts the source's lag.
+
+const { platformId } = require('./platforms');
 
 const MAX_NAME = 80;
 const MAX_TEXT = 600;
@@ -75,4 +80,10 @@ function normalize(msg) {
   }
 }
 
-module.exports = { normalize, cleanName, nameKey, SignalError, NOT_A_NAME };
+// What the hub accepts: a clean message that also says which platform it is about (Google Meet when it does not say).
+function normalizeSignal(msg) {
+  const m = normalize(msg);
+  return { ...m, platform: platformId(msg.platform) };
+}
+
+module.exports = { normalize, normalizeSignal, cleanName, nameKey, SignalError, NOT_A_NAME };

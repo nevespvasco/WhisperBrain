@@ -1,14 +1,16 @@
-// Runs on the Google Meet page: reads it now and then and tells the background script what changed. Nothing is
+// Runs on a meeting page of a platform the extension serves (Google Meet today): reads it now and then and tells the background script what changed. Nothing is
 // sent anywhere from here; the background script passes it to the WhisperBrain app on this computer.
 (() => {
   const R = self.WbMeetReader;
   const differ = new R.Differ();
-  let selectors = self.WB_MEET_SELECTORS;
+  // which platform this page is: the entry of self.WB_PLATFORMS whose host it is on (Google Meet when none says)
+  const platform = Object.keys(self.WB_PLATFORMS).find((id) => self.WB_PLATFORMS[id].hosts.includes(location.hostname)) || 'meet';
+  let selectors = self.WB_PLATFORMS[platform].selectors;
   let timer = null;
   let lastTick = 0;
   let lastBeat = 0;
 
-  const send = (signals) => { try { chrome.runtime.sendMessage({ signals }); } catch (e) { /* the extension was reloaded: this page's script is stale */ } };
+  const send = (signals) => { try { chrome.runtime.sendMessage({ signals: signals.map((m) => ({ ...m, platform })) }); } catch (e) { /* the extension was reloaded: this page's script is stale */ } };
 
   function tick() {
     timer = null;
@@ -26,8 +28,10 @@
   // at most four readings a second, however much the page moves
   const soon = () => { if (timer) return; timer = setTimeout(tick, Math.max(0, 250 - (Date.now() - lastTick))); };
 
-  chrome.storage.local.get('selectors', (v) => {
-    if (v && v.selectors) { try { selectors = { ...selectors, ...JSON.parse(v.selectors) }; } catch (e) { /* a broken override is ignored */ } }
+  // your own selectors for this page: the old key is Google Meet's, the others have the platform in the key
+  const key = platform === 'meet' ? 'selectors' : 'selectors-' + platform;
+  chrome.storage.local.get(key, (v) => {
+    if (v && v[key]) { try { selectors = { ...selectors, ...JSON.parse(v[key]) }; } catch (e) { /* a broken override is ignored */ } }
     new MutationObserver(soon).observe(document.documentElement, { subtree: true, childList: true, attributes: true, characterData: true });
     setInterval(soon, 1000);
     soon();

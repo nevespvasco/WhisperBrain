@@ -8,6 +8,17 @@ On a call, the computer only plays one mixed sound, so WhisperBrain can tell the
 
 Nothing leaves the computer. Settings → Meetings & detection → *Names from the meeting window*.
 
+## Meeting platforms are data
+
+Google Meet is one **entry of a registry** (`src/meet/platforms.js`), not something the code assumes. An entry says how to recognise the platform (page addresses, window titles, meeting code), which applications the native helpers watch for it on each system, its accessibility selectors file, the pages its extension runs on, the default lag of each kind of source, and where your own selectors file goes. Adding a platform (Teams, Zoom, Discord...) is adding an entry, its selectors and a source that speaks the protocol: the hub, the per-recording collector and the name vote do not change.
+
+- Every message carries a `platform`; one without is read as Google Meet, so an extension that is already paired keeps working.
+- The native helpers are started with the apps and window titles of the registry (`--apps` and `--title`; `-Apps`/`-Title` on Windows). With only Google Meet registered these are the helpers' old built-in defaults.
+- Selectors: `src/meet/selectors/<platform>.json`; your own file wins: `<data folder>/meet-selectors.json` for Google Meet (as before) and `<data folder>/<platform>-selectors.json` for the others.
+- `npm run a11y:dump -- --platform <id>` captures the tree of that platform's window (Google Meet when not given).
+- The meeting detector names a call after the platform the source reported.
+- Settings lists the sources per platform, with whether that platform's selectors were verified.
+
 ## Where the names come from
 
 Sources are tried in no particular order and use the same messages (`src/meet/protocol.js`), so everything after them is shared. Use whichever suits you; with more than one connected, the one that highlighted longest is used.
@@ -47,8 +58,8 @@ If neither of the above is connected, and you switched it on, WhisperBrain takes
 **The selectors are not verified against a real call.** The built-in description of the Meet page (`src/meet/selectors/meet.json`, and `extension/meet/selectors.js` for the extension) was written from how Chromium exposes pages, measured on a mock page, and from what is known about Meet. Meet changes its page, so the first thing to check on a real call is whether they match.
 
 1. Settings shows each source's state. *Needs setup* on Linux means the browser was not started with accessibility on; *Permission needed* on macOS means the Accessibility permission is missing.
-2. During a real call run `npm run a11y:dump -- --redact` (Linux/macOS/Windows). It prints the page's tree with every name and word replaced by its length, keeping the structure, and says what the current selectors find. **Read the file before sharing it.**
-3. Put a corrected selectors file at `<data folder>/meet-selectors.json` (it wins over the built-in one) or paste corrected extension selectors in the extension's options. Selector format: `src/meet/a11y.js`.
+2. During a real call run `npm run a11y:dump -- --redact` (Linux/macOS/Windows; add `--platform <id>` for a platform other than Google Meet). It prints the page's tree with every name and word replaced by its length, keeping the structure, and says what the current selectors find. **Read the file before sharing it.**
+3. Put a corrected selectors file at `<data folder>/meet-selectors.json` (it wins over the built-in one) or paste corrected extension selectors in the extension's options (for a platform other than Google Meet the file is `<platform>-selectors.json`). Selector format: `src/meet/a11y.js`.
 
 ## Checklist for a real machine
 

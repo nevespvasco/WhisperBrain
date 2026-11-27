@@ -6,6 +6,8 @@
 const KEEP = /^(?:speaking|is speaking|talking|participants?|people|in this call|in call|chat|mute(?:d)?|unmute|turn (?:on|off) (?:camera|microphone)|camera|microphone|present(?:ing|ation)?|raise hand|hand raised|leave call|meeting details|a falar|participantes|pessoas)$/i;
 const KEEP_ATTR = new Set(['tag', 'class', 'id', 'xml-roles', 'display', 'role', 'aria-live', 'explicit-name', 'name-from']);
 
+const { PLATFORMS, DEFAULT_PLATFORM } = require('./platforms');
+
 const mask = (s) => `«${[...String(s)].length}»`;
 
 function redactName(name, keep) {
@@ -18,11 +20,13 @@ function redactName(name, keep) {
 }
 
 // snapshot: { app, window, nodes } -> the same shape, redacted. keep: an extra RegExp of names to leave readable.
-function redactSnapshot(snapshot, { keep = null } = {}) {
-  const code = /([a-z]{3}-[a-z]{4}-[a-z]{3})/i.exec(snapshot.window || '')?.[1];
+// platform: the meeting platform of the window (platforms.js), which says what its meeting code looks like.
+function redactSnapshot(snapshot, { keep = null, platform = DEFAULT_PLATFORM, platforms = PLATFORMS } = {}) {
+  const p = platforms.get(platform) || platforms.get(DEFAULT_PLATFORM);
+  const code = platforms.codeIn(p.id, snapshot.window);
   return {
     ...snapshot,
-    window: code ? 'Meet «code»' : redactName(snapshot.window, keep),
+    window: code ? `${p.short || p.name} «code»` : redactName(snapshot.window, keep),
     nodes: (snapshot.nodes || []).map((n) => {
       const a = n.a ? Object.fromEntries(Object.entries(n.a).map(([k, v]) => [k, KEEP_ATTR.has(k) && !/^id$/.test(k) ? v : mask(v)])) : undefined;
       return { ...n, n: redactName(n.n, keep), ...(a ? { a } : {}) };

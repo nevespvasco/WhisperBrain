@@ -5,6 +5,11 @@ import { openImport } from './transfer.js';
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); return S.settings; };
 const MASK = '********';
 
+// "In the call “Standup” · 3 people", or why not
+const RPC_STATE = { off: 'Off', 'not-set-up': 'Not set up', closed: 'The Discord app is not running', connecting: 'Connecting…', 'not-authorised': 'Not authorised yet', connected: 'Connected, not in a voice call', 'in-call': 'In a voice call' };
+const rpcLine = (r) => (r.call ? `${t('In the call')} “${r.call.name || t('voice channel')}” · ${r.call.people} ${t(r.call.people === 1 ? 'person' : 'people')}` : t(RPC_STATE[r.state] || r.state) + (r.state === 'closed' || r.state === 'not-authorised' || !r.detail ? '' : ` · ${r.detail}`));
+const rpcLabel = (r) => (r.call ? rpcLine(r) : t(RPC_STATE[r.state] || r.state));
+
 export async function render(main) {
   const ints = S.integrations = await api('GET', '/api/integrations');
   const s = S.settings;
@@ -46,6 +51,15 @@ export async function render(main) {
         <label class="row between"><span class="small">${t('Include the transcript')}</span>${switchEl('o-tr', s.obsidian.transcript)}</label>
         <label class="row between"><span class="small">${t('Export automatically after enhancing a meeting')}</span>${switchEl('o-auto', s.obsidian.autoExport)}</label>
         <div class="row"><button class="btn primary" data-act="o-save">${t('Save & test')}</button>${ints.obsidian.configured ? `<button class="btn" data-act="import-obsidian">${icon('download', 'sm')} ${t('Import notes')}</button><button class="btn" data-act="o-all">${icon('upload', 'sm')} ${t('Export all meetings')}</button>` : ''}<span class="small" id="o-status"></span></div>`)}
+
+      ${card('discord-rpc', '#5865f2', 'users', t('Discord, without a bot'), ints.discordRpc.configured ? (ints.discordRpc.enabled ? rpcLabel(ints.discordRpc) : t('Set up — switched off')) : t('Know who is in your Discord call and who speaks, with nobody joining'), ints.discordRpc.configured && ints.discordRpc.enabled, `
+        <div class="small muted">${t('The Discord app on this computer tells WhisperBrain which voice call you are in, who is in it and when each person speaks. No bot joins and nobody else sees anything. It gives no audio per person: voices are still told apart from the recording, and these names are put on them afterwards.')}</div>
+        <ol class="steps"><li>${t('Open the')} <a href="https://discord.com/developers/applications" target="_blank" rel="noopener noreferrer">${t('Discord Developer Portal')}</a> → <b>New Application</b> (your own; you are its tester).</li><li>${t('OAuth2 → Redirects → add')} <code>http://localhost</code>. ${t('Copy the Client ID and the Client Secret below.')}</li><li>${t('Switch it on, save, then press Authorise and accept in the Discord app (Discord must be running).')}</li></ol>
+        ${field('r-id', t('Client ID'), `<input id="r-id" value="${esc(ints.discordRpc.clientId)}" inputmode="numeric" placeholder="123456789012345678" autocomplete="off">`)}
+        ${field('r-secret', t('Client secret'), `<input id="r-secret" type="password" value="${ints.discordRpc.configured ? MASK : ''}" autocomplete="off">`)}
+        <label class="row between"><span class="small">${t('Follow my Discord calls')}</span>${switchEl('r-on', ints.discordRpc.enabled)}</label>
+        <div class="row"><button class="btn primary" data-act="r-save">${t('Save')}</button><button class="btn" data-act="r-auth" ${ints.discordRpc.configured ? '' : 'disabled'}>${t('Authorise in Discord')}</button>${ints.discordRpc.authorised ? `<button class="btn ghost sm" data-act="r-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="r-status">${esc(rpcLine(ints.discordRpc))}</span></div>
+        <div class="xsmall muted mt-s">${t('Limits: until Discord approves an application only its testers (up to 50) can use it, which is enough for your own use. Discord recommends its Social SDK for new projects, so this connection may stop working one day. The old WebSocket version of this connection is not used. It is not known yet whether private and group calls report people and speaking the same way as server channels: if a call shows nobody, that is why.')}</div>`)}
 
       ${card('discord', '#5865f2', 'users', 'Discord', ints.discord.configured ? (ints.discord.enabled ? t('The bot joins your voice call when you record') : t('Connected — switched off')) : t('A bot that hears each person in a call separately'), ints.discord.configured && ints.discord.enabled, `
         <div class="small muted">${t('On a Discord call the computer only plays one mixed sound, so people who talk at the same time blur together. With a bot in the call, Discord hands over every person on their own, so each line has the right name and overlapping speech is kept. Everyone in the call can see the bot; tell them you are recording.')}</div>
@@ -143,6 +157,14 @@ function bind(main, ints) {
           go(`#/note/${r.noteId}?tab=transcript`);
         } catch (e) { fail(e); } finally { b.disabled = false; }
       } else if (a === 'd-remove') { await save({ discord: { token: '', enabled: false, channelId: '' } }); render(main); }
+      else if (a === 'r-save') {
+        const secret = $('#r-secret').value.trim();
+        await save({ discordRpc: { clientId: $('#r-id').value.trim(), ...(secret && secret !== MASK ? { clientSecret: secret } : {}), enabled: $('#r-on').checked } });
+        done(t('Saved')); render(main);
+      } else if (a === 'r-auth') {
+        b.disabled = true; $('#r-status').textContent = t('Accept in the Discord app…');
+        try { const r = await api('POST', '/api/integrations/discord-rpc/authorise'); status('#r-status', true, rpcLine(r)); setTimeout(() => render(main), 900); } catch (e) { status('#r-status', false, e.message); } finally { b.disabled = false; }
+      } else if (a === 'r-remove') { await api('POST', '/api/integrations/discord-rpc/disconnect'); render(main); }
       else if (a === 'o-save') {
         await save({ obsidian: { vaultPath: $('#o-path').value.trim(), folder: $('#o-folder').value.trim() || 'Meetings', transcript: $('#o-tr').checked, autoExport: $('#o-auto').checked } });
         const r = await api('POST', '/api/integrations/obsidian/test');
@@ -165,7 +187,7 @@ function bind(main, ints) {
       else if (a === 'import-files') openImport();
     } catch (err) {
       fail(err); b.disabled = false;
-      const map = { 'n-save': '#n-status', 'l-save': '#l-status', 'o-save': '#o-status', 'g-connect': '#g-status', 'd-save': '#d-status' };
+      const map = { 'n-save': '#n-status', 'l-save': '#l-status', 'o-save': '#o-status', 'g-connect': '#g-status', 'd-save': '#d-status', 'r-save': '#r-status', 'r-auth': '#r-status' };
       if (map[a]) status(map[a], false, err.message);
     }
   };

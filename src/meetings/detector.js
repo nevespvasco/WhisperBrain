@@ -3,6 +3,7 @@
 // about to start. Emits 'meeting.detected' / 'meeting.autostarted' / 'meeting.ended' / 'meeting.starting', and
 // 'meeting.apps-changed' when the calls that are live change during a meeting (Zoom and Discord at once, one leaving), and can
 // start/stop a recording on its own (settings.autoRecord / autoStop). Pure state machine; `tick()` is timer-driven.
+const { PLATFORMS } = require('../meet/platforms');
 const { BROWSERS, classify, classifyWindowTitle, platformFromUrl, appName, pickTargetApp } = require('../platform/apps');
 
 const AUTO_MODES = ['off', 'ask', 'always'];
@@ -17,10 +18,10 @@ const unique = (xs) => [...new Set(xs)];
 const CHAT_HEARD = 3, CHAT_WINDOW_MS = 90_000, CHAT_HOLD_MS = 180_000;
 
 class MeetingDetector {
-  // signals: the hub of what the meeting window shows (src/meet/hub.js). A call it sees (the browser extension or the
+  // signals: the hub of what the meeting window shows (src/meet/hub.js); platforms: the registry that names the call it reports. A call it sees (the browser extension or the
   // accessibility reader says "in a call") counts as a meeting even where the microphone cannot be watched (macOS).
-  constructor({ platform, calendar, bus, settings, recording, notes = null, signals = null, now = Date.now, confirmTicks = 2, idleTicks = 5 }) {
-    Object.assign(this, { platform, calendar, bus, settings, recording, notes, signals, now, confirmTicks, idleTicks });
+  constructor({ platform, calendar, bus, settings, recording, notes = null, signals = null, platforms = PLATFORMS, now = Date.now, confirmTicks = 2, idleTicks = 5 }) {
+    Object.assign(this, { platform, calendar, bus, settings, recording, notes, signals, platforms, now, confirmTicks, idleTicks });
     this.streak = 0;
     this.idle = 0;
     this.latched = false;   // already announced for this mic session
@@ -57,15 +58,20 @@ class MeetingDetector {
   async checkMic() {
     const activity = await this.platform.micActivity();
     this.last = activity;
-    const users = activity.supported ? activity.apps || [] : [];
+    // what the meeting windows and the platforms' own apps say: a platform whose own app is connected (Discord over RPC) is
+    // believed over the sound of its app, which proves little (notification sounds, a stream that exists only while someone talks)
+    const sig = this.signals?.status();
+    const exact = new Set(sig?.authoritative || []);
+    const users = (activity.supported ? activity.apps || [] : []).filter((a) => !exact.has(appId(a)));
     // Window titles only matter when something holds the mic; a meeting window alone is never enough.
     const windows = users.length && this.platform.meetingWindows ? await this.platform.meetingWindows().catch(() => []) : [];
     const meetWins = windows.map((w) => ({ ...w, cls: classifyWindowTitle(w.title) })).filter((w) => w.cls);
     let apps = users.filter((a) => !a.weak || (isBrowser(a) && meetWins.length));
     apps = apps.concat(this.sustainedPlayback(users, apps));
     // a call the meeting window itself shows is a call, whatever the microphone says; it does not need a window title either
-    const seen = this.signals?.status().meeting;
-    if (!apps.length && seen?.inCall) apps = [{ name: 'Google Meet', appId: 'meet', weak: false, title: seen.title }];
+    const seen = sig?.meeting;
+    for (const c of sig?.calls || []) if (c.exact && !apps.some((a) => appId(a) === c.platform)) apps.push({ name: this.platforms.name(c.platform), appId: c.platform, weak: false, title: c.title });
+    if (!apps.length && seen?.inCall) apps = [{ name: this.platforms.name(seen.platform), appId: seen.platform, weak: false, title: seen.title }];
     if (!apps.length) {
       this.liveNow = [];
       this.idle++;

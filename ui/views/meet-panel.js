@@ -6,6 +6,7 @@ import { S, api, t, esc, icon, fail, done, switchEl } from '../lib.js';
 const SOURCES = [
   ['a11y', 'The browser, read directly', 'Reads the Meet page through the system\'s accessibility interface. Nothing to install in the browser.'],
   ['extension', 'Browser extension', 'A small extension for Chrome, Edge or Brave that tells WhisperBrain who is speaking.'],
+  ['rpc', 'Discord app (local connection)', 'Asks the Discord app on this computer which call you are in, who is in it and who speaks. Nobody joins the call.'],
   ['vision', 'A look at the window', 'Last resort: sends a picture of the meeting window to your AI model.'],
 ];
 const STATE = { connected: ['ok', 'Working'], waiting: ['', 'Waiting'], off: ['', 'Off'], 'needs-setup': ['warn', 'Needs setup'], denied: ['warn', 'Permission needed'], error: ['danger', 'Problem'] };
@@ -13,11 +14,16 @@ const OS = { linux: 'Linux', darwin: 'macOS', win32: 'Windows' };
 const meetKey = (k, v) => ({ meet: { ...S.settings.meet, [k]: v } });
 const toggle = (id, on, title, sub) => `<div class="set-row"><div class="l"><b>${esc(title)}</b>${sub ? `<span>${sub}</span>` : ''}</div>${switchEl(id, on, title)}</div>`;
 
-const sourceRow = (st, [id, name, sub]) => {
-  const s = st.sources.find((x) => x.id === id);
-  const [cls, label] = STATE[s?.state || 'off'] || STATE.off;
-  return `<div class="set-row"><div class="l"><b>${t(name)}</b><span>${t(sub)}${s?.detail ? `<br><em>${esc(s.detail)}</em>` : ''}</span></div><span class="badge ${cls}">${t(label)}</span></div>`;
+// One row per kind of source of one platform (st.platforms[i].sources): how it is doing and what it has said about this platform
+const sourceRow = (ps) => {
+  const [, name, sub] = SOURCES.find((x) => x[0] === ps.kind) || [ps.kind, ps.kind, ''];
+  const [cls, label] = STATE[ps.state || 'off'] || STATE.off;
+  return `<div class="set-row"><div class="l"><b>${t(name)}</b><span>${t(sub)}${ps.detail ? `<br><em>${esc(ps.detail)}</em>` : ''}</span></div><span class="badge ${cls}">${t(label)}</span></div>`;
 };
+
+const platformBlock = (p) => `<div class="platform" data-platform="${esc(p.id)}"><h5 class="mt-s">${esc(p.name)}</h5>
+  ${p.sources.map(sourceRow).join('')}
+  ${p.verified ? '' : `<div class="xsmall muted">${icon('alert', 'sm')} ${t('The built-in description of this page has not been checked against a real call yet. If names do not appear, see')} <code>npm run a11y:dump -- --platform ${esc(p.id)}</code>.</div>`}</div>`;
 
 function extensionSteps(os) {
   const urls = os === 'win32' ? 'chrome://extensions · edge://extensions' : 'chrome://extensions · brave://extensions';
@@ -54,8 +60,7 @@ export async function render() {
       ${toggle('meet-learn', m.learnVoices, t('Remember voices the call named clearly'), t('So the next meeting recognises them without any help. Only when the name was certain and the voice does not clash with one you saved.'))}
       ${toggle('meet-captions', m.captions, t('Use the meeting\'s live captions when they are on'), t('Matches the captions with the transcript word by word: the most reliable source of who said what. Needs the extension, and captions turned on in Meet.'))}
       <h4 class="mt">${t('Where the names come from')}</h4>
-      ${SOURCES.map((s) => sourceRow(st, s)).join('')}
-      <div class="xsmall muted mt-s">${st.a11y.selectorsVerified ? '' : `${icon('alert', 'sm')} ${t('The built-in description of the Meet page has not been checked against a real call yet. If names do not appear, see')} <code>npm run a11y:dump</code>.`}</div>
+      ${(st.platforms || []).map(platformBlock).join('')}
 
       <h4 class="mt">${t('The browser, read directly')} · ${OS[os] || os}</h4>
       ${toggle('meet-a11y', m.a11y, t('Read the meeting page through accessibility'), st.a11y.available ? t('Only while a recording is on.') : t('This build has no reader for this system.'))}

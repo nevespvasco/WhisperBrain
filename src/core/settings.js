@@ -117,13 +117,16 @@ const DEFAULTS = {
     captions: true,             // use the meeting's live captions (name and words) when the extension sends them
     vision: false,              // last resort: look at the meeting window and ask your local vision model who is speaking
   },
+  // Discord without a bot: the local RPC of the Discord desktop app (src/discord/rpc.js), through the person's own Discord application
+  // (developer portal; redirect http://localhost). Says which call the person is in, who is in it and who speaks; gives no audio.
+  discordRpc: { enabled: false, clientId: '', clientSecret: '', accessToken: '', refreshToken: '' },
   discord: { enabled: false, token: '', userId: '', guildId: '', channelId: '' }, // bot that joins your voice call and hears each person separately; userId = your own Discord user ID (found from your voice channel, and left out because the microphone already has you)
 };
 
 const MAX_TRANSLATION_TARGETS = 8;
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'translation', 'assistant']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'discordRpc', 'translation', 'assistant']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
-const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token'], meet: ['token'], discord: ['token'] };
+const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token'], meet: ['token'], discord: ['token'], discordRpc: ['clientSecret', 'accessToken', 'refreshToken'] };
 const MASK = '********';
 
 // Apply f to every secret string inside one setting's value (sync or async f), keeping the rest as it is.

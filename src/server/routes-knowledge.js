@@ -168,6 +168,17 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
 
   // ---- integrations ----
   r('GET', '/api/integrations', async () => app.integrations.status());
+  // Discord without a bot (the Discord app's local RPC)
+  r('GET', '/api/integrations/discord-rpc/status', async () => app.integrations.discordRpcStatus());
+  r('POST', '/api/integrations/discord-rpc/authorise', async () => {
+    try { await app.discordRpc.authorise(); } catch (e) { throw new HttpError(409, e.message); }
+    return app.integrations.discordRpcStatus();
+  });
+  r('POST', '/api/integrations/discord-rpc/disconnect', async () => {
+    app.settings.update({ discordRpc: { ...app.settings.get('discordRpc'), enabled: false, accessToken: '', refreshToken: '' } });
+    app.discordRpc.stop();
+    return app.integrations.discordRpcStatus();
+  });
   r('POST', '/api/integrations/:kind/test', async ({ params }) => app.integrations.test(params.kind));
   r('GET', '/api/integrations/notion/search', async ({ query }) => app.integrations.notion().search(query.q || '', { kind: query.kind || undefined }));
   r('GET', '/api/integrations/linear/teams', async () => app.integrations.linear().teams());

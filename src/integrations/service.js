@@ -19,6 +19,13 @@ class Integrations {
   linear() { const c = this.settings.get('linear'); if (!c.apiKey) throw err('Connect Linear first: add a personal API key in Integrations.', 412, 'not-configured'); return new LinearClient({ apiKey: c.apiKey, fetchImpl: this.fetch }); }
   obsidian() { const c = this.settings.get('obsidian'); if (!c.vaultPath) throw err('Choose your Obsidian vault folder in Integrations first.', 412, 'not-configured'); return new ObsidianVault({ vaultPath: c.vaultPath, folder: c.folder, transcript: c.transcript }); }
 
+  // Discord without a bot: what the card shows (the call is only how many people are in it, and its name)
+  discordRpcStatus() {
+    const c = this.settings.get('discordRpc');
+    const st = this.app.discordRpc?.status() || { state: 'off', detail: '', call: null };
+    return { configured: !!(c.clientId && c.clientSecret), enabled: c.enabled, authorised: !!c.accessToken, clientId: c.clientId, state: st.state, detail: st.detail, user: st.user ? st.user.name : null, call: st.call ? { id: st.call.id, name: st.call.name, people: st.call.people.length } : null };
+  }
+
   status() {
     const s = this.settings;
     const g = s.get('google');
@@ -28,6 +35,7 @@ class Integrations {
       obsidian: { configured: !!s.get('obsidian').vaultPath, ...s.get('obsidian') },
       google: { configured: !!g.clientId, connected: !!g.refreshToken, email: g.email, calendars: g.calendars },
       webhooks: s.publicView().webhooks,
+      discordRpc: this.discordRpcStatus(),
       discord: { configured: !!s.get('discord').token, enabled: s.get('discord').enabled, userId: s.get('discord').userId, guildId: s.get('discord').guildId, channelId: s.get('discord').channelId, call: this.app.discord?.status() || { joined: false } },
     };
   }

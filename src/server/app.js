@@ -28,6 +28,8 @@ const { Importer } = require('../knowledge/importer');
 const { Integrations } = require('../integrations/service');
 const { GoogleCalendar } = require('../meetings/google');
 const { DiscordVoice } = require('../discord/bot');
+const { DiscordRpc } = require('../discord/rpc');
+const { DiscordRpcSource } = require('../discord/rpc-source');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { nameFromTranscript, isLocalServer, LiveNames } = require('../speakers/transcript-names');
@@ -96,6 +98,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
   const meet = new MeetService({ settings, bus, version, llm: scheduler.client('background'), captureWindow, isRecording: () => recording.status().active, platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
+  // Discord's local RPC: which call the person is in, who is in it and who speaks (no bot). Its saved tokens come back through settings.
+  const discordRpc = new DiscordRpc({ getConfig: () => settings.get('discordRpc'), saveTokens: (tk) => settings.update({ discordRpc: { ...settings.get('discordRpc'), ...tk } }) });
+  const discordRpcSource = new DiscordRpcSource({ hub: meet.hub, rpc: discordRpc });
   const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings, briefings }, id) });
   const assistant = new AssistantService({ db: conn, notes, settings, bus, llm: scheduler, knowledge, briefings });
   assistant.attach();   // live help while recording (off until switched on in Settings → Assistant)
@@ -283,13 +288,18 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   backupTimer?.unref();
   if (detect) ready.then(() => setTimeout(backupIfDue, 20000).unref()).catch(() => {});
   retentionTimer?.unref();
-  if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); }).catch(() => {});
+  // the RPC connection restarts only when the application or the switch changes: saving a token is a settings change too
+  const rpcKey = () => { const c = settings.get('discordRpc'); return `${c.enabled}|${c.clientId}|${c.clientSecret}`; };
+  let rpcSeen = '';
+  const syncRpc = () => { if (rpcKey() === rpcSeen) return; rpcSeen = rpcKey(); discordRpc.start(); };
+  if (detect) ready.then(() => { detector.start(); warmDiscord(); meet.sync(); meet.watch(bus); discordRpcSource.start(); syncRpc(); }).catch(() => {});
+  bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discordRpc')) syncRpc(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('meet')) meet.sync(); });
   bus.subscribe((e) => { if (detect && e.type === 'settings' && e.data.keys.includes('discord')) warmDiscord(); });
 
   const app = Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
-    knowledge, analyze, openExternal, renderPdf, discord, meet,
+    knowledge, analyze, openExternal, renderPdf, discord, discordRpc, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings, translator }, id, opts),
@@ -345,6 +355,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
       clearInterval(retentionTimer);
       meet.close().catch(() => {});
       discord.logout().catch(() => {});
+      discordRpc.stop(); discordRpcSource.stop();
       engine.stop();
       const closeDb = () => { try { conn.close(); } catch { /* already closed */ } };
       self.settled = settings.box ? settings.flush().then(closeDb) : (closeDb(), Promise.resolve());   // a sealed write may still be queued

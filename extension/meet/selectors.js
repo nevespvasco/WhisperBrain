@@ -1,9 +1,9 @@
-// How Google Meet looks to the extension. Meet changes its page now and then: when names stop arriving, this is the
+// How each meeting platform looks to the extension (today only Google Meet; src/meet/platforms.js lists the same pages). Meet changes its page now and then: when names stop arriving, this is the
 // file to fix (or paste a fixed copy into the extension's options page, which wins over this one).
 //
 // NOT VERIFIED against a real call yet. Each entry is a list of CSS selectors tried in order; the first that finds
 // something is used. `attr` reads an attribute instead of the text.
-self.WB_MEET_SELECTORS = {
+const MEET_SELECTORS = {
   verified: false,
   // one box per participant on the screen
   tile: ['[data-participant-id]', '[data-requested-participant-id]'],
@@ -22,3 +22,10 @@ self.WB_MEET_SELECTORS = {
   // the meeting code, from the address
   code: '([a-z]{3}-[a-z]{4}-[a-z]{3})',
 };
+
+// One entry per platform the extension serves: the pages it runs on (the same match patterns as the manifest and as the
+// registry in src/meet/platforms.js) and the selectors for them. The content script picks the entry of the page it is on.
+self.WB_PLATFORMS = {
+  meet: { matches: ['https://meet.google.com/*'], hosts: ['meet.google.com'], selectors: MEET_SELECTORS },
+};
+self.WB_MEET_SELECTORS = MEET_SELECTORS;   // the name this file had before platforms
