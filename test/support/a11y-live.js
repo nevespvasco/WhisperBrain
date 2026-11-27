@@ -12,7 +12,18 @@ const { A11ySource, helperSpec } = require('../../src/meet/a11y-source');
 const { WB_BROWSER, WB_FLAG = '1', WB_RUN_MS = '7000', WB_ROOT } = process.env;
 const display = `:${100 + (process.pid % 100)}`;
 const kids = [];
-const run = (cmd, args, opts = {}) => { const c = cp.spawn(cmd, args, { stdio: 'ignore', ...opts }); kids.push(c); return c; };
+// What each child says on stderr and how it ended, kept so a run that heard nothing can say why (shown by the test when it runs on CI)
+const diag = {};
+const run = (cmd, args, opts = {}) => {
+  const name = path.basename(cmd);
+  const log = path.join(os.tmpdir(), `wb-live-${process.pid}-${name}.log`);
+  const c = cp.spawn(cmd, args, { stdio: ['ignore', 'ignore', fs.openSync(log, 'w')], ...opts });
+  c.on('exit', (code, sig) => { diag[name] = { ...diag[name], exit: code ?? sig }; });
+  c.on('error', (e) => { diag[name] = { ...diag[name], spawnError: e.message }; });
+  c.logFile = log; c.diagName = name;
+  kids.push(c);
+  return c;
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
@@ -43,7 +54,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(Number(WB_RUN_MS));
   const state = hub.status().sources.find((s) => s.id === 'a11y');
   src.stop();
-  console.log(JSON.stringify({ ...heard, state: state?.state, detail: state?.detail }));
+  for (const k of kids) { try { diag[k.diagName] = { ...diag[k.diagName], stderr: fs.readFileSync(k.logFile, 'utf8').slice(-600) }; } catch { /* no log */ } }
+  console.log(JSON.stringify({ ...heard, state: state?.state, detail: state?.detail, diag }));
   web.close();
   for (const k of kids.reverse()) { try { k.kill('SIGTERM'); } catch { /* gone */ } }
   await sleep(500);

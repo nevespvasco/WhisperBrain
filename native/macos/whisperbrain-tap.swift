@@ -278,6 +278,8 @@ case "system", "mic":
     if mode == "system" {
         var followed: pid_t?
         if let text = value(of: "--pid") { guard let p = pid_t(text), p > 0 else { fail("bad --pid", code: 2) }; followed = p }
+        // nothing to follow: refused here (exit 2), not reported as "ended" (exit 3), which is for a process that was running
+        if let p = followed, kill(p, 0) != 0, errno == ESRCH { fail("cannot watch process \(p) (not running)", code: 2) }
         if let p = followed {
             // watched before the tap exists, so an exit in between cannot be missed: WhisperBrain then carries on with the whole output
             let exitWatch = DispatchSource.makeProcessSource(identifier: p, eventMask: .exit, queue: .main)

@@ -63,7 +63,12 @@ jobs:
           ./scripts/build-loopback.ps1
           ./build/loopback/whisperbrain-loopback.exe selftest; if ($LASTEXITCODE -ne 0) { throw 'selftest failed' }
           ./build/loopback/whisperbrain-loopback.exe probe
-          ./build/loopback/whisperbrain-loopback.exe system --pid 999999; if ($LASTEXITCODE -ne 2) { throw "expected exit 2, got $LASTEXITCODE" }
+          # the helper must refuse a process that does not exist with exit 2: that is checked here, so a native exit code must not fail the step by itself
+          $PSNativeCommandUseErrorActionPreference = $false
+          ./build/loopback/whisperbrain-loopback.exe system --pid 999999
+          $code = $LASTEXITCODE
+          if ($code -ne 2) { throw "expected exit 2, got $code" }
+          exit 0
 
   dist:
     needs: test
