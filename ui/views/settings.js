@@ -342,7 +342,7 @@ function bind(main, sec, body) {
       await save(patch);
       if (e.target.id === 'set-collapsed') { document.getElementById('app')?.classList.toggle('collapsed', !!S.settings.sidebarCollapsed); done(t('Saved')); }   // a class on the app: no reload needed
       else if (['set-lang', 'set-speakers'].includes(e.target.id)) location.reload();
-      else if (e.target.id.startsWith('tr-') || ['tp-enabled', 'tp-scroll'].includes(e.target.id)) rerender();   // what shows depends on these   // the list of languages, and what shows when translation is on
+      else if (e.target.id.startsWith('tr-') || ['tp-enabled', 'tp-scroll'].includes(e.target.id)) await rerender();   // what shows depends on these   // the list of languages, and what shows when translation is on
       else done(t('Saved'));
     } catch (err) { fail(err); }
   });

@@ -278,7 +278,7 @@ grabWith(root.querySelector('.tp-resize'), (dx, dy) => bridge.resize(dx, dy));
 bridge?.onCmd(command);
 events({
   open: async () => { await loadSettings(); try { S.noteId = (await api('GET', '/api/recording')).noteId || null; } catch { /* retried on the next event */ } },
-  settings: (d) => { if (!d?.keys || d.keys.includes('teleprompter') || d.keys.includes('language')) loadSettings(); },
+  settings: (d) => { if (!d?.keys || d.keys.includes('teleprompter') || d.keys.includes('language')) void loadSettings(); },   // never rejects: it catches inside
   'recording.started': (d) => { S.noteId = d.noteId; },
   'assistant.question': (d) => onSuggestion('assistant.question', d),
   'assistant.sentence': (d) => onSuggestion('assistant.sentence', d),
@@ -291,5 +291,5 @@ events({
 });
 applyCfg();
 render();
-loadSettings();
+void loadSettings();
 requestAnimationFrame(frame);
