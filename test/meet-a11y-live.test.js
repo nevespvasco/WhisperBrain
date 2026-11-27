@@ -21,7 +21,9 @@ function live(flag) {
   });
   const line = out.stdout.split('\n').filter((l) => l.startsWith('{')).pop();
   assert.ok(line, `the runner printed nothing: ${out.stderr.slice(-500)}`);
-  return JSON.parse(line);
+  const r = JSON.parse(line);
+  if (process.env.CI) console.error('[live a11y diagnostics]', JSON.stringify({ flag, state: r.state, detail: r.detail, code: r.code, roster: r.roster, diag: r.diag }));
+  return r;
 }
 
 test('live (Linux): with accessibility on, the helper reads the call and who speaks, and the hub hears it', { skip: missing || false, timeout: 90000 }, () => {

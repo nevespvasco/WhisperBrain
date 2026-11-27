@@ -137,7 +137,8 @@ class ItemStore {
 
   grant(id) { return grantOf(this.source(id)); }
 
-  source(id) { return srcRow(this.db.prepare('SELECT * FROM sources WHERE id = ?').get(id)); }
+  // a missing id is simply "not found": node:sqlite on Node 24 refuses `undefined` as a parameter (newer Nodes bind it as NULL)
+  source(id) { return id == null ? null : srcRow(this.db.prepare('SELECT * FROM sources WHERE id = ?').get(id)); }
 
   sources() {
     const counts = new Map(this.db.prepare('SELECT source_id, COUNT(*) AS n FROM items WHERE deleted_at IS NULL GROUP BY source_id').all().map((r) => [r.source_id, r.n]));
@@ -192,7 +193,7 @@ class ItemStore {
   }
 
   // ---------- items ----------
-  item(id) { return itemRow(this.db.prepare('SELECT * FROM items WHERE id = ?').get(id)); }
+  item(id) { return id == null ? null : itemRow(this.db.prepare('SELECT * FROM items WHERE id = ?').get(id)); }
   byExternal(sourceId, externalId) { return itemRow(this.db.prepare('SELECT * FROM items WHERE source_id = ? AND external_id = ?').get(sourceId, String(externalId))); }
   forNote(noteId) { return itemRow(this.db.prepare('SELECT * FROM items WHERE note_id = ?').get(noteId)); }
 
