@@ -173,7 +173,9 @@ const SECTION = {
       ${row(t('Language'), '', `<select id="set-lang"><option value="en" ${s.language === 'en' ? 'selected' : ''}>English</option><option value="pt" ${s.language === 'pt' ? 'selected' : ''}>Português</option></select>`)}
       ${row(t('Theme'), '', `<div class="seg-ctl" role="tablist">${[['system', t('System'), 'settings'], ['light', t('Light'), 'sun'], ['dark', t('Dark'), 'moon']].map(([v, l, ic]) => `<button type="button" role="tab" data-theme-v="${v}" aria-selected="${s.theme === v}">${icon(ic, 'sm')}${l}</button>`).join('')}</div>`)}
       ${row(t('Start page'), t('What you see when you open the app.'), `<select id="set-start"><option value="home" ${s.startPage !== 'meetings' ? 'selected' : ''}>${t('Home')}</option><option value="meetings" ${s.startPage === 'meetings' ? 'selected' : ''}>${t('Meetings')}</option></select>`)}
-      ${tog('set-collapsed', s.sidebarCollapsed, t('Compact sidebar'), t('Only the four doors on the left; the list next to them is hidden.'))}</section>`;
+      ${tog('set-collapsed', s.sidebarCollapsed, t('Compact sidebar'), t('Only the four doors on the left; the list next to them is hidden.'))}</section>
+      <section class="panel"><div class="panel-head"><h3>${t('Updates')}</h3></div>
+      ${tog('set-updates', s.checkUpdates !== false, t('Look for new versions'), t('Checks the project\'s GitHub releases every few hours and downloads a new version in the background; it asks before restarting. Works for the Windows installer and the Linux AppImage. Nothing else is sent.'))}</section>`;
   },
   async meetings() {
     const s = S.settings;
@@ -307,7 +309,7 @@ const SECTION = {
 function bind(main, sec, body) {
   const rerender = () => render(main, { parts: ['settings', sec] });
   const map = {
-    'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-ptx': (v) => ({ platformTranscript: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
+    'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-updates': (v) => ({ checkUpdates: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-ptx': (v) => ({ platformTranscript: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
     'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-pipeline': (v) => ({ speakerPipeline: v ? 'owned' : 'sherpa' }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
     'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }), 'set-rerank': (v) => ({ rerank: v }),

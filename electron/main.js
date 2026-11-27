@@ -1,7 +1,8 @@
 'use strict';
 const path = require('node:path');
 const fs = require('node:fs');
-const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen, safeStorage } = require('electron');
+const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen, safeStorage, dialog } = require('electron');
+const { supported: updatesSupported, createUpdates } = require('./updates');
 const { electronSecretBox } = require('../src/core/secret-box');
 const { SIZE, shouldShow, placeWithin, defaultBounds, expandedSize } = require('./float');
 const { planHotkeys } = require('../src/assistant/hotkeys');
@@ -54,6 +55,7 @@ let registeredHotkey = null;
 let assistantKeys = [];      // accelerators registered for the meeting assistant
 let assistantKeysFailed = ''; // what was last reported as unavailable (settings change often: say it once)
 let origin = '';
+let updates = null;          // automatic updates (Windows installer, Linux AppImage); null where they do not apply
 
 // The OS clipboard as the platform adapters expect it (sync read/write of text).
 const hostClipboard = { read: () => clipboard.readText(), write: (t) => clipboard.writeText(t) };
@@ -93,11 +95,44 @@ async function start() {
   setupSession();
   buildMenu();
   createWindow(`${url}/?token=${token}`);
+  setupUpdates(); // before the tray, so its menu can offer "Check for updates"
   createTray();
   wireEvents();
   wireFloat();
   registerHotkey();
   registerAssistantKeys();
+}
+
+// New versions come from the GitHub Releases of this project. See electron/updates.js for where this applies.
+function setupUpdates() {
+  if (SMOKE || !updatesSupported({ platform: process.platform, packaged: app.isPackaged, env: process.env })) return;
+  try {
+    const { autoUpdater } = require('electron-updater');
+    updates = createUpdates({
+      updater: autoUpdater,
+      enabled: () => core.settings.get('checkUpdates') !== false,
+      busy: () => !!core.recording.status().active,
+      notify,
+      ask: async (version) => {
+        const r = await dialog.showMessageBox(win && !win.isDestroyed() ? win : undefined, {
+          type: 'info', buttons: ['Restart now', 'Later'], defaultId: 0, cancelId: 1,
+          message: `WhisperBrain ${version} is ready`,
+          detail: 'The update is downloaded. Restart to use it; your meetings and settings stay as they are.',
+        });
+        return r.response === 0;
+      },
+      restart: async () => {
+        shuttingDown = true; // shutdown() runs here, once; the before-quit handler then lets the quit through
+        await shutdown();
+        // Windows: the installer waits for this process to end and starts the new version. Linux: replace the AppImage, then relaunch it ourselves.
+        if (process.platform === 'linux') app.relaunch({ execPath: process.env.APPIMAGE, args: ['--no-sandbox'] });
+        autoUpdater.quitAndInstall(false, process.platform === 'win32');
+      },
+      log: (level, m) => console[level === 'info' ? 'log' : level](`updates: ${m}`),
+    });
+    core.bus.subscribe((e) => { if (e.type === 'recording.stopped') setTimeout(() => updates?.offer(), 5000); });
+    updates.start();
+  } catch (e) { console.warn('updates unavailable:', e.message); }
 }
 
 function setupSession() {
@@ -189,6 +224,7 @@ function createTray() {
         { label: 'Open WhisperBrain', click: showWindow },
         { label: rec ? 'Stop recording' : 'Start a new recording', click: async () => { try { if (rec) await core.recording.stop(); else { const n = core.notes.create({}); await core.recording.start(n.id); showWindow(); } } catch (e) { notify('WhisperBrain', e.message); } } },
         { label: 'Toggle dictation', click: () => toggleDictation(), enabled: !!core.settings.get('dictation').enabled },
+        ...(updates ? [{ label: 'Check for updates', click: () => updates.check({ byHand: true }) }] : []),
         { type: 'separator' },
         { label: 'Quit', click: () => { quitting = true; app.quit(); } },
       ]));

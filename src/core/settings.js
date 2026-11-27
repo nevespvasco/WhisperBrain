@@ -68,6 +68,7 @@ const DEFAULTS = {
   defaultTemplate: 'general',
   autoSummarize: false,         // summarize automatically when a recording stops
   detectMeetings: true,
+  checkUpdates: true,           // look for a new version on GitHub (Windows installer and Linux AppImage); off = nothing is contacted
   notifyUpcoming: true,
   calendar: { sources: [] },    // [{ id, name, kind: 'url'|'file', location }]
   dictation: {

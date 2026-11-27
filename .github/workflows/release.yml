@@ -52,6 +52,9 @@ jobs:
             dist/*.dmg
             dist/*-mac.zip
             dist/*.exe
+            dist/latest.yml
+            dist/latest-linux.yml
+            dist/*.exe.blockmap
 
   publish:
     needs: build
@@ -77,8 +80,9 @@ jobs:
           | Linux (any) | `WhisperBrain-*.AppImage` | `chmod +x WhisperBrain-*.AppImage` and run it |
           | macOS Apple silicon | `WhisperBrain-*-arm64.dmg` | Unsigned: drag to Applications, then right-click → Open (or `xattr -dr com.apple.quarantine /Applications/WhisperBrain.app`) |
           | macOS Intel | `WhisperBrain-*.dmg` (no `arm64`) | as above |
-          | Windows | `WhisperBrain Setup *.exe` | Unsigned: SmartScreen → More info → Run anyway |
+          | Windows | `WhisperBrain-Setup-*.exe` (installer; `WhisperBrain-Portable-*.exe` needs no install and does not update itself) | Unsigned: SmartScreen → More info → Run anyway |
 
+          Windows (installer) and Linux (AppImage) check for new versions by themselves and ask before restarting; the `latest*.yml` and `.blockmap` files in this release are what they read, do not delete them. The `.deb` and macOS builds are updated by installing the new file.
           Speech models are downloaded on first use from Settings → Audio & transcription. Checksums: `SHA256SUMS.txt`.
           Linux is tested on real hardware; the macOS and Windows builds start and pass the smoke test on CI, but have not been tried on a real call yet.
           EOF

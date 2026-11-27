@@ -100,4 +100,14 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-publish: null
+  # GitHub turns spaces in asset names into dots; latest.yml must name the file as it will be stored or the update download 404s
+  artifactName: WhisperBrain-Setup-${version}.${ext}
+portable:
+  artifactName: WhisperBrain-Portable-${version}.${ext}
+# Where the app looks for new versions (electron-updater) and what latest*.yml points at. The release workflow uploads the files
+# itself (--publish never), so this only describes the place.
+publish:
+  provider: github
+  owner: nevespvasco
+  repo: WhisperBrain
+  releaseType: release
