@@ -257,6 +257,7 @@ test('linux: with echo cancellation on and available, the mic is the echo-cancel
   assert.equal(src.aec.reference, 'speakers');
   assert.deepEqual(cancellers[0].started, { mic: 'mic', sink: 'speakers', noiseSuppression: false, autoGain: true });
   // it records from the cancelled node, not from the raw mic
+  src.on('error', () => {}); // pw-record may not exist where the tests run: its spawn error is not what this test is about
   src.start();
   assert.deepEqual(src.inner.args.slice(-3), ['--target', 'wb-fake-aec', '-']);
   src.stop();

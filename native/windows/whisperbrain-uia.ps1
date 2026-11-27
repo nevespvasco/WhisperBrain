@@ -22,6 +22,7 @@ $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+Add-Type -AssemblyName WindowsBase   # [System.Windows.Rect] lives here and is not loaded by default
 $refs = @([System.Windows.Automation.AutomationElement].Assembly.Location, [System.Windows.Automation.ControlType].Assembly.Location, [System.Windows.Rect].Assembly.Location, 'System.Core')
 Add-Type -ReferencedAssemblies $refs -TypeDefinition @'
 using System;

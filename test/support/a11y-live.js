@@ -27,7 +27,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const launcher = ['/usr/libexec/at-spi-bus-launcher', '/usr/lib/at-spi2-core/at-spi-bus-launcher'].find((p) => fs.existsSync(p));
   run(launcher, ['--launch-immediately']);
   await sleep(1500);
-  run(WB_BROWSER, [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', ...(WB_FLAG === '1' ? ['--force-renderer-accessibility'] : []), url]);
+  run(WB_BROWSER, [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', ...(process.env.CI ? ['--no-sandbox'] : []), ...(WB_FLAG === '1' ? ['--force-renderer-accessibility'] : []), url]);
   await sleep(6000);
 
   const hub = new SignalHub();

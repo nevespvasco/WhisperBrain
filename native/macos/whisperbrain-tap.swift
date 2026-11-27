@@ -234,8 +234,9 @@ func selftest() -> Never {
     }
     let bytes = converter.convert(buffer)
     let count = bytes.count / 2
-    // the converter may hold back a few frames until it has more input: a second of tone gives about a second of output
-    guard abs(count - Int(outRate)) < 800 else { fail("selftest: \(count) samples for one second of tone") }
+    // the resampler keeps back its filter latency (measured: 15018 of 16000 samples on a CI Mac, ~60 ms, a constant delay that a
+    // running stream pays once): a second of tone gives about a second of output, at most ~125 ms short
+    guard count > Int(outRate) - 2000, count < Int(outRate) + 800 else { fail("selftest: \(count) samples for one second of tone") }
     let samples: [Int16] = bytes.withUnsafeBytes { Array($0.bindMemory(to: Int16.self)) }
     // pitch by Goertzel: the energy at 440 Hz must be nearly all of it
     func power(_ f: Double) -> Double {

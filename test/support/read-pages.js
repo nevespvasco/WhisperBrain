@@ -47,10 +47,13 @@ async function readPages(cases, { timeoutMs = 45000 } = {}) {
   const display = `:${300 + (process.pid % 90)}`;
   run('Xvfb', [display, '-screen', '0', '1280x800x24']);
   await sleep(800);
-  const b = cp.spawn(bin, [`--user-data-dir=${path.join(tmp, 'profile')}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', `http://127.0.0.1:${web.address().port}/`], { stdio: 'ignore', env: { ...process.env, DISPLAY: display } });
+  const b = cp.spawn(bin, [`--user-data-dir=${path.join(tmp, 'profile')}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', ...(process.env.CI ? ['--no-sandbox'] : []), `http://127.0.0.1:${web.address().port}/`], { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, DISPLAY: display } });
+  let browserErr = '';
+  b.stderr.on('data', (d) => { browserErr = (browserErr + d).slice(-600); });
+  b.on('exit', (code, sig) => { browserErr += `\n[browser exited: ${code ?? sig}]`; });
   kids.push(b);
   try {
-    return await Promise.race([result, sleep(timeoutMs).then(() => { throw new Error('the browser did not report in time'); })]);
+    return await Promise.race([result, sleep(timeoutMs).then(() => { throw new Error(`the browser did not report in time${browserErr ? `: ${browserErr.trim()}` : ''}`); })]);
   } finally {
     web.close();
     for (const k of kids.reverse()) { try { k.kill('SIGTERM'); } catch { /* gone */ } }

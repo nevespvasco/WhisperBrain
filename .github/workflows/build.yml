@@ -11,6 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 24, cache: npm }
+      # Ubuntu 24.04 blocks unprivileged user namespaces, which Chromium-based browsers need to start (the live browser tests)
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: sudo apt-get update && sudo apt-get install -y xvfb libx11-dev libxi-dev libxtst-dev libatspi2.0-dev at-spi2-core dbus-x11
       - run: npm ci
       - run: npm run build:x11

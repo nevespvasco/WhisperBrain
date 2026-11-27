@@ -46,7 +46,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   run('Xvfb', [display, '-screen', '0', '1280x800x24']);
   await sleep(1000);
   process.env.DISPLAY = display;
-  run(WB_BROWSER, [`--user-data-dir=${path.join(tmp, 'profile')}`, `--load-extension=${ext}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', `http://127.0.0.1:${web.address().port}/abc-defg-hij`]);
+  run(WB_BROWSER, [`--user-data-dir=${path.join(tmp, 'profile')}`, `--load-extension=${ext}`, '--no-first-run', '--no-default-browser-check', '--disable-gpu', '--password-store=basic', ...(process.env.CI ? ['--no-sandbox'] : []), `http://127.0.0.1:${web.address().port}/abc-defg-hij`]);
   await sleep(Number(WB_RUN_MS));
   console.log(JSON.stringify({ ...heard, hub: hub.status().sources.map((s) => [s.id, s.kind, s.state]) }));
   await intake.close();
