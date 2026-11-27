@@ -9,15 +9,19 @@
 //     durable job that retries with a growing pause for a bounded time, because platforms publish the transcript minutes after the call;
 //   - every way it can end has a reason in words, and the file drop (the existing attach) is always the way out.
 const { TranscriptError } = require('./providers');
+const { PLATFORMS: REGISTRY } = require('../meet/platforms');
 
-const PLATFORMS = ['teams', 'zoom', 'meet'];
+const PLATFORMS = REGISTRY.list().filter((p) => p.transcript).map((p) => p.id);   // the platforms that publish a transcript of their own (platforms.js)
 const ATTEMPTS = 6;                       // with the queue's pauses (5 s, 30 s, 2 min, 10 min, 10 min): about 23 minutes
 const FIRST_DELAY_MS = 30_000;            // the first try after an automatic start: the platform needs a moment after the call ends
 const PERMANENT = new Set(['unknown', 'not-connected', 'no-link', 'auth', 'forbidden', 'disabled', 'no-names', 'no-match', 'deleted']);
 const HINT = 'You can also drop the transcript file you export from the platform (.vtt, .srt or .docx) on the note.';
 
 // the meeting link a platform is asked about, from the code its window showed (src/transcripts/providers.js meetingRef reads these)
-const JOIN = { meet: (c) => (/^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(c) ? `https://meet.google.com/${c.toLowerCase()}` : ''), zoom: (c) => (/^\d{9,12}$/.test(c) ? `https://zoom.us/j/${c}` : ''), teams: (c) => (/^\d{9,15}$/.test(c) ? `https://teams.live.com/meet/${c}` : '') };
+const joinLink = (platform, code) => {
+  const t = REGISTRY.get(platform)?.transcript;
+  return t && new RegExp(t.code, 'i').test(String(code)) ? t.join.replace('{code}', String(code).toLowerCase()) : '';
+};
 
 // What went wrong, in words a person can act on. -> { code, message, hint }
 function reasonFor(provider, code, label, detail = '') {
@@ -59,11 +63,11 @@ class PlatformTranscripts {
     const note = notes.get(noteId);
     if (!note || !platform) return;
     if (!note.platform) notes.update(noteId, { platform });
-    const url = JOIN[platform]?.(String(code || ''));
+    const url = joinLink(platform, code || '');
     if (url && !knowledge.links(noteId).some((l) => l.url && l.url.startsWith(url.replace(/\/\d+$/, '/')) && l.url.includes(String(code)))) knowledge.addLink(noteId, { kind: 'url', url, title: `${this.label(platform)} meeting` });
   }
 
-  label(platform) { return (this.app.transcripts?.providers?.[platform] || {}).label || { teams: 'Microsoft Teams', zoom: 'Zoom', meet: 'Google Meet' }[platform] || platform; }
+  label(platform) { return (this.app.transcripts?.providers?.[platform] || {}).label || REGISTRY.name(platform); }
 
   lastJob(noteId) {
     const row = this.app.db.prepare("SELECT id FROM jobs WHERE kind = 'transcript.fetch' AND key = ? ORDER BY id DESC LIMIT 1").get(`transcript:${noteId}`);

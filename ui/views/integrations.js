@@ -98,7 +98,14 @@ async function loadTeams(ints) {
   sel.innerHTML = `<option value="">${t('Choose a team')}</option>${teams.map((tm) => `<option value="${tm.id}" data-name="${esc(tm.name)}" ${tm.id === ints.linear.teamId ? 'selected' : ''}>${esc(tm.name)} (${esc(tm.key)})</option>`).join('')}`;
 }
 
+let rpcPoll = null;   // the Discord card shows which call you are in, live
 function bind(main, ints) {
+  clearInterval(rpcPoll);
+  rpcPoll = setInterval(async () => {
+    const el = $('#r-status');
+    if (!el) { clearInterval(rpcPoll); return; }   // the page was left
+    try { el.textContent = rpcLine(await api('GET', '/api/integrations/discord-rpc/status')); } catch { /* the app is busy: the next one */ }
+  }, 3000);
   const status = (id, ok, msg) => { const el = $(id, main); if (el) { el.textContent = `${ok ? '✓' : '✗'} ${msg}`; el.style.color = ok ? 'var(--ok)' : 'var(--danger)'; } };
   main.onclick = async (e) => {
     const gm = e.target.closest('[data-gmode]');

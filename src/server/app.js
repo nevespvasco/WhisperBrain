@@ -101,7 +101,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const meet = new MeetService({ settings, bus, version, llm: scheduler.client('background'), captureWindow, isRecording: () => recording.status().active, onTabAudio: (c) => recording.acceptTabAudio(c), platformId: plat.id === 'fake' ? process.platform : plat.id, dataDir, roots: [path.join(__dirname, '..', '..', 'build'), path.join(__dirname, '..', '..', 'native'), process.resourcesPath ? path.join(process.resourcesPath, '') : ''].filter(Boolean) });
   // Discord's local RPC: which call the person is in, who is in it and who speaks (no bot). Its saved tokens come back through settings.
   const discordRpc = new DiscordRpc({ getConfig: () => settings.get('discordRpc'), saveTokens: (tk) => settings.update({ discordRpc: { ...settings.get('discordRpc'), ...tk } }) });
-  const discordRpcSource = new DiscordRpcSource({ hub: meet.hub, rpc: discordRpc });
+  const discordRpcSource = new DiscordRpcSource({ hub: meet.hub, rpc: discordRpc, bot: () => discord.status() });   // the bot hears each person on their own: when it is in the same call this source steps aside
   const recording = new RecordingManager({ notes, engine, models, settings, platform: plat, bus, speakers, discord, meet: meet.hub, evidence, spoolDir: path.join(dataDir, 'spool'), vocabulary: (id) => termsForNote({ notes, speakers, knowledge, settings, briefings }, id) });
   const assistant = new AssistantService({ db: conn, notes, settings, bus, llm: scheduler, knowledge, briefings });
   assistant.attach();   // live help while recording (off until switched on in Settings → Assistant)
@@ -300,7 +300,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
 
   const app = Object.assign(self, {
     version, dataDir, importer, integrations, google, bus, db: conn, jobs, runner, backupNow, listBackups: () => listBackups(settings.get('backupDir')), items, sources, aiRuns, chunkIndex, mayShare, assertions, reminders, briefs, inbox, actions, reviews, supersession, projects, rules, lock, entities: knowledge.entities, notes, speakers, evidence, semantic, settings, templates, models, engine, platform: plat, llm, scheduler, ai, translator, briefings, assistant, recording, calendar, detector, dictation, account,
-    knowledge, analyze, openExternal, renderPdf, discord, discordRpc, meet,
+    knowledge, analyze, openExternal, renderPdf, discord, discordRpc, discordRpcSource, meet,
     ready,                       // resolves when the secrets are opened: await it before anything reads an API key
     settled: Promise.resolve(),  // after close(): resolves once the last sealed write is on disk
     meeting: (id, opts) => toMeeting({ notes, knowledge, speakers, settings, translator }, id, opts),

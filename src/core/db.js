@@ -592,7 +592,7 @@ const MIGRATIONS = [
     PRIMARY KEY (rule_id, assertion_id)
   );
   `,
-  // v: platform accounts as identities (docs/adr/0001-brain-data-model.md lists the Discord id among the identifiers of a person).
+  // v25: platform accounts as identities (docs/adr/0001-brain-data-model.md lists the Discord id among the identifiers of a person).
   // A platform account ('discord:<user id>') is strong, like an e-mail address. SQLite cannot change a CHECK, so the table is
   // rebuilt with the same rows and ids (merges record identity ids). note_speakers.account: the account a voice was named with.
   `

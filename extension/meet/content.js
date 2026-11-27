@@ -1,4 +1,4 @@
-// Runs on a meeting page of a platform the extension serves (Google Meet today): reads it now and then and tells the background script what changed. Nothing is
+// Runs on a meeting page of a platform the extension serves (see selectors.js): reads it now and then and tells the background script what changed. Nothing is
 // sent anywhere from here; the background script passes it to the WhisperBrain app on this computer.
 (() => {
   const R = self.WbMeetReader;

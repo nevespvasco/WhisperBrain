@@ -141,3 +141,11 @@ The two desktop apps are read like the browsers, with no extension: the same hel
 - [ ] macOS: same; and Teams: does the AX tree appear without the browser's `AXManualAccessibility` step?
 - [ ] Linux: Zoom with and without the Qt switch; write the answer here and in Settings.
 - [ ] The CI `native` job still builds the three helpers (nothing in them changed: the apps and titles come as arguments).
+
+## Open items found in review
+
+- **#33 echo and alignment were not measured on a replayed call.** `test/tab-audio.test.js` uses synthetic speech-like audio (the microphone's echo of the tab stream is dropped by the energy check, and the clock padding/trimming is exact), which shows the plumbing, not how much echo a real replayed call leaves. "One click" is two (the extension's button opens its popup, then the button inside): Chrome needs the user's gesture on the extension.
+- **#35 Zoom desktop**: `zoom.json` reads the participants list and the "Talking: <name>" label. There are no separate gallery-view or speaker-view tile selectors: nobody has seen how Zoom exposes tiles to the accessibility API. Add them from the first real dump.
+- **#36**: the platform of a recording is the one whose meeting windows said most while recording (`collector.call()`), not the meeting detector's guess; a recording with no meeting-window signal has no platform and gets no offer (the platform can be set on the note by hand).
+- **Tests that need a browser** (`test/meet-web-platforms.test.js`, `test/meet-extension.test.js` live) are skipped without Xvfb and a non-snap Chromium-based browser; CI should have one for them to count.
+- **#26 "all existing tests pass unchanged"**: `test/meet-extension.test.js` had to change for #30 and #33 (the extension now serves more pages and asks for `tabCapture`, `offscreen` and `activeTab`); a few expectations in the new `test/meet-platforms.test.js` changed when Teams and Zoom joined the registry.

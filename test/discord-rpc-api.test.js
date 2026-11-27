@@ -56,3 +56,22 @@ test('routes: authorise asks the Discord app and answers with the state; disconn
   const c = app.settings.get('discordRpc');
   assert.deepEqual([c.enabled, c.accessToken, c.refreshToken, c.clientId], [false, '', '', '1'], 'the application stays set up; the access goes');
 });
+
+test('the Discord bot is wired into the RPC source: in the same call the bot hears each person, so the call is told and the names are not', async (t) => {
+  const { app } = await boot(t);
+  const types = [];
+  app.meet.hub.on('signal', (s) => { if (s.kind === 'rpc') types.push(s.msg.type); });
+  app.discordRpc.s.user = { id: '100', name: 'Vasco' };
+  const rpc = app.discordRpc;
+  const call = (id) => { rpc.s.call = { id, name: 'Standup' }; rpc.people.set('200', { id: '200', name: 'Ana Silva' }); rpc.emit('call', rpc.s.call); rpc.emit('roster', rpc.roster()); rpc.emit('speaking', { userId: '200', speaking: true }); };
+  app.discordRpcSource.start();
+  app.discord.status = () => ({ joined: true, channelId: 'c1' });
+  call('c1');
+  assert.deepEqual(types, ['meeting'], 'the bot is in this very channel');
+  types.length = 0; rpc.emit('call', null);
+  types.length = 0;
+  app.discord.status = () => ({ joined: false });
+  call('c2');
+  assert.deepEqual(types, ['meeting', 'roster', 'speaker']);
+  app.discordRpcSource.stop();
+});

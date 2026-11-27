@@ -16,6 +16,8 @@
 //   extension.matches         the pages the browser extension runs on (match patterns, as in its manifest)
 //   lagMs                     how long after a voice starts a source of that kind shows it, on this platform
 //   accounts                  true: the ids its people carry are stable platform account ids (identities of a person, see src/graph/entities.js)
+//   transcript                the platform publishes its own transcript after a call (src/transcripts/offer.js): the meeting link made from a
+//                             meeting code ({code} in `join`, `code` is what a code looks like)
 //   rpc                       true: the platform's own app is asked over a local connection instead (Discord)
 //   verified                  (in the selectors file) whether the selectors were checked against a real call
 
@@ -42,6 +44,7 @@ const MEET = {
   },
   selectors: 'meet.json',
   userFile: 'meet-selectors.json',
+  transcript: { join: 'https://meet.google.com/{code}', code: '^[a-z]{3}-[a-z]{4}-[a-z]{3}$' },
   extension: { matches: ['https://meet.google.com/*'] },
   lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },
 };
@@ -72,6 +75,7 @@ const TEAMS = {
   // should look like the web page's). On Linux Teams is web only: the extension reads it. NOT verified on a real machine.
   apps: { win32: 'ms-teams|teams', darwin: 'Microsoft Teams|MSTeams|com\\.microsoft\\.teams2' },
   selectors: 'teams.json',
+  transcript: { join: 'https://teams.live.com/meet/{code}', code: '^\\d{9,15}$' },
   extension: { matches: ['https://teams.microsoft.com/*', 'https://teams.live.com/*'] },
   lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },   // the extension's is a guess: it has not been measured on a real call
 };
@@ -86,6 +90,7 @@ const ZOOM = {
   // switch): it is watched so that `npm run a11y:dump -- --platform zoom` can MEASURE that; nothing says it works there yet.
   apps: { win32: 'zoom', darwin: 'zoom\\.us|us\\.zoom\\.xos', linux: 'zoom' },
   selectors: 'zoom.json',
+  transcript: { join: 'https://zoom.us/j/{code}', code: '^\\d{9,12}$' },
   extension: { matches: ['https://*.zoom.us/wc/*'] },
   lagMs: { extension: 300, a11y: 500, vision: 1500, captions: 0 },
 };

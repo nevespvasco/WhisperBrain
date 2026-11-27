@@ -44,3 +44,24 @@ Joining or leaving a Discord voice call is a `meeting` message of platform `disc
   - [ ] Linux real call: the card shows the call and the number of people; joining/leaving gives *meeting detected* / *ended*.
   - [ ] macOS and Windows: use the documented socket paths (tested with the fake only).
   - [ ] Measure the lag of `SPEAKING_START` against the real start of speech (see #28) and replace the default in `src/meet/platforms.js` (`lagMs.rpc`, now a guess of 150 ms).
+
+## Naming accuracy on the simulated call set (#28)
+
+`node eval/discord-rpc-naming.js` runs a six-turn, three-voice call through the whole path (RPC events → source → hub → collector → the existing vote) and scores it with the eval's own `namingAccuracy` (share of speech time that carries the right name). The event streams are synthetic: they show what the vote does with this kind of signal, not what Discord's real events look like.
+
+| Stream | Naming accuracy |
+|---|---|
+| no names (before) | 0 % |
+| clean stream, 150 ms / 400 ms / 1000 ms after the voice starts | 100 % |
+| 2 of the 6 highlights name the wrong person | 100 % (outvoted) |
+| every voice overlapped by a second speaker the whole time | 0 %, nobody named, **nothing wrong** |
+| the stream names one person for everybody | 0 %, and 12 s of speech carries a wrong name: a stream that is wrong everywhere cannot be told from a right one |
+
+**WDER is not reported.** The RPC source changes who a voice is called, not where the segments are: the speaker pipeline is untouched, so its WDER is what it was. (The voice fixes the names can trigger, joining or splitting voices, work as before and need real audio to score; the eval set that scores WDER needs datasets that are not in this checkout.) **The lag is not measured either**: the default (150 ms) is a guess and has to be replaced with a measurement against the existing Discord speaker test recording (the bot's per-person streams as reference, evaluation only), which needs a real call.
+
+## Still open (nothing here could be run without a real Discord)
+
+- [ ] Do server voice channels, DM calls and group calls all report the selected channel, the people and the speaking events?
+- [ ] Measure the `SPEAKING_START` lag and set `lagMs.rpc` in `src/meet/platforms.js`.
+- [ ] Naming accuracy and WDER on a real call with the speaker test recording as reference.
+- [ ] The bot joining *after* the RPC source already told the roster: the source checks on every roster and speaking event, so it stops naming from the next event on, but what it already said stays.

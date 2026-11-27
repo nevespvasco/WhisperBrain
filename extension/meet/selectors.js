@@ -1,4 +1,4 @@
-// How each meeting platform looks to the extension (today only Google Meet; src/meet/platforms.js lists the same pages). Meet changes its page now and then: when names stop arriving, this is the
+// How each meeting platform looks to the extension (Google Meet, Teams, Zoom's web client, Discord; src/meet/platforms.js lists the same pages). Meet changes its page now and then: when names stop arriving, this is the
 // file to fix (or paste a fixed copy into the extension's options page, which wins over this one).
 //
 // NOT VERIFIED against a real call yet. Each entry is a list of CSS selectors tried in order; the first that finds
@@ -49,7 +49,7 @@ const ZOOM_SELECTORS = {
   panelRequired: true,
   tile: '.gallery-video-container__video-frame, .speaker-active-container__video-frame, .speaker-bar-container__video-frame',   // gallery and speaker view, one list
   name: [{ sel: '.video-avatar__avatar-name' }, { sel: '.gallery-video-container__name' }, { sel: '[class*="avatar-name" i]' }],
-  speaking: ['.speaker-active-container__video-frame', '[class*="active-speaker" i]', '.video-avatar__avatar--speaking'],
+  speaking: ['[class*="active-speaker" i]', '.video-avatar__avatar--speaking'],   // not the big frame of speaker view: it keeps showing the last speaker in silence
   self: ['[class*="self-view" i]', '[data-is-self="true"]'],
   people: { list: '.participants-ul, [aria-label*="articipants list" i]', row: '.participants-item__item-layout, [role="listitem"]', nameSel: '.participants-item__display-name' },
   captions: { container: '#live-transcription-subtitle, .live-transcription-subtitle__box', block: ':scope > div', name: '.live-transcription-subtitle__author', text: '.live-transcription-subtitle__text' },

@@ -53,7 +53,7 @@ export async function render() {
   const pairing = m.extension && st.extension.listening ? await api('GET', '/api/meet/pairing').catch(() => null) : null;
   return `<section class="panel" id="meet-panel"><div class="panel-head"><h3>${t('Names from the meeting window')}</h3></div>
     <div class="small muted">${t('The call\'s window shows who is speaking. WhisperBrain uses that to put the right name on each voice, and the people on the call to know how many voices to expect. Everything stays on this computer.')}</div>
-    ${toggle('meet-enabled', m.enabled, t('Name the voices from the meeting window'), t('Works with Google Meet, Teams, Zoom (web) and Discord in Chrome, Edge or Brave. Names you type yourself are never replaced, and a voice WhisperBrain already knows keeps its name.'))}
+    ${toggle('meet-enabled', m.enabled, t('Name the voices from the meeting window'), t('Google Meet, Teams, Zoom and Discord in Chrome, Edge or Brave (only Google Meet is described from real pages so far; the others have not been checked on a real call). Names you type yourself are never replaced, and a voice WhisperBrain already knows keeps its name.'))}
     ${m.enabled ? `
       ${toggle('meet-headcount', m.headcount, t('Use the people on the call as the number of voices'), t('A call of up to 6 other people. Better than the calendar guest list: it says who actually joined.'))}
       ${toggle('meet-refine', m.refine, t('Let the names fix the voices'), t('Joins one person who was heard as two voices, and splits two people who were heard as one, when the names say so clearly.'))}

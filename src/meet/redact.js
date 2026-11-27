@@ -3,10 +3,10 @@
 // nodes nest, class and tag names, and the few words the page uses for itself ("Speaking", "Participants", "(You)").
 // What must not leave a call is who was in it and what was said, so every other name is replaced by its length.
 // This is a best effort that a person reads over before sharing; it never promises to catch everything.
+const { PLATFORMS, DEFAULT_PLATFORM } = require('./platforms');
+
 const KEEP = /^(?:speaking|is speaking|talking|participants?|people|in this call|in call|chat|mute(?:d)?|unmute|turn (?:on|off) (?:camera|microphone)|camera|microphone|present(?:ing|ation)?|raise hand|hand raised|leave call|meeting details|a falar|participantes|pessoas)$/i;
 const KEEP_ATTR = new Set(['tag', 'class', 'id', 'xml-roles', 'display', 'role', 'aria-live', 'explicit-name', 'name-from']);
-
-const { PLATFORMS, DEFAULT_PLATFORM } = require('./platforms');
 
 const mask = (s) => `«${[...String(s)].length}»`;
 
