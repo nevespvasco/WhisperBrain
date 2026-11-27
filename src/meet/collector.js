@@ -18,6 +18,8 @@ class MeetingCollector {
     this.rosters = new Map();    // source -> { t, participants }
     this.captions = [];          // [{ t, name, text, final, lagMs }]
     this.selfKeys = new Set();   // names the sources marked as the user
+    this.codes = new Map();      // platform -> the meeting code its window showed (a `meeting` message)
+    this.counts = new Map();     // platform -> how many messages it sent
     this.listener = (s) => this.on(s);
     hub.on('signal', this.listener);
   }
@@ -27,6 +29,9 @@ class MeetingCollector {
   on({ msg, source, lagMs }) {
     if (this.paused()) return;
     const t = this.elapsed();
+    const platform = msg.platform || DEFAULT_PLATFORM;
+    this.counts.set(platform, (this.counts.get(platform) || 0) + 1);
+    if (msg.type === 'meeting' && msg.inCall && msg.code) this.codes.set(platform, msg.code);
     if (msg.type === 'speaker') {
       if (msg.self && msg.name) this.selfKeys.add(nameKey(msg.name));
       const list = this.events.get(source) || [];
@@ -49,6 +54,13 @@ class MeetingCollector {
     let best = null;
     for (const r of this.rosters.values()) if (!best || r.t > best.t) best = r;
     return best?.participants || null;
+  }
+
+  // The call this recording was about, as the meeting windows said: the platform that spoke most and its meeting code. null when nothing
+  // was heard.
+  call() {
+    const best = [...this.counts.entries()].sort((a, b) => b[1] - a[1])[0];
+    return best ? { platform: best[0], code: this.codes.get(best[0]) || '' } : null;
   }
 
   rosterIsPartial() {

@@ -653,6 +653,8 @@ class RecordingManager {
     Promise.resolve(this.engine.setDraft?.(null)).catch(() => {}); // and its own drafts: nothing streams between recordings
     const note = this.notes.update(a.noteId, { status: 'done', endedAt: Date.now() });
     this.notes.reindex(a.noteId);
+    const call = a.meet?.call();
+    if (call) this.bus.publish('recording.call', { noteId: a.noteId, ...call });   // which platform the call was on, for what is fetched from it afterwards
     this.bus.publish('recording.stopped', { noteId: a.noteId, durationMs: a.accMs });
     return { noteId: a.noteId, durationMs: a.accMs, note };
   }

@@ -42,6 +42,7 @@ const NAMES_TIMEOUT_MS = 90000;   // names from the conversation must not hold t
 const { loadPolicy } = require('../core/policy');
 const { buildSetup, which } = require('../platform/setup');
 const { TranscriptService } = require('../transcripts/service');
+const { PlatformTranscripts } = require('../transcripts/offer');
 const { SemanticIndex, HashEmbedder } = require('../search/semantic');
 const { JobQueue } = require('../jobs/queue');
 const { JobRunner } = require('../jobs/runner');
@@ -362,6 +363,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     },
   });
   app.transcripts = new TranscriptService({ app });   // the platforms' own transcripts (src/transcripts)
+  app.platformTranscripts = new PlatformTranscripts({ app });   // the offer to fetch them after a recording, as a retrying job
+  app.platformTranscripts.attach(bus);
+  runner.register('transcript.fetch', (payload, ctx) => app.platformTranscripts.run(payload, ctx), { lane: 'network' });   // waiting for a platform never holds up the local jobs
   return app;
 }
 

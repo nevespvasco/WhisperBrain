@@ -12,7 +12,8 @@ const LEASE_MS = 10 * 60_000;                            // a running job not fi
 const KEEP_FINISHED_MS = 14 * 86_400_000;                // done/cancelled rows are kept two weeks for the Activity page
 
 class JobQueue {
-  constructor(db, { now = () => Date.now(), bus = null } = {}) {
+  constructor(db, { now = () => Date.now(), bus = null, backoff = BACKOFF_MS } = {}) {
+    this.backoff = backoff;
     this.db = db;
     this.now = now;
     this.bus = bus;
@@ -62,7 +63,7 @@ class JobQueue {
     const t = this.now();
     const message = String(error?.message || error || 'failed').slice(0, 2000);
     const again = retry && job.attempts < job.maxAttempts;
-    const wait = BACKOFF_MS[Math.min(job.attempts - 1, BACKOFF_MS.length - 1)] || BACKOFF_MS[0];
+    const wait = this.backoff[Math.min(job.attempts - 1, this.backoff.length - 1)] || this.backoff[0];
     this.db.prepare(`UPDATE jobs SET state = ?, last_error = ?, lease_until = NULL, run_after = ?, finished_at = ?, updated_at = ? WHERE id = ?`)
       .run(again ? 'queued' : 'failed', message, again ? t + wait : job.runAfter, again ? null : t, t, id);
     const out = this.get(id);

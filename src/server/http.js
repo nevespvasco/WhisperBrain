@@ -224,6 +224,14 @@ function createRoutes(app) {
     try { return await app.transcripts.fetchForNote(params.id, String(body.provider || '')); } catch (e) { throw transcriptError(e); }
   });
 
+  // after a Teams / Zoom / Meet recording: the offer to fetch the platform's own transcript (a retrying job), and its state
+  add('GET', '/api/notes/:id/platform-transcript', async ({ params }) => { noteOr404(params.id); return app.platformTranscripts.offer(params.id); });
+  add('POST', '/api/notes/:id/platform-transcript', async ({ params }) => {
+    noteOr404(params.id);
+    if (app.recording.status().active) throw new HttpError(409, 'a recording is in progress');
+    try { return app.platformTranscripts.start(params.id); } catch (e) { throw new HttpError(e.status || 409, e.message, e.code); }
+  });
+
   // the "this call is recorded" notice, to paste into the meeting chat
   add('GET', '/api/consent/notice', async ({ query }) => noticeRoute(app, query));
 

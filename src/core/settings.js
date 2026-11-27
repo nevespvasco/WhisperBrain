@@ -17,6 +17,7 @@ const DEFAULTS = {
   setupSeen: false,             // the first-run "is this computer ready?" check has been shown (Settings → Setup check opens it again)
   theme: 'system',              // system | light | dark
   asrModel: 'auto',             // model id, or 'auto' = best installed
+  platformTranscript: 'ask',    // after a Teams, Zoom or Google Meet recording: 'ask' (the note offers to fetch the platform's own transcript), 'auto' (fetch it by itself when an account is connected and the meeting link is known) or 'off'
   asrLanguage: 'auto',          // hint for multilingual models
   asrThreads: defaultAsrThreads(), // speech-model threads; the user's value (1..16) overrides this
   asrHotwords: true,            // bias live recognition towards the meeting's attendees, glossary terms and known speakers (about 20% more CPU while the list is non-empty)
