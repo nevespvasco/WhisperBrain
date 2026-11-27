@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WhisperBrain teleprompter</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="prompter.css">
+</head>
+<body class="prompter">
+<div id="tp" class="tp" data-mode="voice">
+  <header class="tp-bar">
+    <span class="tp-grip" title=""></span>
+    <span class="tp-status"></span>
+    <span class="tp-tools"></span>
+  </header>
+  <div class="tp-view"><div class="tp-text"></div></div>
+  <div class="tp-toast" hidden></div>
+  <span class="tp-resize" aria-hidden="true"></span>
+</div>
+<script type="module" src="prompter.js"></script>
+</body>
+</html>

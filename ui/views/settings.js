@@ -266,13 +266,18 @@ const SECTION = {
     S.languages ||= await api('GET', '/api/languages');
     const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
     const sel = (id, value, opts) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
-    const keys = [['answer', t('Answer now')], ['regenerate', t('Another angle')], ['ask', t('Ask about the call')], ['toggle', t('Assistant on / off')], ['screenshot', t('Question on screen')]];
+    const tp = S.settings.teleprompter;
+    const withValue = (list, v) => (list.includes(v) ? list : [...list, v].sort((x, y) => x - y)); // a value set with the mouse wheel over the teleprompter
+    const keys = [['answer', t('Answer now')], ['regenerate', t('Another angle')], ['ask', t('Ask about the call')], ['toggle', t('Assistant on / off')], ['screenshot', t('Question on screen')],
+      ['prompter', t('Teleprompter: show / hide')], ['prompterPause', t('Teleprompter: pause / resume')], ['prompterBack', t('Teleprompter: one sentence back')], ['prompterNext', t('Teleprompter: one sentence on')]];
     return `<section class="panel"><div class="panel-head"><h3>${t('Assistant')}</h3><a class="link" href="#/briefings">${icon('doc', 'sm')} ${t('Briefings')}</a></div>
       <p class="hint" style="margin-top:0">${t('While a meeting is recorded, the assistant notices questions from the other people on the call and prepares a short suggestion from your briefings (project notes, an agenda, client or company notes) and what was said. It also keeps a live summary and explains technical terms. It is visible to you only on your screen, like any window: it does not hide from screen sharing.')}</p>
       ${!S.settings.llm?.baseUrl ? `<div class="banner warn small">${icon('alert')}<div class="grow">${t('Set up an AI server under AI first.')}</div></div>` : ''}
       ${S.settings.llm?.baseUrl && !local ? `<div class="banner small">${icon('alert')}<div class="grow">${t('Your AI server is not on this computer. The assistant only runs with it if you allow it below: what is said on the call is then sent to that server.')}</div></div>` : ''}
       ${tog('as-enabled', a.enabled, t('Assistant in every recorded meeting'), t('You can also switch it on or off for one meeting from the meeting page.'))}
-      ${row(t('Style'), t('Bullet points: short points to glance at. Spoken reply: a first-person reply you can say aloud, for example when presenting or answering a client.'), sel('as-mode', a.mode, [['bullets', t('Bullet points')], ['spoken', t('Spoken reply')]]))}
+      ${tp.enabled
+        ? row(t('Style'), t('The teleprompter is on, so suggestions are written as a spoken reply to read aloud. Your choice comes back when you switch it off.'), `<select id="as-mode" disabled><option>${esc(t('Spoken reply (teleprompter)'))}</option></select>`)
+        : row(t('Style'), t('Bullet points: short points to glance at. Spoken reply: a first-person reply you can say aloud, for example when presenting or answering a client.'), sel('as-mode', a.mode, [['bullets', t('Bullet points')], ['spoken', t('Spoken reply')]]))}
       ${row(t('When'), t('Automatic: a question from the other side prepares help by itself. Manual: only when you press the shortcut or the button.'), sel('as-trigger', a.trigger, [['auto', t('Automatic')], ['manual', t('Manual')]]))}
       ${row(t('Wait before showing'), t('How long the other side must be quiet before a suggestion appears (a question with a question mark is shown sooner).'), sel('as-reveal', a.revealMs, [[800, '0.8 s'], [1500, '1.5 s'], [2500, '2.5 s'], [4000, '4 s']]))}
       ${row(t('Length'), '', sel('as-words', a.words, [[50, t('Very short')], [90, t('Short')], [150, t('Medium')], [250, t('Long')]]))}
@@ -280,6 +285,14 @@ const SECTION = {
       ${row(t('Live summary'), t('Decisions, action items and open questions, refreshed while the meeting goes on.'), sel('as-summary', a.liveSummaryMin, [[0, t('Only when I ask')], [1, t('Every minute')], [3, t('Every 3 minutes')], [5, t('Every 5 minutes')], [10, t('Every 10 minutes')]]))}
       ${tog('as-terms', a.termCards, t('Explain technical terms'), t('A one-line explanation of acronyms and technical names the others use, saved to your glossary.'))}
       ${tog('as-remote', a.allowRemote, t('Allow an AI server that is not on this computer'), t('Off: the assistant only runs with a local AI server. On: what is said on the call is sent to your configured server.'))}
+      <div class="divider"></div><div class="xsmall muted strong" style="margin-bottom:6px">${t('Teleprompter')}</div>
+      ${tog('tp-enabled', tp.enabled, t('Teleprompter'), t('The suggestion in large text, in its own window at the top of the screen, just under the camera, so you can read it while looking at the call. It opens while a meeting is recorded with the assistant on. Like any window, it shows in a screen share.'))}
+      ${tp.enabled ? `
+      ${row(t('Scrolling'), t('By your voice: the text follows what you read aloud into your microphone. Steady speed: it scrolls at the pace you set.'), sel('tp-scroll', tp.scroll, [['voice', t('By your voice')], ['speed', t('Steady speed')]]))}
+      ${tp.scroll === 'speed' ? row(t('Speed'), t('Words per minute. Most people read aloud at 130 to 160.'), sel('tp-wpm', tp.wpm, [80, 100, 120, 140, 160, 180, 200, 220].map((n) => [n, t('{n} words/min', { n })]))) : ''}
+      ${row(t('Text size'), t('Also Ctrl + mouse wheel over the teleprompter.'), sel('tp-size', tp.fontSize, withValue([24, 28, 34, 42, 52, 64], tp.fontSize).map((n) => [n, `${n} px`])))}
+      ${row(t('Background'), t('Also Shift + mouse wheel over the teleprompter. The text stays fully visible.'), sel('tp-opacity', tp.opacity, withValue([0.4, 0.6, 0.85, 1], tp.opacity).map((n) => [n, `${Math.round(n * 100)}%`])))}
+      ${tog('tp-mirror', tp.mirror, t('Mirror the text'), t('For a teleprompter glass that reflects the screen.'))}` : ''}
       <div class="divider"></div><div class="xsmall muted strong" style="margin-bottom:6px">${t('Global shortcuts')} <span class="muted">(${t('leave empty to switch one off')})</span></div>
       ${keys.map(([k, l]) => row(l, '', `<input id="as-key-${k}" value="${esc(a.hotkeys[k] || '')}" placeholder="CommandOrControl+Alt+…">`)).join('')}
       <div class="row mt-s"><button class="btn primary" data-act="as-save-keys">${t('Save shortcuts')}</button><span id="as-keys-result" class="small"></span></div>
@@ -317,6 +330,8 @@ function bind(main, sec, body) {
     'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
     'as-enabled': (v) => ({ assistant: { enabled: v } }), 'as-mode': (v) => ({ assistant: { mode: v } }), 'as-trigger': (v) => ({ assistant: { trigger: v } }), 'as-reveal': (v) => ({ assistant: { revealMs: Number(v) } }),
     'as-words': (v) => ({ assistant: { words: Number(v) } }), 'as-lang': (v) => ({ assistant: { language: v } }), 'as-summary': (v) => ({ assistant: { liveSummaryMin: Number(v) } }), 'as-terms': (v) => ({ assistant: { termCards: v } }), 'as-remote': (v) => ({ assistant: { allowRemote: v } }),
+    'tp-enabled': (v) => ({ teleprompter: { enabled: v } }), 'tp-scroll': (v) => ({ teleprompter: { scroll: v } }), 'tp-wpm': (v) => ({ teleprompter: { wpm: Number(v) } }), 'tp-size': (v) => ({ teleprompter: { fontSize: Number(v) } }),
+    'tp-opacity': (v) => ({ teleprompter: { opacity: Number(v) } }), 'tp-mirror': (v) => ({ teleprompter: { mirror: v } }),
   };
   body.addEventListener('change', async (e) => {
     const f = map[e.target.id];
@@ -327,7 +342,7 @@ function bind(main, sec, body) {
       await save(patch);
       if (e.target.id === 'set-collapsed') { document.getElementById('app')?.classList.toggle('collapsed', !!S.settings.sidebarCollapsed); done(t('Saved')); }   // a class on the app: no reload needed
       else if (['set-lang', 'set-speakers'].includes(e.target.id)) location.reload();
-      else if (e.target.id.startsWith('tr-')) rerender();   // the list of languages, and what shows when translation is on
+      else if (e.target.id.startsWith('tr-') || ['tp-enabled', 'tp-scroll'].includes(e.target.id)) rerender();   // what shows depends on these   // the list of languages, and what shows when translation is on
       else done(t('Saved'));
     } catch (err) { fail(err); }
   });
@@ -342,7 +357,7 @@ function bind(main, sec, body) {
       else if (b.dataset.trDel) { await save({ translation: { targets: S.settings.translation.targets.filter((c) => c !== b.dataset.trDel) } }); rerender(); }
       else if (b.dataset.trFirst) { await save({ translation: { targets: [b.dataset.trFirst, ...S.settings.translation.targets.filter((c) => c !== b.dataset.trFirst)] } }); rerender(); }
       else if (b.dataset.act === 'as-save-keys') {
-        const hotkeys = Object.fromEntries(['answer', 'regenerate', 'ask', 'toggle', 'screenshot'].map((k) => [k, body.querySelector(`#as-key-${k}`).value.trim()]));
+        const hotkeys = Object.fromEntries([...body.querySelectorAll('input[id^="as-key-"]')].map((el) => [el.id.slice('as-key-'.length), el.value.trim()]));
         await save({ assistant: { hotkeys } });
         body.querySelector('#as-keys-result').textContent = t('Saved');
       }

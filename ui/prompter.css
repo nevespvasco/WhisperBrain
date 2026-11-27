@@ -1,0 +1,53 @@
+/* Teleprompter: large light text on a dark see-through panel, the same in the light and dark themes (it is read at a glance,
+   over whatever is behind it). The window is transparent: only the panel paints. */
+html, body.prompter { background: transparent !important; overflow: hidden; height: 100%; color-scheme: dark !important; }
+body.prompter { margin: 0; user-select: none; -webkit-user-select: none; cursor: default; }
+
+.tp {
+  --tp-size: 34px; --tp-alpha: .85; --tp-flip: 1;
+  position: relative; height: 100%; display: flex; flex-direction: column; box-sizing: border-box;
+  border-radius: 16px; overflow: hidden; color: #f4f2fb;
+  background: rgba(14, 13, 22, var(--tp-alpha)); border: 1px solid rgba(255, 255, 255, .08);
+}
+
+/* The bar appears while the pointer is over the window. */
+.tp-bar { position: absolute; inset: 0 0 auto 0; z-index: 2; display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 8px 0 10px;
+  background: linear-gradient(rgba(14, 13, 22, .92), rgba(14, 13, 22, .6)); opacity: 0; transition: opacity .15s ease; cursor: grab; }
+.tp:hover .tp-bar, .tp.show-bar .tp-bar { opacity: 1; }
+.tp-bar:active { cursor: grabbing; }
+.tp-grip { width: 14px; height: 14px; border-radius: 3px; background: radial-gradient(circle, rgba(255,255,255,.45) 1.2px, transparent 1.4px) 0 0 / 5px 5px; flex: none; }
+.tp-status { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; color: rgba(244, 242, 251, .72); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tp-tools { display: flex; align-items: center; gap: 4px; }
+.tp-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; min-width: 24px; padding: 0 7px; border-radius: 7px; border: 0;
+  background: rgba(255, 255, 255, .1); color: inherit; font: 600 12px/1 system-ui, sans-serif; cursor: pointer; }
+.tp-btn:hover { background: rgba(255, 255, 255, .2); }
+.tp-btn.on { background: color-mix(in srgb, var(--accent, #8b7cf6) 70%, transparent); }
+.tp-btn svg { width: 14px; height: 14px; }
+.tp-btn[hidden] { display: none; }
+
+/* The text. The view scrolls; the reading line is a third of the way down. */
+.tp-view { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: none; padding: 0 28px; }
+.tp-view::-webkit-scrollbar { display: none; }
+.tp-text { transform: scaleX(var(--tp-flip)); padding: 38px 0 60vh; font-size: var(--tp-size); line-height: 1.38; font-weight: 600; letter-spacing: .005em; overflow-wrap: anywhere; }
+.tp-empty { font-size: max(15px, calc(var(--tp-size) * .5)); font-weight: 500; color: rgba(244, 242, 251, .55); }
+.tp-q { font-size: max(13px, calc(var(--tp-size) * .42)); font-weight: 600; color: rgba(244, 242, 251, .55); margin-bottom: .4em; line-height: 1.35; }
+.tp-card.old { font-size: .55em; opacity: .38; margin-bottom: .9em; }
+.tp-card.old .tp-q { display: none; }
+.tp-s { transition: color .25s ease, opacity .25s ease; border-radius: .15em; }
+.tp-s.read { color: rgba(244, 242, 251, .42); }
+.tp-s.cur { color: #fff; background: rgba(139, 124, 246, .22); box-shadow: 0 0 0 .08em rgba(139, 124, 246, .22); }
+.tp-s.gap { text-decoration: underline dotted rgba(140, 190, 255, .9); text-underline-offset: .18em; text-decoration-thickness: .06em; }
+.tp-card:not(.done) .tp-s.open::after { content: ''; display: inline-block; width: .08em; height: .9em; margin-left: .08em; vertical-align: -.1em; background: currentColor; animation: tp-caret 1s steps(1) infinite; }
+.tp-card.bullets .tp-s { display: block; }
+.tp-card.bullets .tp-s::before { content: '•  '; color: rgba(244, 242, 251, .5); }
+.tp-err { font-size: max(14px, calc(var(--tp-size) * .45)); color: #ffb4a8; }
+.tp-legend { font-size: max(12px, calc(var(--tp-size) * .34)); font-weight: 500; color: rgba(244, 242, 251, .5); margin-top: .5em; }
+@keyframes tp-caret { 50% { opacity: 0; } }
+
+.tp-toast { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 6px 12px; border-radius: 999px; background: rgba(0, 0, 0, .7); font: 600 12px system-ui, sans-serif; z-index: 3; }
+.tp-toast[hidden] { display: none; }
+.tp-resize { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; cursor: nwse-resize; z-index: 3;
+  background: linear-gradient(135deg, transparent 55%, rgba(255,255,255,.35) 55%, rgba(255,255,255,.35) 62%, transparent 62%, transparent 72%, rgba(255,255,255,.35) 72%, rgba(255,255,255,.35) 79%, transparent 79%); opacity: 0; transition: opacity .15s; }
+.tp:hover .tp-resize { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) { .tp-s { transition: none; } .tp-card:not(.done) .tp-s.open::after { animation: none; } }
