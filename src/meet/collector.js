@@ -2,6 +2,7 @@
 // What one recording learns from the meeting window: who was highlighted when, who is on the call, the captions.
 // Created when a recording starts, asked at the end (names for the voices, how many voices to expect).
 const { nameKey } = require('./protocol');
+const { PLATFORMS, DEFAULT_PLATFORM } = require('./platforms');
 const { activeIntervals, rawIntervals, estimateLag, speechOf, nameSpeakers, remoteHeadCount } = require('./names');
 const { alignCaptions, mergeIntervals } = require('./captions');
 
@@ -32,7 +33,7 @@ class MeetingCollector {
       if (list.length < MAX_EVENTS) { list.push({ t, name: msg.self ? null : msg.name, lagMs }); this.events.set(source, list); }
     } else if (msg.type === 'roster') {
       for (const p of msg.participants) if (p.self && p.name) this.selfKeys.add(nameKey(p.name));
-      this.rosters.set(source, { t, participants: msg.participants });
+      this.rosters.set(source, { t, participants: msg.participants, platform: msg.platform });
     } else if (msg.type === 'caption') {
       if (msg.self && msg.name) this.selfKeys.add(nameKey(msg.name));
       if (this.captions.length < MAX_EVENTS) this.captions.push({ t, name: msg.self ? null : msg.name, text: msg.text, final: msg.final, lagMs, source });
@@ -48,6 +49,17 @@ class MeetingCollector {
     let best = null;
     for (const r of this.rosters.values()) if (!best || r.t > best.t) best = r;
     return best?.participants || null;
+  }
+
+  // The platform accounts of the people on the call: name key -> 'discord:<id>'. Only for the platforms whose ids are account ids
+  // (Meet's tile ids are not), from the roster that reported last.
+  accounts(platforms = PLATFORMS) {
+    let best = null;
+    for (const r of this.rosters.values()) if (!best || r.t > best.t) best = r;
+    const out = new Map();
+    if (!best || !platforms.get(best.platform || DEFAULT_PLATFORM)?.accounts) return out;
+    for (const p of best.participants) if (p.id && p.name && !p.self) out.set(nameKey(p.name), `${best.platform}:${p.id}`);
+    return out;
   }
 
   // How many other voices to expect on the system audio, or null (no roster, or a call too big to say). See names.js.

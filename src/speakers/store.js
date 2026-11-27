@@ -46,7 +46,7 @@ class Speakers {
   // ---- per-note speakers ----
   forNote(noteId) {
     const rows = this.db.prepare(`
-      SELECT ns.speaker_id AS speakerId, ns.channel, ns.name, ns.name_source AS nameSource, ns.name_confidence AS nameConfidence, ns.voice_id AS voiceId, v.name AS voiceName, ns.count, ns.centroid, ns.pitch,
+      SELECT ns.speaker_id AS speakerId, ns.channel, ns.name, ns.name_source AS nameSource, ns.name_confidence AS nameConfidence, ns.account, ns.voice_id AS voiceId, v.name AS voiceName, ns.count, ns.centroid, ns.pitch,
              ns.suggested_voice_id AS suggestedVoiceId, sv.name AS suggestedName, ns.suggested_score AS suggestedScore, ns.quality, ns.model, ns.alt_centroid AS altCentroid, ns.alt_model AS altModel,
              (SELECT COALESCE(SUM(end_ms - start_ms), 0) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS talkMs,
              (SELECT COUNT(*) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS segments
@@ -99,13 +99,22 @@ class Speakers {
 
   // A speaker whose identity is known from outside the audio (a Discord user): no voice print, named from the start.
   // A name the user has already changed is kept.
-  ensureNamed(noteId, speakerId, name, channel = 'system') {
-    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, count, name, name_source, name_confidence) VALUES(?, ?, ?, 0, ?, 'stream', 1)
-      ON CONFLICT(note_id, speaker_id) DO UPDATE SET name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END,
+  ensureNamed(noteId, speakerId, name, channel = 'system', { account = '' } = {}) {
+    this.db.prepare(`INSERT INTO note_speakers(note_id, speaker_id, channel, count, name, name_source, name_confidence, account) VALUES(?, ?, ?, 0, ?, 'stream', 1, ?)
+      ON CONFLICT(note_id, speaker_id) DO UPDATE SET account = CASE WHEN excluded.account <> '' THEN excluded.account ELSE note_speakers.account END, name = CASE WHEN note_speakers.name = '' THEN excluded.name ELSE note_speakers.name END,
         name_source = CASE WHEN note_speakers.name = '' THEN 'stream' ELSE note_speakers.name_source END,
         name_confidence = CASE WHEN note_speakers.name = '' THEN 1 ELSE note_speakers.name_confidence END`)
-      .run(noteId, speakerId, channel, String(name || '').slice(0, 80));
+      .run(noteId, speakerId, channel, String(name || '').slice(0, 80), String(account || ''));
     this.bus?.publish('speakers.updated', { noteId });
+  }
+
+  // The platform account ('discord:<id>') a voice of this note belongs to: who it is, said by the platform itself
+  setAccount(noteId, speakerId, account) {
+    const a = String(account || '').slice(0, 150);
+    if (!a) return false;
+    const r = this.db.prepare('UPDATE note_speakers SET account = ? WHERE note_id = ? AND speaker_id = ?').run(a, noteId, speakerId);
+    if (r.changes) this.bus?.publish('speakers.updated', { noteId });
+    return r.changes > 0;
   }
 
   // A name read from the meeting window (who was highlighted while this voice spoke). It never replaces a name the user

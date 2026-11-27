@@ -1,7 +1,7 @@
 'use strict';
 // People as entities (docs/adr/0001-brain-data-model.md). Until now a person was whatever name string showed up, worked out again on
 // every request. Now a person is a row with identities: an e-mail address or a saved voice is a STRONG identifier (it says who someone
-// is), a name alone is weak (two people can share one). The People pages read these rows; the API shape they return is unchanged.
+// is; so is a platform account such as discord:<user id>), a name alone is weak (two people can share one). The People pages read these rows; the API shape they return is unchanged.
 //
 //   resolve():   name / e-mail / voice → the entity. Strong identifiers decide. A name that already belongs to someone with a
 //                DIFFERENT e-mail is not merged into them: a new entity is made and a merge is proposed for a person to decide.
@@ -16,6 +16,8 @@ const personKey = (name) => kp.fold(String(name || '').trim()).replace(/\s+/g, '
 const PLACEHOLDER = /^(speaker|orador|room speaker|them|me|unknown)( \d+)?$/;
 const isPlaceholder = (key) => !key || PLACEHOLDER.test(key);
 const normEmail = (e) => String(e || '').trim().toLowerCase();
+// a platform account: 'discord:123456' (platform id, a colon, the account's id on it); anything else is no account
+const normAccount = (a) => { const m = /^([a-z0-9-]{1,24}):([\w.@-]{1,120})$/i.exec(String(a || '').trim()); return m ? `${m[1].toLowerCase()}:${m[2]}` : ''; };
 const newId = () => `ent_${crypto.randomBytes(6).toString('hex')}`;
 const err = (message, status = 400) => Object.assign(new Error(message), { status });
 const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -78,11 +80,11 @@ class Entities {
       const id = this.resolve({ name: a.name || String(a.email || '').split('@')[0], email: a.email });
       if (id) ins.run(id, noteId, 'attendee', 0, n.created_at);
     }
-    for (const r of this.db.prepare(`SELECT ns.speaker_id AS sid, ns.voice_id AS voiceId, COALESCE(NULLIF(ns.name, ''), v.name, '') AS name,
+    for (const r of this.db.prepare(`SELECT ns.speaker_id AS sid, ns.voice_id AS voiceId, ns.account AS account, COALESCE(NULLIF(ns.name, ''), v.name, '') AS name,
         (SELECT COALESCE(SUM(end_ms - start_ms), 0) FROM segments s WHERE s.note_id = ns.note_id AND s.speaker_id = ns.speaker_id) AS talkMs
       FROM note_speakers ns LEFT JOIN voices v ON v.id = ns.voice_id WHERE ns.note_id = ? ORDER BY ns.speaker_id`).all(noteId)) {
       const name = r.name || (r.sid === 'm1' ? meName : '');
-      const id = this.resolve({ name, voiceId: r.voiceId, createFromVoice: false });
+      const id = this.resolve({ name, voiceId: r.voiceId, account: r.account, createFromVoice: false });
       if (id) ins.run(id, noteId, 'speaker', r.talkMs || 0, n.created_at);
     }
   }
@@ -113,6 +115,8 @@ class Entities {
     return r ? this.final(r.entity_id) : null;
   }
 
+  accountsOf(id) { return this.db.prepare("SELECT value FROM entity_identities WHERE entity_id = ? AND kind = 'account'").all(id).map((r) => r.value); }
+
   emailsOf(id) { return this.db.prepare("SELECT value FROM entity_identities WHERE entity_id = ? AND kind = 'email'").all(id).map((r) => r.value); }
 
   addIdentity(entityId, kind, value) {
@@ -122,23 +126,30 @@ class Entities {
 
   // The entity for a name / e-mail / voice, made when new (unless create is false). null when there is nothing to go on.
   // createFromVoice: a voice with no name never makes a person; it only finds one that has it.
-  resolve({ name = '', email = '', voiceId = '', create = true, createFromVoice = true } = {}) {
+  resolve({ name = '', email = '', voiceId = '', account = '', create = true, createFromVoice = true } = {}) {
     const key = isPlaceholder(personKey(name)) ? '' : personKey(name);
     const mail = normEmail(email).includes('@') ? normEmail(email) : '';
+    const acct = normAccount(account);
+    const byAccount = this.byIdentity('account', acct);
     const byEmail = this.byIdentity('email', mail);
     const byVoice = this.byIdentity('voice', voiceId || '');
     const byName = key ? this.byIdentity('name', key) : null;
     let ent = null;
 
-    if (byEmail) {
+    if (byAccount) {
+      ent = byAccount;                                                   // so does a platform account: a new display name is just another name of the same person
+      if (byEmail && byEmail !== ent) this.propose(ent, byEmail, 'the same account and e-mail on two people', 0.9);
+      if (byName && byName !== ent) this.propose(ent, byName, 'same name, different people on record', 0.55);
+    } else if (byEmail) {
       ent = byEmail;                                                     // an e-mail address says who it is
       if (byName && byName !== ent) this.propose(ent, byName, 'same name, different people on record', 0.55);
     } else if (byName) {
-      const theirs = this.emailsOf(byName);
-      if (mail && theirs.length && !theirs.includes(mail)) {              // same name, another e-mail: not merged on a name alone
+      const theirs = this.emailsOf(byName), theirAccounts = this.accountsOf(byName);
+      const otherMail = mail && theirs.length && !theirs.includes(mail), otherAccount = acct && theirAccounts.length && !theirAccounts.includes(acct);
+      if (otherMail || otherAccount) {                                    // same name, another e-mail or account: not merged on a name alone
         if (!create) return null;
         ent = this.make(name, key);
-        this.propose(byName, ent, 'same name, different e-mail', 0.6);
+        this.propose(byName, ent, otherAccount ? 'same name, different account' : 'same name, different e-mail', 0.6);
       } else ent = byName;
     } else if (byVoice && !key) {
       ent = byVoice;
@@ -152,6 +163,7 @@ class Entities {
 
     if (!ent) return null;
     if (mail) this.addIdentity(ent, 'email', mail);
+    if (acct) this.addIdentity(ent, 'account', acct);
     if (key) this.addIdentity(ent, 'name', key);
     if (voiceId) {
       if (byVoice && byVoice !== ent) this.propose(ent, byVoice, 'the same voice under two names', 0.9);
@@ -310,4 +322,4 @@ class Entities {
   }
 }
 
-module.exports = { Entities, personKey, isPlaceholder };
+module.exports = { Entities, personKey, isPlaceholder, normAccount };

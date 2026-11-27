@@ -592,6 +592,24 @@ const MIGRATIONS = [
     PRIMARY KEY (rule_id, assertion_id)
   );
   `,
+  // v: platform accounts as identities (docs/adr/0001-brain-data-model.md lists the Discord id among the identifiers of a person).
+  // A platform account ('discord:<user id>') is strong, like an e-mail address. SQLite cannot change a CHECK, so the table is
+  // rebuilt with the same rows and ids (merges record identity ids). note_speakers.account: the account a voice was named with.
+  `
+  CREATE TABLE entity_identities_v2 (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('name', 'email', 'voice', 'account')),
+    value TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE (kind, value)
+  );
+  INSERT INTO entity_identities_v2 (id, entity_id, kind, value, created_at) SELECT id, entity_id, kind, value, created_at FROM entity_identities;
+  DROP TABLE entity_identities;
+  ALTER TABLE entity_identities_v2 RENAME TO entity_identities;
+  CREATE INDEX entity_identities_entity ON entity_identities(entity_id);
+  ALTER TABLE note_speakers ADD COLUMN account TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

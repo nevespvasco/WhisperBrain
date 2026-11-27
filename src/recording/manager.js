@@ -632,10 +632,11 @@ class RecordingManager {
       const fixed = m.refine ? this.fixVoicesFromMeeting(a, res) : { merged: 0, moved: 0 };
       if (fixed.merged || fixed.moved) res = run();
       const named = [], conflicts = [];
+      const accounts = a.meet.accounts();   // who the platform says each name is, where its ids are accounts
       for (const n of res.named) {
         const source = n.via === 'sole' ? 'meeting:roster' : n.from === 'caption' ? 'meeting:caption' : 'meeting:highlight';
         const r = this.speakers.nameFromMeeting(a.noteId, n.speakerId, n.name, { source, confidence: n.score ?? n.share });
-        if (r === 'named' || r === 'agrees') named.push(n); else if (r === 'conflict') conflicts.push(n.speakerId);
+        if (r === 'named' || r === 'agrees') { named.push(n); const acct = accounts.get(nameKey(n.name)); if (acct) this.speakers.setAccount(a.noteId, n.speakerId, acct); } else if (r === 'conflict') conflicts.push(n.speakerId);
       }
       let learned = 0;
       if (m.learnVoices) for (const n of named) if (n.via === 'vote' && n.ms >= LEARN_MS && n.share >= LEARN_SHARE && this.speakers.learnFromMeeting(a.noteId, n.speakerId, { consent: true })) learned++;
@@ -710,7 +711,7 @@ class RecordingManager {
       a.remote.set(ch, r);
       a.spool[ch] = null; // no raw audio is kept for these: each person is already known, so there is nothing for the after-recording speaker pass to do
       a.fed[ch] = 0; a.epoch[ch] = 0; a.base[ch] = 0; a.stretches[ch] = []; a.env[ch] = new EnergyEnvelope();
-      try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system'); } catch { /* the label falls back to the id */ }
+      try { this.speakers?.ensureNamed(a.noteId, r.speakerId, name, 'system', { account: `discord:${userId}` }); } catch { /* the label falls back to the id */ }
       try {
         const key = nameKey(name);
         if (!this.evidence?.forNote(a.noteId, { kind: 'stream' }).some((e) => e.key === key && e.meta?.userId === String(userId))) this.evidence?.add(a.noteId, [{ kind: 'stream', source: 'discord', key, name, t0: this.elapsed(a), weight: 1, meta: { userId: String(userId), speakerId: r.speakerId } }]);

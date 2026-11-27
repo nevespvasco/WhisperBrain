@@ -15,6 +15,7 @@
 //   userFile                  the name, in the data folder, of the person's own selectors file that wins over the shipped one
 //   extension.matches         the pages the browser extension runs on (match patterns, as in its manifest)
 //   lagMs                     how long after a voice starts a source of that kind shows it, on this platform
+//   accounts                  true: the ids its people carry are stable platform account ids (identities of a person, see src/graph/entities.js)
 //   rpc                       true: the platform's own app is asked over a local connection instead (Discord)
 //   verified                  (in the selectors file) whether the selectors were checked against a real call
 
@@ -55,6 +56,7 @@ const DISCORD = {
   apps: {},
   selectors: null,
   rpc: true,
+  accounts: true,        // the ids it gives people are their account ids on Discord, the same ones the bot and the web page show (discord:<id>)
   lagMs: { rpc: 150 },   // NOT measured yet (needs a real call, see docs/discord-rpc.md); replace with the measurement
 };
 

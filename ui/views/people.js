@@ -56,10 +56,10 @@ async function personPage(main, key) {
 // who this person is known as: names, e-mail addresses, saved voices; and who was merged into them (with the way back)
 const identitiesHtml = (p) => {
   const ids = p.identities || [];
-  const names = ids.filter((i) => i.kind === 'name').map((i) => i.value), voices = ids.filter((i) => i.kind === 'voice').length;
+  const names = ids.filter((i) => i.kind === 'name').map((i) => i.value), voices = ids.filter((i) => i.kind === 'voice').length, accounts = ids.filter((i) => i.kind === 'account').map((i) => i.value);
   const merged = p.merged || [];
-  if (names.length < 2 && !voices && !merged.length) return '';
-  return `<div class="panel mb small"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><span class="muted">${t('Also known as')}</span>${names.map((n) => `<span class="chip">${esc(n)}</span>`).join('')}${voices ? `<span class="chip">${icon('mic', 'sm')} ${voices === 1 ? t('a saved voice') : t('{n} saved voices', { n: voices })}</span>` : ''}</div>
+  if (names.length < 2 && !voices && !accounts.length && !merged.length) return '';
+  return `<div class="panel mb small"><div class="row" style="gap:8px;flex-wrap:wrap;align-items:center"><span class="muted">${t('Also known as')}</span>${names.map((n) => `<span class="chip">${esc(n)}</span>`).join('')}${accounts.map((a) => `<span class="chip" title="${t('Platform account')}">${icon('users', 'sm')} ${esc(a)}</span>`).join('')}${voices ? `<span class="chip">${icon('mic', 'sm')} ${voices === 1 ? t('a saved voice') : t('{n} saved voices', { n: voices })}</span>` : ''}</div>
     ${merged.map((m) => `<div class="row between" style="margin-top:8px"><span>${t('Merged in:')} <b>${esc(m.name)}</b></span><button class="btn xs" data-unmerge="${m.id}">${icon('back', 'sm')} ${t('Undo merge')}</button></div>`).join('')}</div>`;
 };
 

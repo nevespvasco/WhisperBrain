@@ -85,7 +85,7 @@ class BrainReader {
     const meetings = this.db.prepare(`SELECT n.id, n.title, n.created_at AS at FROM mentions m JOIN notes n ON n.id = m.note_id WHERE m.entity_id = ? GROUP BY n.id ORDER BY n.created_at DESC LIMIT 8`).all(row.id).map((n) => ({ id: n.id, title: n.title, when: new Date(n.at).toISOString().slice(0, 10) }));
     const mine = new Set(this.db.prepare('SELECT note_id FROM mentions WHERE entity_id = ?').all(row.id).map((r) => r.note_id));
     const promises = this.accepted('commitment', 500).filter((a) => fold(a.owner || '') === fold(row.name) || (a.to && fold(a.to) === fold(row.name)));
-    return { name: row.name, emails: idents.filter((i) => i.kind === 'email').map((i) => i.value), alsoKnownAs: idents.filter((i) => i.kind === 'name').map((i) => i.value), recentMeetings: meetings, openPromises: promises, meetingsCount: mine.size };
+    return { name: row.name, emails: idents.filter((i) => i.kind === 'email').map((i) => i.value), accounts: idents.filter((i) => i.kind === 'account').map((i) => i.value), alsoKnownAs: idents.filter((i) => i.kind === 'name').map((i) => i.value), recentMeetings: meetings, openPromises: promises, meetingsCount: mine.size };
   }
 
   async call(name, args = {}) {

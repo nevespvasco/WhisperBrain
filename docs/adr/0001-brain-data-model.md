@@ -146,3 +146,8 @@ The uncommitted changes of the voice branch were applied to this branch in a tem
 - **provenance**: where a row came from.
 - **signal**: a card that asks for the person's attention (Inbox, Phase 3).
 - **job**: a durable unit of background work.
+
+## Addendum: platform accounts as identities (2026-11-27)
+
+`entity_identities.kind` now also allows **`account`**: `<platform>:<id>`, for example `discord:123456789012345678`. Like an e-mail address it is a strong identifier. A voice named from a call carries the account the platform gave it (`note_speakers.account`; only platforms whose ids are account ids set it, see `accounts` in `src/meet/platforms.js`; Google Meet's tile ids are not), and the same Discord id from the local RPC source, from the bot (`d<id>` speakers) and later from the browser page lines up on one person. A new display name of the same account is added as a name of the same person; the same name on two different accounts is two people with a merge proposed. Merge and unmerge move account identities like the others. Migration v25 rebuilds `entity_identities` for the wider CHECK (same rows and ids) after the usual copy of the database.
+

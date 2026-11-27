@@ -1549,4 +1549,5 @@ export const PT = {
   'In a voice call': 'Numa chamada de voz',
   'Discord app (local connection)': 'App do Discord (ligação local)',
   'Asks the Discord app on this computer which call you are in, who is in it and who speaks. Nobody joins the call.': 'Pergunta à app do Discord neste computador em que chamada está, quem está nela e quem fala. Ninguém entra na chamada.',
+  'Platform account': 'Conta da plataforma',
 };
