@@ -1,6 +1,19 @@
 // The two chips a task is added with, wherever tasks are added (a meeting's action items, Promises): who owns it and when
 // it is due. Due dates start today: a task is never due in the past.
-import { t, esc, icon, avatar, fmtDate } from './lib.js';
+import { t, esc, icon, avatar, fmtDate, api, toast, fail } from './lib.js';
+
+// A task is deleted at once (no "are you sure?"), and can be brought back for a few seconds: same text, owner, due date and state.
+export function offerUndo(a, onRestored) {
+  if (!a?.noteId) return;
+  toast(t('Task deleted'), { timeout: 7000, actions: [{ label: t('Undo'), run: async () => {
+    try {
+      const b = await api('POST', `/api/notes/${a.noteId}/actions`, { text: a.text, owner: a.owner || '', due: a.due || '' });
+      if (a.done) await api('PATCH', `/api/actions/${b.id}`, { done: true });
+      onRestored?.({ ...b, done: !!a.done });
+      window.dispatchEvent(new Event('wb:refresh'));
+    } catch (e) { fail(e); }
+  } }] });
+}
 
 export const todayIso = () => { const d = new Date(); return new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10); };
 

@@ -277,7 +277,7 @@ class AssistantService {
     if (!card) return;
     if (!card.needsAi) { this.publishTerm(live, card.term, card.definition, false); return; }
     const messages = live.terms.explainMessages({ term: card.term, line, language: this.options().language });
-    this.llm.background.complete(messages, { temperature: 0.1, maxTokens: 120 }).then((definition) => {
+    this.llm.background.complete(messages, { temperature: 0.1, maxTokens: 120, reasoning: 'off' }).then((definition) => {
       const d = String(definition || '').trim();
       if (!d || this.live !== live) return;
       try { this.knowledge?.upsertTerm?.({ term: card.term, definition: d, noteId: live.noteId, auto: true }); } catch { /* the card still shows */ }

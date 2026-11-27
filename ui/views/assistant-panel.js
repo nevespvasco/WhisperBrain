@@ -2,7 +2,8 @@
 // meeting records it shows the question the other side just asked and the suggestion as it is written ([GAP] lines marked), an
 // "ask about this call" box, the live summary and term cards; afterwards, what the assistant showed. The panel element is kept
 // across the side column's redraws (note.js puts the same node back), so a suggestion being written is never lost.
-import { api, t, esc, icon, fail, done, switchEl, pickFrom } from '../lib.js';
+import { api, t, esc, icon, fail, done, toast, switchEl, pickFrom } from '../lib.js';
+import { editor } from './briefings.js';
 import { stream } from '../api.js';
 import { openSetup } from './setup.js';
 
@@ -126,7 +127,7 @@ function drawBriefings(p) {
   const box = p.el.querySelector('.as-briefings');
   if (!box) return;
   box.innerHTML = `<div class="divider"></div><div class="row"><span class="xsmall muted strong grow">${t('Briefings for this meeting')}</span><button class="btn xs ghost" data-as="attach">${icon('plus', 'sm')} ${t('Attach')}</button><a class="btn xs ghost" href="#/briefings">${t('Manage')}</a></div>
-    <div class="chips">${p.briefings.length ? p.briefings.map((b) => `<span class="chip">${icon('doc', 'sm')}<span class="ellipsis">${esc(b.title || t('Untitled'))}</span><button class="btn xs ghost icon" data-as-detach="${esc(b.id)}" aria-label="${esc(t('Remove'))}">${icon('x', 'sm')}</button></span>`).join('') : `<span class="xsmall muted">${t('None: suggestions use only the conversation and your notes.')}</span>`}</div>`;
+    <div class="chips">${p.briefings.length ? p.briefings.map((b) => `<span class="chip"><button type="button" class="linkish row" style="gap:4px;min-width:0" data-as-open="${esc(b.id)}" title="${esc(t('Open to read or edit'))}">${icon('doc', 'sm')}<span class="ellipsis">${esc(b.title || t('Untitled'))}</span></button><button class="btn xs ghost icon" data-as-detach="${esc(b.id)}" aria-label="${esc(t('Remove'))}">${icon('x', 'sm')}</button></span>`).join('') : `<span class="xsmall muted">${t('None: suggestions use only the conversation and your notes.')}</span>`}</div>`;
 }
 
 function drawHistory(p) {
@@ -142,18 +143,36 @@ async function onClick(p, e) {
   const b = e.target.closest('button');
   if (!b) return;
   try {
-    if (b.dataset.as === 'answer' || b.dataset.as === 'regenerate' || b.dataset.as === 'summary') await api('POST', '/api/assistant/action', { noteId: p.noteId, action: b.dataset.as });
+    if (b.dataset.as === 'answer' || b.dataset.as === 'regenerate' || b.dataset.as === 'summary') {
+      // false = nothing to answer yet (nobody has asked anything on the call): say so instead of doing nothing
+      const r = await api('POST', '/api/assistant/action', { noteId: p.noteId, action: b.dataset.as });
+      if (r && r.ok === false) toast(t('Nothing to answer yet: the assistant waits for a question from the others on the call.'), { iconName: 'info' });
+    }
     else if (b.dataset.asCopy) {
       const c = [p.card, ...p.cards].find((x) => x && String(x.key) === b.dataset.asCopy);
       if (c?.text) { await navigator.clipboard.writeText(c.text); done(t('Copied')); }
     } else if (b.dataset.as === 'attach') {
       const have = new Set(p.briefings.map((x) => x.id));
       const items = p.all.filter((x) => !have.has(x.id)).map((x) => ({ value: x.id, label: x.title || t('Untitled'), hint: x.kind }));
-      if (!items.length) { location.hash = '#/briefings'; return; }
-      const id = await pickFrom(b, items, { placeholder: t('Find a briefing…') });
+      // writing a new one is always offered, so attaching never means leaving the meeting
+      items.push({ value: '__new', label: t('New briefing…'), hint: t('write or paste it here') });
+      let id = await pickFrom(b, items, { placeholder: t('Find a briefing…'), search: items.length > 6 });
       if (!id) return;
+      if (id === '__new') {
+        const v = await editor();
+        if (!v || !(v.title || v.text?.trim())) return;
+        const made = await api('POST', '/api/briefings', v);
+        p.all = [...p.all, made]; id = made.id;
+      }
       p.briefings = await api('PUT', `/api/notes/${encodeURIComponent(p.noteId)}/briefings`, { ids: [...have, id] });
       drawBriefings(p);
+    } else if (b.dataset.asOpen) {
+      const cur = await api('GET', `/api/briefings/${encodeURIComponent(b.dataset.asOpen)}`);
+      const v = await editor(cur);
+      if (!v) return;
+      await api('PATCH', `/api/briefings/${encodeURIComponent(cur.id)}`, v);
+      p.briefings = await api('GET', `/api/notes/${encodeURIComponent(p.noteId)}/briefings`);
+      drawBriefings(p); done(t('Saved'));
     } else if (b.dataset.asDetach) {
       p.briefings = await api('PUT', `/api/notes/${encodeURIComponent(p.noteId)}/briefings`, { ids: p.briefings.map((x) => x.id).filter((x) => x !== b.dataset.asDetach) });
       drawBriefings(p);

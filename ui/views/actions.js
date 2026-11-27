@@ -1,5 +1,6 @@
 // Every action item across meetings: filter by status/owner, group by owner or meeting, send to Linear.
 import { S, $, $$, api, t, esc, icon, fail, done, toast, debounce, groupBy, empty, avatar, menu, fmtDate } from '../lib.js';
+import { offerUndo } from '../task-chips.js';
 
 let st = { status: 'open', group: 'meeting', q: '' };
 
@@ -39,7 +40,7 @@ export async function render(main) {
     const g = e.target.closest('[data-act="group"]');
     if (g) return menu(g, [['meeting', t('By meeting')], ['owner', t('By owner')], ['due', t('By due date')]].map(([v, l]) => ({ label: l, selected: st.group === v, run: () => { st.group = v; render(main); } })));
     const del = e.target.closest('[data-del]');
-    if (del) { try { await api('DELETE', `/api/actions/${del.dataset.del}`); rows = rows.filter((a) => a.id !== del.dataset.del); draw(); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); } return; }
+    if (del) { try { const gone = rows.find((a) => a.id === del.dataset.del); await api('DELETE', `/api/actions/${del.dataset.del}`); rows = rows.filter((a) => a.id !== del.dataset.del); draw(); window.dispatchEvent(new Event('wb:refresh')); offerUndo(gone, () => load()); } catch (err) { fail(err); } return; }
     const lin = e.target.closest('[data-linear]');
     if (lin) { lin.disabled = true; try { const r = await api('POST', `/api/notes/${lin.dataset.linear}/send`, { target: 'linear', mode: 'actions' }); toast(t('{n} Linear issues created', { n: r.issues.length }), { ok: true }); load(); } catch (err) { fail(err); lin.disabled = false; } }
   };

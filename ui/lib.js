@@ -115,7 +115,8 @@ async function stickyAction(el, a) {
   buttons.forEach((b) => { b.disabled = true; });
   try { await a.run(); if (a.keep) buttons.forEach((b) => { b.disabled = false; }); else el.remove(); } catch (e) { buttons.forEach((b) => { b.disabled = false; }); fail(e); }
 }
-export const fail = (e) => { console.error(e); return toast(e instanceof Error ? e.message : String(e), { error: true, timeout: 9000 }); };
+export const fail = (e) => { console.error(e?.stack || (e?.name ? `${e.name}: ${e.message}` : e));   // a DOMException otherwise logs as "[object DOMException]"
+  return toast(e?.message ? e.message : String(e), { error: true, timeout: 9000 }); };
 export const done = (msg = t('Done')) => toast(msg, { ok: true, timeout: 3000 });
 
 // ---------- dialogs ----------
@@ -294,6 +295,14 @@ async function openSelect(sel) {
 const ownSelect = (el) => el?.tagName === 'SELECT' && !el.multiple && !el.disabled && el.size <= 1 && !el.closest('[data-native]');
 document.addEventListener('mousedown', (e) => { if (e.button === 0 && ownSelect(e.target)) { e.preventDefault(); e.stopPropagation(); e.target.focus(); if (openAnchor === e.target) closeMenu(); else openSelect(e.target); } }, true);
 document.addEventListener('keydown', (e) => { if (ownSelect(e.target) && (e.key === ' ' || e.key === 'Enter' || (e.altKey && e.key === 'ArrowDown'))) { e.preventDefault(); openSelect(e.target); } }, true);
+// A click on a field's label opens its list, as it would a native select
+document.addEventListener('click', (e) => {
+  const lb = e.target.closest?.('label[for]');
+  const sel = lb && document.getElementById(lb.htmlFor);
+  if (!ownSelect(sel)) return;
+  e.preventDefault(); sel.focus();
+  if (openAnchor !== sel) openSelect(sel);
+}, true);
 
 // ---------- small components ----------
 export const empty = (ic, title, text = '', action = '') => `<div class="empty">${icon(ic)}<h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ''}${action}</div>`;

@@ -10,12 +10,17 @@ export async function render(main, { name, parts }) {
   main.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>${t('Projects')}</h1><div class="sub">${t('A project is a name and the words that belong to it. Meetings, notes, decisions and promises that mention them are gathered here by themselves.')}</div></div></div>
     <section class="panel mb"><div class="panel-head"><h3>${icon('plus')} ${t('New project')}</h3></div>
-      <div class="formgrid"><div class="field"><label for="pj-name">${t('Name')}</label><input id="pj-name" placeholder="Orion"></div><div class="field"><label for="pj-kw">${t('Words that belong to it')}</label><input id="pj-kw" placeholder="orion, launch plan"><div class="hint">${t('Separated by commas. If you leave it empty, the name is used.')}</div></div></div>
-      <div class="row"><button class="btn primary" data-add>${t('Create')}</button></div></section>
+      <form id="pj-form" class="formgrid" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="field"><label for="pj-name">${t('Name')}</label><input id="pj-name" autocomplete="off" placeholder="${t('e.g. {x}', { x: 'Orion' })}"></div><div class="field"><label for="pj-kw">${t('Words that belong to it')} <span class="faint">(${t('optional')})</span></label><input id="pj-kw" autocomplete="off" placeholder="${t('e.g. {x}', { x: 'orion, launch plan' })}"><div class="hint">${t('Separated by commas. If you leave it empty, the name is used.')}</div></div></form>
+      <div class="row mt-s" style="justify-content:flex-end"><button class="btn primary" data-add disabled>${icon('plus', 'sm')} ${t('Create')}</button></div></section>
     ${projects.length ? `<div class="cards">${projects.map((p) => `<a class="card hover" href="#/project/${p.id}"><div class="strong">${icon('layers')} ${esc(p.name)}</div><div class="small muted">${p.meetings} ${p.meetings === 1 ? t('meeting') : t('meetings')} · ${p.docs} ${t('notes')}${p.openPromises ? ` · ${p.openPromises} ${t('open promises')}` : ''}</div>${p.lastAt ? `<div class="xsmall muted">${t('Last activity')}: ${day(p.lastAt)}</div>` : ''}</a>`).join('')}</div>`
       : `<div class="panel">${empty('layers', t('No projects yet'), t('Make one for something you work on, and everything about it is gathered in one place.'))}</div>`}</div>`;
+  // Create is enabled once there is a name; Enter in either field creates it
+  main.oninput = (e) => { if (e.target.id === 'pj-name') $('[data-add]', main).disabled = !e.target.value.trim(); };
+  // (two text fields and no submit button: the browser would not submit on Enter by itself)
+  main.onkeydown = (e) => { if (e.key === 'Enter' && e.target.closest('#pj-form')) { e.preventDefault(); $('[data-add]', main).click(); } };
   main.onclick = async (e) => {
     if (!e.target.closest('[data-add]')) return;
+    if (!$('#pj-name', main).value.trim()) { $('#pj-name', main).focus(); return; }
     try { const p = await api('POST', '/api/projects', { name: $('#pj-name', main).value, keywords: $('#pj-kw', main).value }); go(`#/project/${p.id}`); } catch (err) { fail(err); }
   };
 }

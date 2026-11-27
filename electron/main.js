@@ -102,12 +102,14 @@ async function start() {
 
 function setupSession() {
   const ses = session.defaultSession;
-  // Only our own UI may use the microphone / screen audio.
+  // Only our own UI may use the microphone / screen audio, and write to the clipboard (every "Copy" button). Reading the
+  // clipboard stays refused: the page never needs it.
+  const ALLOWED = ['media', 'display-capture', 'clipboard-sanitized-write'];
   ses.setPermissionRequestHandler((wc, permission, cb, details) => {
-    const ok = ['media', 'display-capture'].includes(permission) && String(details?.requestingUrl || wc.getURL()).startsWith(origin);
+    const ok = ALLOWED.includes(permission) && String(details?.requestingUrl || wc.getURL()).startsWith(origin);
     cb(ok);
   });
-  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => ['media', 'display-capture'].includes(permission) && String(requestingOrigin).startsWith(origin));
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => ALLOWED.includes(permission) && String(requestingOrigin).startsWith(origin));
   // System audio on macOS/Windows: answer getDisplayMedia() with the OS loopback (ScreenCaptureKit / WASAPI).
   ses.setDisplayMediaRequestHandler(async (_req, cb) => {
     try {

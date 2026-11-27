@@ -123,3 +123,9 @@ test('autoTitle says why instead of keeping the note untitled in silence', async
   await assert.rejects(ai.autoTitle(n.id), (e) => e.status === 502 && /did not return a title/.test(e.message));
   assert.equal(notes.get(n.id).title, '');
 });
+
+test('glossary: definitions the model only guessed at are not kept', () => {
+  const { vagueDefinition: v } = require('../src/llm/service');
+  for (const d of ['A term used by Speaker 1, possibly referring to a specific item or concept', 'A term used by Speaker 1, possibly referring to a specific activity or challenge', 'Um termo usado pelo orador, possivelmente referindo-se a algo', '?']) assert.equal(v(d), true, d);
+  for (const d of ['Metrics measuring web performance and user experience', 'Practice combining software development and IT operations for efficiency', 'A SWAT officer is a member of a specialized police unit trained to handle high-risk situations', 'Methodology for designing systems based on structured data formats']) assert.equal(v(d), false, d);
+});

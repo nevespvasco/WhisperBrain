@@ -32,7 +32,13 @@ export async function startRecording(noteId, extra = {}) {
 
 export async function stopRecording() {
   recbar.querySelector('[data-rec="stop"]')?.setAttribute('disabled', '');
-  const r = await api('POST', '/api/recording/stop');
+  document.querySelectorAll('[data-act="stop"]').forEach((b) => { b.disabled = true; });   // one press is enough
+  let r;
+  try { r = await api('POST', '/api/recording/stop'); } catch (e) {
+    // already stopped (a second press, or another window stopped it): that is what was wanted, not an error
+    if (e?.code !== 'idle') throw e;
+    S.rec.active = false; renderRecbar(); window.dispatchEvent(new Event('wb:refresh'));
+  }
   stopAllCapture();
   return r;
 }
@@ -137,7 +143,9 @@ recbar.addEventListener('click', async (e) => {
 });
 function consentMenu(anchor) {
   const id = S.rec.noteId;
-  const mark = (c) => () => setConsent(id, c).then(() => setRecConsent(c, id)).catch(fail);
+  // Someone objecting is noted, and the next step is offered at once: recording on regardless must be a choice, not a default
+  const objected = () => toast(t('Noted that someone objected. The recording is still running.'), { iconName: 'alert', timeout: 15000, actions: [{ label: t('Stop recording'), primary: true, run: () => stopRecording() }] });
+  const mark = (c) => () => setConsent(id, c).then(() => { setRecConsent(c, id); if (c === 'declined' && S.rec.active) objected(); }).catch(fail);
   menu(anchor, [
     { label: t('Copy notice for the meeting chat'), icon: 'copy', run: () => copyNotice().then(() => toast(t('Notice copied: paste it into the meeting chat, then choose “I told them”.'), { ok: true })).catch(fail) },
     { label: t('I told them'), icon: 'check', selected: S.rec.consent === 'announced', run: mark('announced') },

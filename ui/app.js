@@ -71,6 +71,9 @@ async function route() {
   keepDrawer = false;
   renderSidebar();
   main.scrollTop = 0; main.classList.remove('fit');
+  // Every page starts with none of the previous page's handlers: views set main.onclick & co., and one left behind would answer
+  // the next page's buttons (a Briefings "delete" handler once fired on Action items).
+  for (const k of ['onclick', 'onchange', 'oninput', 'onsubmit', 'onkeydown', 'ondblclick']) main[k] = null;
   const slow = setTimeout(() => { appEl.classList.add('loading'); main.setAttribute('aria-busy', 'true'); }, 220);
   try { await view.render(main, { parts, params, name }); } catch (e) {
     if (e instanceof ApiError && e.status === 404) { toast(t('That item no longer exists.'), { error: true }); go('#/'); return; }
@@ -185,6 +188,7 @@ export function renderTopbar() {
     <button class="btn ghost icon menu-btn" data-top="drawer" aria-label="${t('Menu')}" aria-controls="sidebar" aria-expanded="${appEl.classList.contains('drawer')}">${icon('menu')}</button>
     <button class="searchpill" data-top="search">${icon('search')}<span>${t('Search meetings, topics, people, quotes…')}</span><kbd>${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'} K</kbd></button>
     <span class="spacer"></span>
+    ${S.dictation === 'listening' ? `<button class="live-ind" data-top="dictation" title="${t('Dictation is listening. Click to stop.')}"><span class="dot-rec"></span><span class="t">${t('Dictating')}</span></button>` : ''}
     ${rec ? `<button class="live-ind" data-top="live"><span class="dot-rec"></span><span class="t">${t('Recording')}</span></button>` : det ? `<button class="live-ind detected" data-top="detected" aria-label="${esc(`${callLabel(S.detector) || t('Meeting')} · ${t('live')} — ${t('Take notes')}`)}">${icon('video', 'sm')}<span class="t">${esc(callLabel(S.detector) || t('Meeting'))} · ${t('live')}</span></button>` : ''}
     <button class="btn" data-top="import" title="${t('Import')}" aria-label="${t('Import')}">${icon('upload')}<span class="lbl-sm">${t('Import')}</span></button>
     ${rec ? '' : translateChip('data-top="translate"')}
@@ -197,6 +201,7 @@ topbar.addEventListener('click', async (e) => {
   if (a === 'drawer') setDrawer(!appEl.classList.contains('drawer'));
   else if (a === 'search') openPalette();
   else if (a === 'import') openImport();
+  else if (a === 'dictation') api('POST', '/api/dictation/toggle').catch(fail);
   else if (a === 'translate') {
     const noteId = /^#\/note\/([\w-]+)/.exec(location.hash)?.[1];
     translateMenu(e.target.closest('[data-top]'), { noteId: noteId && !(S.rec.active && S.rec.noteId === noteId) ? noteId : undefined });
@@ -249,13 +254,15 @@ function connectEvents() {
   const viewEvent = (type, data) => window.dispatchEvent(new CustomEvent('wb:event', { detail: { type, data } }));
   events({
     '*': (type, data) => viewEvent(type, data),
-    open: async () => { try { syncRec(await api('GET', '/api/recording')); S.detector = await api('GET', '/api/detector'); renderTopbar(); } catch { /* server restarting */ } },
+    open: async () => { try { syncRec(await api('GET', '/api/recording')); S.detector = await api('GET', '/api/detector'); S.dictation = (await api('GET', '/api/dictation').catch(() => null))?.state; renderTopbar(); } catch { /* server restarting */ } },
     ...recEvents({ renderTopbar }),
     'note.created': bump, 'note.deleted': (d) => { bump(); if (S.view.name === 'note' && S.view.parts[1] === d.id) go('#/'); },
     'knowledge.changed': bump, 'note.insights': bump, 'sources.changed': bump, 'people.changed': bump, 'assertions.changed': bump, 'reminders.changed': bump,
     'reminder.due': (d) => toast(d.text || t('{n} more things are waiting in your Inbox', { n: d.more }), { iconName: 'bell', timeout: 0, actions: [{ label: t('Open Inbox'), primary: true, run: () => go('#/inbox') }, { label: t('Later'), run: () => {} }] }),
     'account.changed': async () => { S.settings = await api('GET', '/api/settings'); applyTheme(); await refreshCounts(); go('#/'); },
     'capture.request': (d) => handleCaptureRequest(d),
+    // dictation types into other apps: while it listens the top bar says so, so a forgotten microphone is never invisible
+    'dictation.state': (d) => { if (S.dictation !== d.state) { S.dictation = d.state; renderTopbar(); } },
     'note.summarize-failed': (d) => fail(d.message),
     'note.insights-failed': (d) => toast(t('Could not extract topics: {m}', { m: d.message }), { error: true }),
     'meeting.detected': (d) => {

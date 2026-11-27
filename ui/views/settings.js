@@ -372,7 +372,16 @@ function bind(main, sec, body) {
       else if (b.dataset.act === 'llm-list') { await save({ llm: llmForm() }); const r = await api('GET', '/api/llm/models'); $('#llm-models').innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join(''); $('#llm-result').textContent = t('{n} models', { n: r.models.length }); if (!$('#llm-model').value && r.models[0]) $('#llm-model').value = r.models[0]; }
       else if (b.dataset.act === 'llm-test') { await save({ llm: llmForm() }); $('#llm-result').textContent = '…'; const r = await api('POST', '/api/llm/test'); $('#llm-result').textContent = r.ok ? `✓ ${r.model}` : `✗ ${r.error}`; S.state = await api('GET', '/api/state'); }
       else if (b.dataset.act === 'dict-save') { await save({ dictation: { enabled: $('#dict-on').checked, hotkey: $('#dict-key').value.trim(), autoPaste: $('#dict-paste').checked } }); $('#dict-result').textContent = '✓'; }
-      else if (b.dataset.act === 'dict-try') { const r = await api('POST', '/api/dictation/toggle'); $('#dict-result').textContent = r.state; }
+      else if (b.dataset.act === 'dict-try') {
+        // starting the microphone takes a moment: say so at once, then show what it is doing and offer to stop
+        b.disabled = true; $('#dict-result').textContent = t('Starting…');
+        try {
+          const r = await api('POST', '/api/dictation/toggle');
+          const on = r.state === 'listening';
+          b.innerHTML = `${icon(on ? 'stop' : 'mic', 'sm')} ${on ? t('Stop') : t('Try it')}`;
+          $('#dict-result').textContent = on ? t('Listening: speak, and the text is typed where your cursor is.') : '';
+        } finally { b.disabled = false; }
+      }
     } catch (err) { fail(err); const el = $('#llm-result'); if (el && b.dataset.act?.startsWith('llm')) el.textContent = `✗ ${err.message}`; }
   });
   $('#llm-provider', body)?.addEventListener('change', (e) => { const url = $('#llm-url'); if (e.target.value === 'ollama' && !url.value) url.value = 'http://127.0.0.1:11434/v1'; });

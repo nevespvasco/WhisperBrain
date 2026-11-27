@@ -241,7 +241,9 @@ function forceGraph(svg, { nodes, edges, all, adj }, { onSelect, onOpen }) {
   const applyView = () => { vp.style.transform = `translate(${view.x}px,${view.y}px) scale(${view.k})`; svg.classList.toggle('zoomed', view.k > 1.35); };
   let fitted = false, alpha = 1, raf = 0, drag = null, pan = null, moved = false, hover = null, sel = null, themeOn = null;
   const kick = (a = 0.3) => { alpha = Math.max(alpha, a); cancelAnimationFrame(raf); raf = requestAnimationFrame(tick); };
-  function tick() {
+  // step(): the physics only; paint(): writes it to the SVG. The first ~1.5 s of settling runs before the map is first drawn,
+  // so it appears nearly in place and only eases for a moment, instead of rewriting every node for four seconds.
+  function step() {
     for (let i = 0; i < N.length; i++) {
       const a = N[i];
       for (let j = i + 1; j < N.length; j++) {
@@ -274,10 +276,15 @@ function forceGraph(svg, { nodes, edges, all, adj }, { onSelect, onOpen }) {
       if (x !== n.x) { n.x = x; n.vx = 0; }
       if (y !== n.y) { n.y = y; n.vy = 0; }
     }
+    alpha *= 0.982;
+  }
+  function paint() {
     E.forEach((e, i) => { const a = N[e.s], b = N[e.t]; lines[i].setAttribute('x1', a.x); lines[i].setAttribute('y1', a.y); lines[i].setAttribute('x2', b.x); lines[i].setAttribute('y2', b.y); });
     N.forEach((n, i) => groups[i].setAttribute('transform', `translate(${n.x},${n.y})`));
     drawFocus();
-    alpha *= 0.982;
+  }
+  function tick() {
+    step(); paint();
     if (alpha > 0.015 || drag) raf = requestAnimationFrame(tick);
     else if (!fitted) { fitted = true; fit(); }
   }
@@ -331,6 +338,8 @@ function forceGraph(svg, { nodes, edges, all, adj }, { onSelect, onOpen }) {
   svg.addEventListener('pointerover', (ev) => { const g = ev.target.closest('.node'); const id = g?.dataset.id ?? null; if (id !== hover) { hover = id; emphasise(); } });
   svg.addEventListener('pointerleave', () => { if (hover != null) { hover = null; emphasise(); } });
   applyView();
+  for (let k = 0; k < 240 && alpha > 0.03; k++) step();
+  paint();
   raf = requestAnimationFrame(tick);
   return {
     stop() { cancelAnimationFrame(raf); },

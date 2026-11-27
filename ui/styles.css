@@ -158,7 +158,7 @@ textarea { height: auto; min-height: 90px; padding: 10px 12px; resize: vertical;
 select { padding-right: 30px; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b88a0' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 10px center; cursor: pointer; }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
 input::placeholder, textarea::placeholder { color: var(--faint); }
-.field { display: grid; gap: 6px; min-width: 0; }
+.field { display: grid; gap: 6px; min-width: 0; align-content: start; }   /* a field beside a taller one (with a hint) keeps its box under its label */
 .field > label, .field > .lbl { font-size: 13px; font-weight: 600; color: var(--text-2); }
 .hint { font-size: 12.5px; color: var(--muted); }
 .check { display: flex; align-items: flex-start; gap: 10px; cursor: pointer; padding: 4px 0; }

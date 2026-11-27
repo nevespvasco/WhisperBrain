@@ -69,7 +69,7 @@ function filesTab(body, opts, close, preset = []) {
 }
 
 function pasteTab(body, opts, close) {
-  body.innerHTML = `<div class="field"><label for="imp-title">${t('Title')}</label><input id="imp-title" placeholder="${t('Untitled meeting')}"></div>
+  body.innerHTML = `<div class="field" style="margin-bottom:12px"><label for="imp-title">${t('Title')}</label><input id="imp-title" placeholder="${t('Untitled meeting')}"></div>
     <div class="field"><label for="imp-text">${t('Transcript or notes')}</label><textarea id="imp-text" style="min-height:220px" placeholder="Ana: Let's start with the roadmap…&#10;Rui: Sure, the API is almost done…"></textarea>
     <div class="hint">${t('Lines like “Name: text” or “[00:01] Name: text” become a transcript with speakers; anything else is kept as notes.')}</div></div>
     <div class="row" style="justify-content:flex-end"><button class="btn primary" id="imp-go">${icon('upload', 'sm')} ${t('Import')}</button></div>`;

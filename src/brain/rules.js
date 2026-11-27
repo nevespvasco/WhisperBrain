@@ -68,7 +68,7 @@ class Rules {
   async parse(llm, sentence, { signal } = {}) {
     const text = String(sentence || '').trim().slice(0, 400);
     if (!text) throw err('Write the rule first.');
-    const reply = await llm.complete([{ role: 'system', content: PARSE }, { role: 'user', content: `<sentence>${neutralizeTags(text)}</sentence>` }], { signal, temperature: 0, maxTokens: 400 });
+    const reply = await llm.complete([{ role: 'system', content: PARSE }, { role: 'user', content: `<sentence>${neutralizeTags(text)}</sentence>` }], { signal, temperature: 0, maxTokens: 400, reasoning: 'off' });
     let j; try { j = extractJson(reply); } catch { j = null; }
     if (!j) throw err('The AI did not understand that as a rule. Try saying when, and what to do.');
     if (j.error) throw err(`That cannot be a rule: ${String(j.error).slice(0, 200)}`);

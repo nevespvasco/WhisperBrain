@@ -8,7 +8,7 @@ import { preflightOn, preflightHtml, preflightAct, warmPreflight } from '../pref
 import { openExport } from './transfer.js';
 import { renderChat } from './chat.js';
 import { follow } from '../follow.js';
-import { todayIso, dueText, dueChip, ownerChip, dueClick, setDue } from '../task-chips.js';
+import { todayIso, dueText, dueChip, ownerChip, dueClick, setDue, offerUndo } from '../task-chips.js';
 import { assistantSlot, dropAssistant } from './assistant-panel.js';
 
 const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', 'waves'], ['notes', 'Notes', 'edit'], ['snippets', 'Snippets', 'star'], ['chat', 'Chat', 'chat']];
@@ -176,7 +176,15 @@ function header() {
       <button class="btn icon" data-act="more" aria-label="${t('More')}">${icon('more')}</button>
     </div></div>`;
 }
-const refreshHeader = (main) => { const top = $('.note-top', main); if (top && !top.contains(document.activeElement)) top.outerHTML = header(); };
+// Redraws the header (title, tags, space, …) unless the user is typing in it (the title). A focused button, e.g. "Tag" after its
+// dialog closed, does not block the redraw: it gets the focus back afterwards.
+const refreshHeader = (main) => {
+  const top = $('.note-top', main), act = document.activeElement;
+  if (!top || (top.contains(act) && act.matches('input, textarea, [contenteditable="true"]'))) return;
+  const again = top.contains(act) && act.dataset.act ? `[data-act="${act.dataset.act}"]` : '';
+  top.outerHTML = header();
+  if (again) $(`.note-top ${again}`, main)?.focus();
+};
 
 // ---------- tabs ----------
 function renderTab() {
@@ -257,16 +265,23 @@ function pickOwner(anchor, current) {
 }
 
 // After a Teams, Zoom or Meet recording: fetch the platform's own transcript, which names every line (src/transcripts/offer.js)
+// One line, so the transcript keeps its room: the title and one action in view, the explanation under "Why", and an "x" that hides
+// it for this meeting (remembered on this computer). "Working" cannot be hidden: it is the answer to a click.
+const offerHidden = (id) => { try { return localStorage.getItem(`wb.offer.hide.${id}`) === '1'; } catch { return false; } };
 function offerCard() {
   const o = N.offer;
   if (!o || o.state === 'none' || S.rec.active || !N.segs.length) return '';
-  const drop = `<span class="muted small">${t('or drop the transcript file you export from {platform} with “Attach platform transcript”.', { platform: esc(o.label) })}</span>`;
-  const row = (inner) => `<div class="banner mb" data-offer="${o.state}">${icon('users')}<div class="grow">${inner}</div></div>`;
-  if (o.state === 'ready') return row(`<b>${t('Get the transcript from {platform}', { platform: esc(o.label) })}</b><div class="small muted">${t('It names every line, so the voices get their names. {platform} publishes it a few minutes after the call.', { platform: esc(o.label) })} ${drop}</div><div class="row mt-s"><button class="btn sm primary" data-act="offer-fetch">${t('Get the transcript')}</button></div>`);
-  if (o.state === 'working') return row(`<b>${t('Fetching the {platform} transcript…', { platform: esc(o.label) })}</b><div class="small muted">${t('Try {n} of {m}. {platform} publishes it a few minutes after the call, so this waits and tries again.', { n: o.attempt, m: o.of, platform: esc(o.label) })}</div>`);
-  if (o.state === 'done') return row(`<b>${icon('check', 'sm')} ${t('The {platform} transcript was attached', { platform: esc(o.label) })}</b><div class="small muted">${t('{n} speaker(s) named from it.', { n: o.result?.named ?? 0 })}</div>`);
-  if (o.state === 'failed') return row(`<b>${t('No transcript from {platform}', { platform: esc(o.label) })}</b><div class="small">${esc(o.reason.message)}</div><div class="small muted">${esc(o.reason.hint)}</div><div class="row mt-s"><button class="btn sm" data-act="offer-fetch">${t('Try again')}</button></div>`);
-  if (o.state === 'blocked') return row(`<b>${t('Get the transcript from {platform}', { platform: esc(o.label) })}</b><div class="small">${esc(o.reason.message)}</div><div class="small muted">${drop}</div>${o.needs === 'connect' ? `<div class="row mt-s"><a class="btn sm" href="#/settings">${t('Connect in Settings')}</a></div>` : ''}`);
+  if (o.state !== 'working' && offerHidden(N.id)) return '';
+  const p = esc(o.label);
+  const drop = t('or drop the transcript file you export from {platform} with “Attach platform transcript”.', { platform: p });
+  const close = o.state === 'working' ? '' : `<button class="btn ghost icon xs" data-act="offer-hide" title="${t('Hide for this meeting')}" aria-label="${t('Hide for this meeting')}">${icon('x', 'sm')}</button>`;
+  const row = (title, why, action = '') => `<div class="banner mb offer-line" data-offer="${o.state}" style="padding:8px 12px;align-items:center">${icon('users', 'sm')}
+    <div class="grow" style="min-width:0"><b class="small">${title}</b>${why ? ` <details class="offer-why" style="display:inline"><summary class="xsmall muted" style="display:inline;cursor:pointer">${t('Why')}</summary><div class="small muted mt-s">${why}</div></details>` : ''}</div>${action}${close}</div>`;
+  if (o.state === 'ready') return row(t('Get the transcript from {platform}', { platform: p }), `${t('It names every line, so the voices get their names. {platform} publishes it a few minutes after the call.', { platform: p })} ${drop}`, `<button class="btn xs primary" data-act="offer-fetch">${t('Get the transcript')}</button>`);
+  if (o.state === 'working') return row(t('Fetching the {platform} transcript…', { platform: p }), t('Try {n} of {m}. {platform} publishes it a few minutes after the call, so this waits and tries again.', { n: o.attempt, m: o.of, platform: p }));
+  if (o.state === 'done') return row(`${icon('check', 'sm')} ${t('The {platform} transcript was attached', { platform: p })}`, t('{n} speaker(s) named from it.', { n: o.result?.named ?? 0 }));
+  if (o.state === 'failed') return row(t('No transcript from {platform}', { platform: p }), `${esc(o.reason.message)} ${esc(o.reason.hint)}`, `<button class="btn xs" data-act="offer-fetch">${t('Try again')}</button>`);
+  if (o.state === 'blocked') return row(`${t('Get the transcript from {platform}', { platform: p })} <span class="xsmall muted">· ${esc(o.reason.message)}</span>`, drop, o.needs === 'connect' ? `<a class="btn xs" href="#/settings">${t('Connect in Settings')}</a>` : '');
   return '';
 }
 let offerTimer = null;
@@ -543,21 +558,26 @@ function bind(main) {
       else if (e.target.matches('#a-edit-due')) { N.editDue = e.target.value >= todayIso() ? e.target.value : ''; setDue(e.target); }
     } catch (err) { fail(err); }
   };
-  main.addEventListener('keydown', (e) => {
+  // `main` outlives this page: handlers are assigned (one each), never added, or every visit to a meeting would add another
+  // and one click on Add would create the task once per visit.
+  main.onkeydown = (e) => {
     if (e.target.matches?.('.act-row .act-text')) {
       if (e.key === 'Enter') { e.preventDefault(); saveAction(); }
       else if (e.key === 'Escape') { e.preventDefault(); N.editAction = null; rerenderActions(); }
     }
-  });
-  main.addEventListener('submit', async (e) => {
+  };
+  let adding = false;
+  main.onsubmit = async (e) => {
     if (e.target.id !== 'a-add') return;
     e.preventDefault();
     const raw = $('#a-new').value.trim();
-    if (!raw) return;
+    if (!raw || adding) return;
     // "@name" in the text still works as a shortcut and wins over the picker for this one task
     const owner = /@([\p{L}][\p{L}.-]*(?:\s[\p{Lu}][\p{L}.-]*)?)/u.exec(raw)?.[1] || N.addOwner || '';
+    adding = true;
     try { const a = await api('POST', `/api/notes/${N.id}/actions`, { text: raw.replace(/@\S+(\s\p{Lu}\S*)?/u, '').trim() || raw, owner, due: N.addDue || '' }); N.actions.push(a); N.addDue = ''; rerenderActions(); $('#a-new')?.focus(); $('#actlist')?.lastElementChild?.scrollIntoView({ block: 'nearest' }); window.dispatchEvent(new Event('wb:refresh')); } catch (err) { fail(err); }
-  });
+    finally { adding = false; }
+  };
   main.onclick = async (e) => {
     const tab = e.target.closest('[data-tab]');
     if (tab) { N.tab = tab.dataset.tab; history.replaceState(null, '', `#/note/${N.id}?tab=${N.tab}`); renderTab(); return; }
@@ -614,11 +634,12 @@ function bind(main) {
       else if (a === 'copy-summary') { await navigator.clipboard.writeText(N.note.summary); done(t('Copied')); }
       else if (a === 'edit-summary') { $('#summary').innerHTML = `<textarea id="summary-edit" class="editor" style="min-height:40vh">${esc(N.note.summary)}</textarea>`; btn.outerHTML = `<button class="btn sm" data-act="done-edit">${icon('check', 'sm')} ${t('Done')}</button>`; $('#summary-edit').focus(); }
       else if (a === 'done-edit') renderTab();
+      else if (a === 'offer-hide') { try { localStorage.setItem(`wb.offer.hide.${N.id}`, '1'); } catch { /* shown again next time */ } btn.closest('.offer-line')?.remove(); fitLive?.(); }
       else if (a === 'offer-fetch') { N.offer = await api('POST', `/api/notes/${N.id}/platform-transcript`); renderTab(); refreshOffer(); }
       else if (a === 'copy-transcript') { await navigator.clipboard.writeText(N.segs.map((s) => `${label(s)} [${fmtClock(s.startMs)}] ${s.text}`).join('\n')); done(t('Copied')); }
       else if (a === 'copy-seg') { const s = N.segs.find((x) => x.id === Number(btn.closest('.seg').dataset.id)); await navigator.clipboard.writeText(`“${s.text}” — ${label(s)}`); done(t('Copied')); }
       else if (a === 'star') await toggleStar(btn.closest('.seg'));
-      else if (a === 'a-del') { const id = btn.closest('.act-row').dataset.aid; await api('DELETE', `/api/actions/${id}`); N.actions = N.actions.filter((x) => x.id !== id); rerenderActions(); window.dispatchEvent(new Event('wb:refresh')); }
+      else if (a === 'a-del') { const id = btn.closest('.act-row').dataset.aid; const gone = N.actions.find((x) => x.id === id); await api('DELETE', `/api/actions/${id}`); N.actions = N.actions.filter((x) => x.id !== id); rerenderActions(); offerUndo(gone && { ...gone, noteId: gone.noteId || N.id }, (b) => { N.actions.push(b); rerenderActions(); }); window.dispatchEvent(new Event('wb:refresh')); }
       else if (a === 'a-edit') { const it = N.actions.find((x) => x.id === btn.closest('.act-row').dataset.aid); N.editAction = it.id; N.editOwner = it.owner || ''; N.editDue = it.due || ''; rerenderActions(); const inp = $('.act-row.editing .act-text'); inp?.focus(); inp?.setSelectionRange(inp.value.length, inp.value.length); }
       else if (a === 'a-cancel') { N.editAction = null; rerenderActions(); }
       else if (a === 'a-save') await saveAction();

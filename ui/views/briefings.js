@@ -19,7 +19,8 @@ export async function render(main) {
   bind(main);
 }
 
-function editor(b = {}) {
+// also used by a meeting's assistant panel, to write or edit a briefing without leaving the meeting
+export function editor(b = {}) {
   return modal({
     title: b.id ? t('Edit briefing') : t('New briefing'), wide: true,
     body: `<form class="stack" id="br-form">
@@ -35,7 +36,7 @@ function editor(b = {}) {
 
 function bind(main) {
   const rerender = () => render(main);
-  main.addEventListener('click', async (e) => {
+  main.onclick = async (e) => {   // assigned, not added: main outlives this page
     const b = e.target.closest('button');
     if (!b) return;
     try {
@@ -55,7 +56,7 @@ function bind(main) {
         rerender();
       }
     } catch (err) { fail(err); }
-  });
+  };
   main.querySelector('#br-file')?.addEventListener('change', async (e) => {
     const f = e.target.files?.[0];
     if (!f) return;
