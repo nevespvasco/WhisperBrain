@@ -6,3 +6,4 @@ build/atspi/
 .DS_Store
 .models/
 .eval/
+src/core/oauth-clients.local.json

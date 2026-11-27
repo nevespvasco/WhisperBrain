@@ -4,6 +4,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { meetingUrl } = require('./ics');
+const { builtInClient } = require('../core/oauth-clients');
 
 const SCOPE = 'https://www.googleapis.com/auth/calendar.readonly openid email';
 const SCOPE_GMAIL = `${SCOPE} https://www.googleapis.com/auth/gmail.readonly`;   // only when the person chose to connect mail too
@@ -57,14 +58,22 @@ function toEvent(it, cal = {}) {
 class GoogleCalendar {
   constructor({ getConfig, saveConfig, fetchImpl = globalThis.fetch, authBase = 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl = 'https://oauth2.googleapis.com/token', revokeUrl = 'https://oauth2.googleapis.com/revoke',
-    apiBase = 'https://www.googleapis.com/calendar/v3', gmailBase = 'https://gmail.googleapis.com/gmail/v1', now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS }) {
-    Object.assign(this, { getConfig, saveConfig, authBase, tokenUrl, revokeUrl, apiBase, gmailBase, now, authTimeoutMs });
+    apiBase = 'https://www.googleapis.com/calendar/v3', gmailBase = 'https://gmail.googleapis.com/gmail/v1', now = Date.now, authTimeoutMs = AUTH_TIMEOUT_MS, builtIn = builtInClient('google') }) {
+    Object.assign(this, { getConfig, saveConfig, authBase, tokenUrl, revokeUrl, apiBase, gmailBase, now, authTimeoutMs, builtIn });
     this.fetch = fetchImpl;
     this.refreshing = null;
     this.windows = new Map();   // calendar id -> what is known of its window (calendarItems)
   }
 
-  config() { return { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], ...(this.getConfig() || {}) }; }
+  // The person's own client (Settings) wins; otherwise the one WhisperBrain ships with (src/core/oauth-clients.js), so a plain "Sign in" works.
+  config() {
+    const c = { clientId: '', clientSecret: '', refreshToken: '', accessToken: '', expiresAt: 0, email: '', calendars: [], ...(this.getConfig() || {}) };
+    if (!c.clientId && this.builtIn.clientId) { c.clientId = this.builtIn.clientId; c.clientSecret = this.builtIn.clientSecret || ''; }
+    return c;
+  }
+
+  // Does this build ship a Google client, so signing in needs no keys?
+  hasBuiltInClient() { return !!this.builtIn.clientId; }
 
   connected() { return !!this.config().refreshToken; }
 
@@ -85,7 +94,7 @@ class GoogleCalendar {
   // Starts the loopback listener and returns the consent URL. `done` settles once Google redirects back (or after 5 min).
   async beginAuth({ openExternal, gmail = false } = {}) {
     const { clientId, clientSecret } = this.config();
-    if (!clientId) throw new Error('Set a Google OAuth client ID (a "Desktop app" client from Google Cloud Console) before connecting.');
+    if (!clientId) throw new Error('This build has no Google client built in: set a Google OAuth client ID (a "Desktop app" client from Google Cloud Console) in Integrations before connecting.');
     const verifier = b64url(crypto.randomBytes(48)); // 64 url-safe chars
     const state = b64url(crypto.randomBytes(24));
     let settle;

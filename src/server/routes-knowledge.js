@@ -197,7 +197,7 @@ module.exports = function knowledgeRoutes(add, app, { HttpError, noteOr404, read
     if (body.clientId) patch.clientId = String(body.clientId).trim();
     if (body.clientSecret && body.clientSecret !== '********') patch.clientSecret = String(body.clientSecret).trim();
     if (Object.keys(patch).length) app.settings.update({ google: { ...app.settings.get('google'), ...patch } });
-    if (!app.settings.get('google').clientId) throw new HttpError(400, 'Add the OAuth client ID from Google Cloud first.');
+    if (!app.google.config().clientId) throw new HttpError(400, 'Add the OAuth client ID from Google Cloud first.');
     app.pendingGoogleAuth?.cancel?.();
     const auth = await app.google.beginAuth({ openExternal: app.openExternal || undefined, gmail: !!body.gmail });
     app.pendingGoogleAuth = auth;

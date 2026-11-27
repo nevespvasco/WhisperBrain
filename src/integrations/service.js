@@ -33,7 +33,8 @@ class Integrations {
       notion: { configured: !!s.get('notion').token, parentId: s.get('notion').parentId, parentTitle: s.get('notion').parentTitle, parentKind: s.get('notion').parentKind, autoExport: s.get('notion').autoExport },
       linear: { configured: !!s.get('linear').apiKey, teamId: s.get('linear').teamId, teamName: s.get('linear').teamName },
       obsidian: { configured: !!s.get('obsidian').vaultPath, ...s.get('obsidian') },
-      google: { configured: !!g.clientId, connected: !!g.refreshToken, email: g.email, calendars: g.calendars },
+      // builtIn: this build ships a Google client, so "Sign in" needs no keys; clientId is only the person's own client
+      google: { configured: !!g.clientId || !!this.app.google?.hasBuiltInClient?.(), builtIn: !!this.app.google?.hasBuiltInClient?.(), connected: !!g.refreshToken, email: g.email, calendars: g.calendars, gmail: !!g.gmail },
       webhooks: s.publicView().webhooks,
       discordRpc: this.discordRpcStatus(),
       discord: { configured: !!s.get('discord').token, enabled: s.get('discord').enabled, userId: s.get('discord').userId, guildId: s.get('discord').guildId, channelId: s.get('discord').channelId, call: this.app.discord?.status() || { joined: false } },

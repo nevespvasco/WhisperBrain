@@ -22,10 +22,14 @@ export async function render(main) {
           <div class="row"><button class="btn sm" data-act="g-refresh">${icon('refresh', 'sm')} ${t('Refresh list')}</button><button class="btn sm danger-outline" data-act="g-disconnect">${t('Disconnect')}</button></div></div>` : `
         <div class="seg-ctl full" role="tablist"><button type="button" role="tab" data-gmode="oauth" aria-selected="true">${t('Sign in with Google')}</button><button type="button" role="tab" data-gmode="ical" aria-selected="false">${t('Secret iCal link')}</button></div>
         <div data-gpane="oauth" class="stack">
+          ${g.builtIn ? `<p class="hint" style="margin:0">${t('Your browser opens so you can approve read-only access. There is nothing to copy or paste.')}</p>
+          <label class="row" style="gap:8px;align-items:center"><input type="checkbox" class="cbx" id="g-mail"><span class="small">${t('Also read my email (Gmail, read-only)')}</span></label>
+          <div class="row"><button class="btn primary" data-act="g-connect">${icon('lock', 'sm')} ${t('Sign in with Google')}</button><span class="small muted" id="g-status"></span></div>
+          <details><summary class="small muted" style="cursor:pointer">${t('Use my own Google client instead')}</summary><div class="stack" style="margin-top:8px">` : ''}
           <ol class="steps"><li>${t('In Google Cloud Console create a project and enable the')} <b>Google Calendar API</b>.</li><li>${t('Credentials → Create credentials → OAuth client ID → type')} <b>${t('Desktop app')}</b>.</li><li>${t('Paste the client ID and secret here and press Connect. Your browser opens to approve read-only access.')}</li></ol>
           ${field('g-id', t('Client ID'), `<input id="g-id" value="${esc(s.google.clientId)}" placeholder="…apps.googleusercontent.com" autocomplete="off">`)}
           ${field('g-secret', t('Client secret'), `<input id="g-secret" type="password" value="${s.google.clientSecret ? MASK : ''}" autocomplete="off">`)}
-          <div class="row"><button class="btn primary" data-act="g-connect">${icon('lock', 'sm')} ${t('Connect')}</button><span class="small muted" id="g-status"></span></div></div>
+          ${g.builtIn ? '</div></details>' : `<div class="row"><button class="btn primary" data-act="g-connect">${icon('lock', 'sm')} ${t('Connect')}</button><span class="small muted" id="g-status"></span></div>`}</div>
         <div data-gpane="ical" class="stack" hidden>
           <ol class="steps"><li>${t('Google Calendar → Settings → your calendar → Integrate calendar.')}</li><li>${t('Copy the “Secret address in iCal format” and paste it here.')}</li></ol>
           ${field('cal-url', t('Calendar feed URL (iCal / webcal)'), '<input id="cal-url" type="url" placeholder="https://calendar.google.com/calendar/ical/…/basic.ics">', t('Works for Outlook, iCloud and Fastmail too.'))}
@@ -116,7 +120,7 @@ function bind(main, ints) {
     try {
       if (a === 'g-connect') {
         b.disabled = true;
-        const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim() });
+        const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim(), gmail: !!$('#g-mail')?.checked });
         $('#g-status').innerHTML = `${t('Waiting for you to approve in the browser…')} ${r.opened ? '' : `<a href="${esc(r.authUrl)}" target="_blank" rel="noopener noreferrer">${t('Open the Google sign-in page')}</a>`}`;
         if (!r.opened) window.open(r.authUrl, '_blank', 'noopener');
         const onEv = (ev) => { if (ev.detail.type === 'google.connected' || ev.detail.type === 'google.error') { window.removeEventListener('wb:event', onEv); render(main); } };

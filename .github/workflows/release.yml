@@ -30,6 +30,12 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev xvfb
       - run: npm ci
+      # "Sign in with Google" without keys: the app's own Google client comes from repository secrets and is written to a git-ignored file
+      # that is packaged inside the app. Without the secrets the build simply has no built-in client.
+      - run: node scripts/write-oauth-clients.js
+        env:
+          WB_GOOGLE_CLIENT_ID: ${{ secrets.WB_GOOGLE_CLIENT_ID }}
+          WB_GOOGLE_CLIENT_SECRET: ${{ secrets.WB_GOOGLE_CLIENT_SECRET }}
       # Each system builds its own installer so npm installs the matching native speech engine.
       - run: npm run ${{ matrix.script }}
         env:

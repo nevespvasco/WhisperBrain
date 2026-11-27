@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const crypto = require('node:crypto');
 const { GoogleCalendar, toEvent, idTokenEmail } = require('../src/meetings/google');
+const { builtInClient } = require('../src/core/oauth-clients');
 const { Calendar } = require('../src/meetings/calendar');
 const { open } = require('../src/core/db');
 const { Bus } = require('../src/core/events');
@@ -63,9 +64,63 @@ async function fakeGoogle() {
 function rig(g, cfg0 = {}, opts = {}) {
   let cfg = { clientId: 'cid.apps.googleusercontent.com', clientSecret: 'shh', ...cfg0 };
   let clock = T0;
-  const gc = new GoogleCalendar({ getConfig: () => cfg, saveConfig: (p) => { cfg = { ...cfg, ...p }; }, ...g.urls, now: () => clock, ...opts });
+  const gc = new GoogleCalendar({ getConfig: () => cfg, saveConfig: (p) => { cfg = { ...cfg, ...p }; }, ...g.urls, now: () => clock, builtIn: { clientId: '', clientSecret: '' }, ...opts });
   return { gc, cfg: () => cfg, advance: (ms) => { clock += ms; } };
 }
+
+test('google: the page hears when the sign-in finishes (google.connected / google.error reach it, and every handled event is subscribed)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const client = fs.readFileSync(path.join(__dirname, '..', 'ui/api.js'), 'utf8');
+  for (const type of ['google.connected', 'google.error']) assert.ok(client.includes(`'${type}'`), `${type} is not in ui/api.js: the Integrations page would stay on "waiting" until you leave it`);
+  assert.ok(client.includes('Object.keys(handlers)'), 'events() must also subscribe to every event the caller has a handler for');
+});
+
+test('oauth-clients: the client file can never be committed (it is git-ignored)', () => {
+  const ignore = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '.gitignore'), 'utf8').split('\n').map((l) => l.trim());
+  assert.ok(ignore.includes('src/core/oauth-clients.local.json'));
+});
+
+test('oauth-clients: the shipped client comes from the git-ignored file, the environment wins, a missing or broken file means none', () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-oauth-'));
+  const file = path.join(dir, 'c.json');
+  assert.deepEqual(builtInClient('google', { file, env: {} }), { clientId: '', clientSecret: '' }, 'no file');
+  fs.writeFileSync(file, '{ not json');
+  assert.deepEqual(builtInClient('google', { file, env: {} }), { clientId: '', clientSecret: '' }, 'broken file');
+  fs.writeFileSync(file, JSON.stringify({ google: { clientId: ' file.apps.googleusercontent.com ', clientSecret: 'fs' } }));
+  assert.deepEqual(builtInClient('google', { file, env: {} }), { clientId: 'file.apps.googleusercontent.com', clientSecret: 'fs' });
+  assert.deepEqual(builtInClient('google', { file, env: { WB_GOOGLE_CLIENT_ID: 'env-id', WB_GOOGLE_CLIENT_SECRET: 'env-s' } }), { clientId: 'env-id', clientSecret: 'env-s' });
+  assert.deepEqual(builtInClient('zoom', { file, env: {} }), { clientId: '', clientSecret: '' }, 'other providers: none');
+  fs.rmSync(dir, { recursive: true });
+});
+
+test('google: a client built into the app signs in with no keys from the person, and their own client still wins', async (t) => {
+  const g = await fakeGoogle();
+  t.after(g.close);
+  const builtIn = { clientId: 'builtin.apps.googleusercontent.com', clientSecret: 'public-ish' };
+  const none = rig(g, { clientId: '', clientSecret: '' }, { builtIn });
+  assert.equal(none.gc.hasBuiltInClient(), true);
+  assert.equal(none.gc.config().clientId, builtIn.clientId);
+  const flow = await none.gc.beginAuth({ gmail: true });
+  const q = new URL(flow.authUrl).searchParams;
+  assert.equal(q.get('client_id'), builtIn.clientId);
+  assert.match(q.get('scope'), /gmail\.readonly/);
+  await fetch(`${flow.redirectUri}?code=good-code&state=${encodeURIComponent(q.get('state'))}`);
+  await flow.done;
+  assert.equal(g.tokenReqs[0].client_id, builtIn.clientId);
+  assert.equal(g.tokenReqs[0].client_secret, builtIn.clientSecret);
+  assert.equal(none.cfg().clientId, '', 'the built-in id is not copied into the person\'s settings');
+  assert.equal(await none.gc.accessToken({ force: true }), 'at-r2');
+  assert.equal(g.tokenReqs[1].client_id, builtIn.clientId, 'refresh uses it too');
+
+  const own = rig(g, {}, { builtIn });
+  assert.equal(own.gc.config().clientId, 'cid.apps.googleusercontent.com', 'their own client wins');
+  assert.equal(own.gc.config().clientSecret, 'shh');
+  assert.equal(rig(g).gc.hasBuiltInClient(), false, 'no client built in: they must bring one');
+});
 
 test('google: loopback auth with PKCE, state check, token exchange, id_token email, calendars saved', async (t) => {
   const g = await fakeGoogle();
