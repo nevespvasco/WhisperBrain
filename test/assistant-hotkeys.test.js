@@ -7,13 +7,17 @@ const hk = require('../src/assistant/hotkeys');
 const DICTATION = 'CommandOrControl+Shift+Space';
 
 test('DEFAULT_HOTKEYS: one accelerator per action, none of them the dictation default', () => {
-  assert.deepEqual(hk.ACTIONS, ['answer', 'regenerate', 'ask', 'toggle', 'screenshot']);
+  assert.deepEqual(hk.ACTIONS, ['answer', 'regenerate', 'ask', 'toggle', 'screenshot', 'prompter', 'prompterPause', 'prompterBack', 'prompterNext']);
   assert.deepEqual(Object.keys(hk.DEFAULT_HOTKEYS).sort(), [...hk.ACTIONS].sort());
   assert.equal(hk.DEFAULT_HOTKEYS.answer, 'CommandOrControl+Alt+Return');
   assert.equal(hk.DEFAULT_HOTKEYS.regenerate, 'CommandOrControl+Alt+R');
   assert.equal(hk.DEFAULT_HOTKEYS.ask, 'CommandOrControl+Alt+K');
   assert.equal(hk.DEFAULT_HOTKEYS.toggle, 'CommandOrControl+Alt+J');
   assert.equal(hk.DEFAULT_HOTKEYS.screenshot, 'CommandOrControl+Alt+S');
+  assert.equal(hk.DEFAULT_HOTKEYS.prompter, 'CommandOrControl+Alt+Y');
+  assert.equal(hk.DEFAULT_HOTKEYS.prompterPause, 'CommandOrControl+Alt+P');
+  assert.equal(hk.DEFAULT_HOTKEYS.prompterBack, 'CommandOrControl+Alt+[');
+  assert.equal(hk.DEFAULT_HOTKEYS.prompterNext, 'CommandOrControl+Alt+]');
   assert.ok(!Object.values(hk.DEFAULT_HOTKEYS).includes(DICTATION));
 });
 

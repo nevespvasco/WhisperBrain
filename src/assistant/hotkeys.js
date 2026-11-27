@@ -1,7 +1,7 @@
 'use strict';
 // The assistant's global shortcuts. Pure: Electron's globalShortcut registers what planHotkeys() says.
 
-const ACTIONS = Object.freeze(['answer', 'regenerate', 'ask', 'toggle', 'screenshot']);
+const ACTIONS = Object.freeze(['answer', 'regenerate', 'ask', 'toggle', 'screenshot', 'prompter', 'prompterPause', 'prompterBack', 'prompterNext']);
 
 // Ctrl/Cmd+Alt+letter: free in Zoom, Meet and Teams, and away from dictation's CommandOrControl+Shift+Space.
 const DEFAULT_HOTKEYS = Object.freeze({
@@ -10,6 +10,11 @@ const DEFAULT_HOTKEYS = Object.freeze({
   ask: 'CommandOrControl+Alt+K',
   toggle: 'CommandOrControl+Alt+J',
   screenshot: 'CommandOrControl+Alt+S',
+  // The teleprompter window (electron/prompter.js). Not T (a terminal on Ubuntu), L (screen lock) or the arrows (workspaces on GNOME).
+  prompter: 'CommandOrControl+Alt+Y',        // show / hide it
+  prompterPause: 'CommandOrControl+Alt+P',   // pause / resume its scrolling
+  prompterBack: 'CommandOrControl+Alt+[',    // one sentence back
+  prompterNext: 'CommandOrControl+Alt+]',    // one sentence on
 });
 
 // Modifier spellings Electron accepts, lower-cased, to their canonical name. The order of CANON_MODIFIERS is the

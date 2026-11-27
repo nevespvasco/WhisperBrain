@@ -17,6 +17,11 @@ const { isLocalUrl } = require('../core/policy');
 
 const TAIL_LINES = 40;        // lines kept in memory for the context (the database has the rest)
 const HISTORY_PAIRS = 6;
+
+// The style suggestions are written in: 'spoken' while the teleprompter is on (it is text to read aloud), else the chosen one.
+function effectiveAssistantMode(assistant, teleprompter) {
+  return teleprompter?.enabled ? 'spoken' : assistant?.mode;
+}
 const MAX_IMAGE_BYTES = 6 * 1024 * 1024;
 
 class AssistantService {
@@ -31,7 +36,8 @@ class AssistantService {
     this.unsubscribe = null;
   }
 
-  options() { return this.settings.get('assistant'); }
+  // The assistant settings as they apply now: with the teleprompter on, suggestions are a spoken reply to read aloud.
+  options() { const a = this.settings.get('assistant'); return { ...a, mode: effectiveAssistantMode(a, this.settings.get('teleprompter')) }; }
 
   attach() {
     this.unsubscribe = this.bus.subscribe((e) => {
@@ -40,7 +46,7 @@ class AssistantService {
         else if (e.type === 'recording.stopped') this.stop(e.data.noteId);
         else if (e.type === 'transcript.segment') this.hear(e.data.noteId, e.data.segment, true);
         else if (e.type === 'transcript.partial') this.hear(e.data.noteId, { speaker: e.data.speaker, text: e.data.text }, false);
-        else if (e.type === 'settings' && e.data.keys.includes('assistant')) this.reconfigure();
+        else if (e.type === 'settings' && (e.data.keys.includes('assistant') || e.data.keys.includes('teleprompter'))) this.reconfigure();
       } catch (err) { this.bus.publish('assistant.error', { noteId: e.data?.noteId, message: err.message }); }
     });
     return this.unsubscribe;
@@ -361,4 +367,4 @@ function screenMessages({ image, mime, context, mode, language, words }) {
   ];
 }
 
-module.exports = { AssistantService, screenMessages, blockedMessage };
+module.exports = { AssistantService, screenMessages, blockedMessage, effectiveAssistantMode };

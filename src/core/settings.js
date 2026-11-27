@@ -56,6 +56,16 @@ const DEFAULTS = {
     allowRemote: false,         // also when the AI server is not on this computer: what is said on the call is then sent to it
     hotkeys: { ...DEFAULT_HOTKEYS }, // global shortcuts; '' switches one off
   },
+  // A teleprompter for the assistant's suggestions: its own large-text window near the camera (electron/prompter.js, ui/prompter.*).
+  // While it is on, suggestions are written as a spoken reply (effectiveAssistantMode).
+  teleprompter: {
+    enabled: false,             // show the teleprompter window during meetings the assistant helps with
+    scroll: 'voice',            // voice (follows what you read aloud into the microphone) | speed (scrolls at a steady pace)
+    wpm: 140,                   // reading speed for 'speed', words per minute (80-220)
+    fontSize: 34,               // text size in px (18-80)
+    opacity: 0.85,              // background opacity (0.2-1); the text stays fully opaque
+    mirror: false,              // mirror the text horizontally, for a teleprompter glass
+  },
   floatingRecorder: 'background', // small floating recording icon: off | background (when the app is not in front) | always
   llm: {
     provider: 'ollama',         // ollama | openai
@@ -134,7 +144,7 @@ const DEFAULTS = {
 };
 
 const MAX_TRANSLATION_TARGETS = 8;
-const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'outlook', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'discordRpc', 'translation', 'assistant']);
+const OBJECT_KEYS = new Set(['llm', 'calendar', 'dictation', 'google', 'microsoft', 'outlook', 'googleMeet', 'zoom', 'notion', 'linear', 'github', 'slack', 'obsidian', 'meet', 'discord', 'discordRpc', 'translation', 'assistant', 'teleprompter']);
 // Secret fields: masked in publicView, and a masked value written back means "unchanged".
 const SECRETS = { llm: ['apiKey'], google: ['clientSecret', 'refreshToken', 'accessToken'], microsoft: ['clientSecret', 'refreshToken', 'accessToken'], outlook: ['clientSecret', 'refreshToken', 'accessToken'], googleMeet: ['clientSecret', 'refreshToken', 'accessToken'], zoom: ['clientSecret', 'refreshToken', 'accessToken'], notion: ['token'], linear: ['apiKey'], github: ['token'], slack: ['token', 'userToken'], meet: ['token'], discord: ['token'], discordRpc: ['clientSecret', 'accessToken', 'refreshToken'] };
 const MASK = '********';
@@ -183,6 +193,12 @@ function validate(key, value) {
       if (merged.language && !isLanguage(merged.language)) throw new Error(`assistant.language: unknown language "${merged.language}"`);
       merged.hotkeys = { ...def.hotkeys, ...(value.hotkeys || {}) };
       try { validateHotkeys(merged.hotkeys); } catch (e) { throw new Error(`assistant.hotkeys: ${e.message}`); }
+    }
+    if (key === 'teleprompter') {
+      if (!['voice', 'speed'].includes(merged.scroll)) throw new Error('teleprompter.scroll must be voice or speed');
+      if (!(Number.isInteger(merged.wpm) && merged.wpm >= 80 && merged.wpm <= 220)) throw new Error('teleprompter.wpm must be 80 to 220');
+      if (!(Number.isInteger(merged.fontSize) && merged.fontSize >= 18 && merged.fontSize <= 80)) throw new Error('teleprompter.fontSize must be 18 to 80');
+      if (!(merged.opacity >= 0.2 && merged.opacity <= 1)) throw new Error('teleprompter.opacity must be 0.2 to 1');
     }
     if (key === 'translation') {
       const list = merged.targets;

@@ -4,6 +4,8 @@
 // Starts the headless server on a throw-away data folder, adds a project briefing, and plays a short client project review as if it were being
 // recorded (lines from the other side and from you, through the same events the recorder publishes). Without --llm a small
 // built-in stand-in streams canned answers, so the whole flow can be seen offline. Prints the URL to open.
+// --teleprompter switches the teleprompter on and, after each suggestion, reads it aloud as microphone lines (partials growing word
+// by word at ~150 words/min, then the final line), so the voice-following can be watched at /prompter.html.
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -64,9 +66,26 @@ function standIn() {
   const brief = app.briefings.create({ title: 'Acme — billing migration', kind: 'project', text: 'Billing migration for Acme. Lead: Ana Silva.\n\nDone: billing runs on Kubernetes; deploys from 60 to 10 minutes; on-call pages halved; kept the 99.95% SLA with a two-week parallel run and 10% traffic steps behind a feature flag.\n\nNext: the reporting jobs (Go, gRPC) move in May.\n\nNext release: the 12th, once the billing tests pass.' });
   const note = app.notes.create({ title: 'Acme — project review (demo)', source: 'recorded' });
   app.briefings.setForNote(note.id, [brief.id]);
+  if (process.argv.includes('--teleprompter')) {
+    app.settings.update({ teleprompter: { enabled: true } });
+    let reading = Promise.resolve();
+    app.bus.subscribe((e) => {
+      if (e.type !== 'assistant.done' || !e.data.text) return;
+      const sentences = e.data.text.replace(/\[GAP\]\s*/g, '').match(/[^.!?]+[.!?]*/g) || [];
+      reading = reading.then(async () => {
+        await wait(2000); // a moment to find the first line
+        for (const sentence of sentences) {
+          const ws = sentence.trim().split(/\s+/);
+          for (let i = 1; i <= ws.length; i++) { app.bus.publish('transcript.partial', { noteId: note.id, ch: 'mic', speaker: 'me', startMs: 0, text: ws.slice(0, i).join(' ') }); await wait(400); }
+          app.bus.publish('transcript.partial', { noteId: note.id, ch: 'mic', speaker: 'me', startMs: 0, text: '' });
+        }
+      });
+    });
+  }
   const srv = createServer(app, { uiDir: path.join(__dirname, '..', 'ui') });
   const { port, token } = await srv.listen(Number(arg('port', 3799)));
   console.log(`Open: http://127.0.0.1:${port}/?token=${token}#/note/${note.id}`);
+  if (process.argv.includes('--teleprompter')) console.log(`Teleprompter: http://127.0.0.1:${port}/prompter.html?token=${token}`);
   console.log(`(data in ${dataDir}; the dialog starts in 6 s and loops; Ctrl+C to stop)`);
   const stop = async () => { await srv.close(); app.close(); llm.close(); fs.rmSync(dataDir, { recursive: true, force: true }); process.exit(0); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);

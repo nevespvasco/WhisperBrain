@@ -74,6 +74,16 @@ The two styles (*Settings → Assistant → Style*):
 - **What is stored, and what is not.** Suggestions, typed questions, live summaries and term cards are kept with the meeting (`assistant_events`). They are deleted with the meeting, and by retention. A screenshot for a screen question is sent to the AI and never stored.
 - **No telemetry, no account.**
 
+## Teleprompter
+
+*Settings → Assistant → Teleprompter* (off by default) shows the suggestion in large text in its own window. The window sits at the top centre of the screen, just under the camera, so you can read while looking at the call. It opens while a meeting is recorded with the assistant on, never takes the keyboard, and keeps the place and size you give it (drag the bar, pull the corner). Like any window, it shows in a screen share.
+
+- **Style.** While the teleprompter is on, suggestions are written as a *spoken reply*, whatever the Style setting says. The side column shows the same text. The Style setting comes back when the teleprompter is switched off.
+- **By your voice** (default). The microphone's live transcript is matched with the suggestion (`ui/prompter-track.js`): the last few words you said are lined up with the next stretch of text, and the highlight moves to the end of the best match. Skipped words, small changes of wording and recognition mistakes are tolerated. An aside matches nothing and does not move it, and it never moves back by itself.
+- **Steady speed.** After a short lead-in, the text scrolls at the words per minute you set (`ui/prompter-scroll.js`). It never runs past what is written so far, and pauses while the pointer is over the text.
+- **Over the window.** Ctrl + wheel changes the text size, Shift + wheel the background. A plain wheel scrolls by hand: in voice mode, following waits 4 s before taking over again. The bar has pause, voice/speed, slower/faster and hide (until the recording ends).
+- **Mirror** flips the text for a teleprompter glass.
+
 ## Shortcuts
 
 These are global and work only while the assistant is switched on. Change them in *Settings → Assistant*; leave a field empty to switch that shortcut off. A shortcut that cannot be registered is reported.
@@ -85,6 +95,10 @@ These are global and work only while the assistant is switched on. Change them i
 | `Ctrl/Cmd+Alt+K` | Ask about the call (opens the floating window's ask box) |
 | `Ctrl/Cmd+Alt+J` | Assistant on/off for this meeting |
 | `Ctrl/Cmd+Alt+S` | Question on screen (a picture of the screen under the pointer, sent to a vision model) |
+| `Ctrl/Cmd+Alt+Y` | Teleprompter: show / hide (hidden lasts until the recording ends) |
+| `Ctrl/Cmd+Alt+P` | Teleprompter: pause / resume its scrolling |
+| `Ctrl/Cmd+Alt+[` | Teleprompter: one sentence back |
+| `Ctrl/Cmd+Alt+]` | Teleprompter: one sentence on |
 
 On Wayland, global shortcuts depend on the compositor. Some report success and never fire, so an X11 session is the reliable choice.
 

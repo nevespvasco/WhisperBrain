@@ -6,6 +6,7 @@ const { supported: updatesSupported, createUpdates } = require('./updates');
 const { electronSecretBox } = require('../src/core/secret-box');
 const { SIZE, shouldShow, placeWithin, defaultBounds, expandedSize } = require('./float');
 const { planHotkeys } = require('../src/assistant/hotkeys');
+const { shouldShowPrompter, defaultPrompterBounds, restorePrompterBounds, MIN: PROMPTER_MIN } = require('./prompter');
 
 const ROOT = path.join(__dirname, '..');
 const SMOKE = process.env.WB_SMOKE === '1';
@@ -50,6 +51,10 @@ let floatAnchorRight = false;
 let floatKeepUntil = 0;      // keep it up briefly after Stop so "Notes saved" is seen
 let floatTimer = null;
 let floatSaveTimer = null;
+let prompter = null;        // the teleprompter window (electron/prompter.js)
+let prompterHidden = null;  // the recording (note id) whose teleprompter the user hid with the shortcut
+let prompterGrab = null;    // its bounds when the current drag or resize began
+let prompterSaveTimer = null;
 let quitting = false;
 let registeredHotkey = null;
 let assistantKeys = [];      // accelerators registered for the meeting assistant
@@ -99,6 +104,7 @@ async function start() {
   createTray();
   wireEvents();
   wireFloat();
+  wirePrompter();
   registerHotkey();
   registerAssistantKeys();
 }
@@ -254,9 +260,10 @@ function wireEvents() {
     else if (e.type === 'reminder.due') notify('Reminder', e.data.text || `${e.data.more} more things are waiting in your Inbox`, () => win?.webContents.executeJavaScript(`location.hash = '#/inbox'`).catch(() => {}));
     else if (e.type === 'dictation.state') updatePill(e.data.state);
     else if (e.type === 'dictation.result' && e.data.paste && !e.data.paste.ok && e.data.text) notify('Dictation copied', e.data.paste.reason || 'The text is on your clipboard.');
-    else if (e.type === 'settings') { registerHotkey(); registerAssistantKeys(); updateFloat(); }
-    else if (e.type === 'recording.started' || e.type === 'recording.finalizing') updateFloat();
-    else if (e.type === 'recording.stopped') { floatKeepUntil = Date.now() + 4500; updateFloat(); setTimeout(updateFloat, 4700); }
+    else if (e.type === 'settings') { registerHotkey(); registerAssistantKeys(); updateFloat(); applyPrompter(); }
+    else if (e.type === 'recording.started' || e.type === 'recording.finalizing') { updateFloat(); applyPrompter(); }
+    else if (e.type === 'recording.stopped') { floatKeepUntil = Date.now() + 4500; updateFloat(); setTimeout(updateFloat, 4700); prompterHidden = null; applyPrompter(); }
+    else if (e.type === 'assistant.state') applyPrompter();
   });
 }
 
@@ -321,6 +328,10 @@ const ASSISTANT_ACTIONS = {
   ask: () => assistantDo((id) => askFromShortcut(id)),
   toggle: () => assistantDo((id) => { const on = !core.assistant.state(id).enabled; core.assistant.toggle(id, on); notify('Assistant', on ? 'On for this meeting.' : 'Off for this meeting.'); }),
   screenshot: () => assistantDo((id) => captureScreenQuestion(id)),
+  prompter: () => assistantDo((id) => togglePrompter(id)),
+  prompterPause: () => prompterCommand('pause'),
+  prompterBack: () => prompterCommand('back'),
+  prompterNext: () => prompterCommand('next'),
 };
 function registerAssistantKeys() {
   for (const k of assistantKeys) globalShortcut.unregister(k);
@@ -461,6 +472,90 @@ function wireFloat() {
   });
 }
 
+// ---- teleprompter: the assistant's suggestion in large text, in its own window at the top of the screen (electron/prompter.js) ----
+const prompterFile = () => path.join(app.getPath('userData'), 'teleprompter.json');
+const prompterAlive = () => prompter && !prompter.isDestroyed();
+
+function applyPrompter() {
+  if (!core) return;
+  const noteId = recordingNote();
+  const show = shouldShowPrompter({
+    enabled: core.settings.get('teleprompter').enabled, recording: !!noteId,
+    assistantOn: !!noteId && core.assistant.state(noteId).active, hidden: !!noteId && prompterHidden === noteId,
+  });
+  if (show) showPrompter(); else hidePrompter();
+}
+
+function prompterBounds() {
+  let saved = null;
+  try { saved = JSON.parse(fs.readFileSync(prompterFile(), 'utf8')); } catch { /* first run */ }
+  return restorePrompterBounds(saved, workAreas()) || defaultPrompterBounds(screen.getPrimaryDisplay().workArea);
+}
+
+function rememberPrompter() {
+  clearTimeout(prompterSaveTimer);
+  prompterSaveTimer = setTimeout(() => {
+    if (!prompterAlive()) return;
+    try { fs.writeFileSync(prompterFile(), JSON.stringify(prompter.getBounds())); } catch { /* not worth failing for */ }
+  }, 400);
+}
+
+function showPrompter() {
+  if (prompterAlive()) return;
+  prompter = new BrowserWindow({
+    ...prompterBounds(), minWidth: PROMPTER_MIN.width, minHeight: PROMPTER_MIN.height,
+    frame: false, transparent: true, resizable: true, minimizable: false, maximizable: false, fullscreenable: false,
+    skipTaskbar: true, alwaysOnTop: true, focusable: false, hasShadow: false, show: false, title: 'WhisperBrain teleprompter',
+    webPreferences: { preload: path.join(__dirname, 'prompter-preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
+  });
+  prompter.setAlwaysOnTop(true, 'floating');
+  prompter.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
+  prompter.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  prompter.webContents.on('will-navigate', (e, u) => { if (!u.startsWith(origin)) e.preventDefault(); });
+  prompter.once('ready-to-show', () => { if (prompterAlive()) prompter.showInactive(); });
+  prompter.on('moved', rememberPrompter);
+  prompter.on('resized', rememberPrompter);
+  prompter.on('closed', () => { prompter = null; });
+  prompter.loadURL(`${origin}/prompter.html?token=${server.token}`);
+}
+
+function hidePrompter() {
+  if (prompterAlive()) prompter.destroy();
+  prompter = null;
+}
+
+// The show / hide shortcut: hiding lasts until the recording ends; showing needs the setting on.
+function togglePrompter(noteId) {
+  if (!core.settings.get('teleprompter').enabled) { notify('Teleprompter', 'Switch the teleprompter on in Settings → Assistant first.'); return; }
+  if (!core.assistant.state(noteId).active) { notify('Teleprompter', 'The assistant is off for this meeting: switch it on to see suggestions.'); return; }
+  prompterHidden = prompterAlive() ? noteId : null;
+  applyPrompter();
+}
+
+function prompterCommand(action) {
+  if (prompterAlive()) prompter.webContents.send('prompter:cmd', action);
+}
+
+function wirePrompter() {
+  const mine = (e) => prompterAlive() && e.sender === prompter.webContents;
+  // A drag or a resize is the window's bounds when it began plus the pointer's total offset since: never a stream of deltas.
+  ipcMain.on('prompter:grab', (e) => { if (mine(e)) prompterGrab = prompter.getBounds(); });
+  ipcMain.on('prompter:drag', (e, dx, dy) => {
+    if (!mine(e) || !prompterGrab || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const b = placeWithin({ ...prompterGrab, x: prompterGrab.x + dx, y: prompterGrab.y + dy }, workAreas());
+    prompter.setPosition(b.x, b.y);
+  });
+  ipcMain.on('prompter:resize', (e, dx, dy) => {
+    if (!mine(e) || !prompterGrab || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+    const wa = screen.getDisplayMatching(prompterGrab).workArea;
+    const width = Math.round(Math.max(PROMPTER_MIN.width, Math.min(prompterGrab.width + dx, wa.x + wa.width - prompterGrab.x)));
+    const height = Math.round(Math.max(PROMPTER_MIN.height, Math.min(prompterGrab.height + dy, wa.y + wa.height - prompterGrab.y)));
+    prompter.setBounds({ x: prompterGrab.x, y: prompterGrab.y, width, height });
+  });
+  ipcMain.on('prompter:release', (e) => { if (!mine(e)) return; prompterGrab = null; rememberPrompter(); });
+  ipcMain.on('prompter:hide', (e) => { if (!mine(e)) return; prompterHidden = recordingNote(); applyPrompter(); });
+}
+
 // ---- smoke test (WB_SMOKE=1): load the UI, check it rendered, exit ----
 async function smoke() {
   try {
@@ -481,6 +576,13 @@ async function smoke() {
     console.log('SMOKE_FLOAT ' + JSON.stringify(fl));
     if (!fl || fl.bridge !== 'function' || fl.ask !== 'function' || !fl.pill) ok = false;
     hideFloat();
+    showPrompter(); // the teleprompter must open, load its page and have its native bridge
+    await new Promise((res) => { const t0 = Date.now(); const poll = () => (prompterAlive() && !prompter.webContents.isLoading() ? res() : Date.now() - t0 > 8000 ? res() : setTimeout(poll, 100)); poll(); });
+    const tp = prompterAlive() ? await prompter.webContents.executeJavaScript(`(async () => { for (let i = 0; i < 50 && !document.querySelector('.tp-text'); i++) await new Promise((r) => setTimeout(r, 100)); return { bridge: typeof window.wbPrompter?.grab, cmd: typeof window.wbPrompter?.onCmd, text: !!document.querySelector('.tp-text') }; })()`) : null;
+    if (tp) Object.assign(tp, { bounds: prompter.getBounds(), workArea: screen.getPrimaryDisplay().workArea, focused: prompter.isFocused(), onTop: prompter.isAlwaysOnTop() });
+    console.log('SMOKE_PROMPTER ' + JSON.stringify(tp));
+    if (!tp || tp.bridge !== 'function' || tp.cmd !== 'function' || !tp.text) ok = false;
+    hidePrompter();
     if (process.env.WB_SMOKE_MODELS) { // the ASR worker must run on Electron's own Node, as it does in the packaged app
       const { Models } = require('../src/asr/models');
       const { wavToPcm16 } = require('../src/audio/pcm');
@@ -507,6 +609,7 @@ async function smoke() {
 async function shutdown() {
   globalShortcut.unregisterAll();
   hideFloat();
+  hidePrompter();
   try { if (core?.recording.status().active) await Promise.race([core.recording.stop(), new Promise((r) => setTimeout(r, 15000))]); } catch { /* best effort */ }
   try { await server?.close(); core?.close(); await core?.settled; } catch { /* best effort */ }
 }
