@@ -134,3 +134,44 @@ test('navigation: a meeting that loads slowly does not draw over the page the us
   assert.equal(await b.evaluate(`location.hash`), '#/glossary');
   assert.deepEqual(b.errors.filter((e) => !/AbortError|aborted/i.test(e)), []);
 });
+
+// a meeting with 40 lines from two voices, and glossary terms whose definitions name each other
+function seedMeeting(app) {
+  const n = app.notes.create({ source: 'recorded', title: 'Seeded' });
+  app.notes.addSegments(n.id, Array.from({ length: 40 }, (_, i) => ({ speaker: 'them', speakerId: i % 2 ? 's1' : 's2', startMs: i * 4000, endMs: i * 4000 + 3000, text: `Line ${i} about Orion for ACME` })));
+  for (const sid of ['s1', 's2']) app.db.prepare("INSERT OR IGNORE INTO note_speakers(note_id, speaker_id, channel, count) VALUES(?, ?, 'system', 3)").run(n.id, sid);
+  app.notes.update(n.id, { status: 'done' });
+  app.knowledge.upsertTerm({ term: 'Orion', definition: 'Project "Orion" <b>with</b> ACME', aliases: [], noteId: n.id });
+  app.knowledge.upsertTerm({ term: 'ACME', definition: 'A customer of Orion', aliases: [], noteId: n.id });
+  return n;
+}
+
+test('transcript: a voice renamed while somebody types in the search box keeps the box, the focus and the lines; terms are marked cleanly', { skip, timeout: 60000 }, async (t) => {
+  const { app, b } = await boot(t);
+  const n = seedMeeting(app);
+  await b.evaluate(`location.hash = '#/note/${n.id}?tab=transcript'`);
+  await b.waitFor(`document.querySelectorAll('#segs .seg').length === 40`);
+  // glossary marks: one span per term, the definition escaped in the title, no span inside an attribute
+  const first = await b.evaluate(`document.querySelector('#segs .seg .txt').innerHTML`);
+  assert.equal((first.match(/<span class="term"/g) || []).length, 2, first);
+  assert.equal(await b.evaluate(`document.querySelector('#segs .seg .txt').textContent`), 'Line 0 about Orion for ACME', `the words read as said: ${first}`);
+  assert.deepEqual(await b.evaluate(`[...document.querySelectorAll('#segs .seg .txt')][0].querySelectorAll('.term').length && [...document.querySelector('#segs .seg .txt').querySelectorAll('.term')].map((x) => x.title)`), ['Project "Orion" <b>with</b> ACME', 'A customer of Orion']);
+  await b.evaluate(`document.querySelector('#segs').__mark = 1; document.querySelector('#segs .seg').__mark = 1`);
+  await b.clickOn('#tr-q');
+  await b.insertText('line 1');
+  await sleep(250);   // the search waits for a pause in typing
+  assert.equal(await b.evaluate(`[...document.querySelectorAll('#segs .seg')].filter((x) => !x.hidden).length`), 11, 'Line 1 and Line 10-19');
+  assert.equal(await b.evaluate(`document.querySelectorAll('#segs mark').length`), 11);
+  app.speakers.rename(n.id, 's1', 'Ana');
+  app.bus.publish('speakers.updated', { noteId: n.id });
+  await b.waitFor(`[...document.querySelectorAll('#segs .who [data-rename="s1"]')].every((x) => x.textContent === 'Ana')`);
+  await b.waitFor(`document.querySelector('#tr-people .chips')?.textContent.includes('Ana')`);
+  assert.equal(await b.evaluate(`document.activeElement?.id`), 'tr-q', 'the search box kept the focus');
+  assert.equal(await b.evaluate(`document.querySelector('#tr-q').value`), 'line 1');
+  assert.equal(await b.evaluate(`document.querySelector('#segs').__mark === 1 && document.querySelector('#segs .seg').__mark === 1`), true, 'the lines were patched, not drawn again');
+  assert.equal(await b.evaluate(`[...document.querySelectorAll('#segs .seg')].filter((x) => !x.hidden).length`), 11, 'the search still applies');
+  await b.insertText('5');
+  await sleep(250);
+  assert.equal(await b.evaluate(`[...document.querySelectorAll('#segs .seg')].filter((x) => !x.hidden).map((x) => x.dataset.id).length`), 1);
+  assert.deepEqual(b.errors, []);
+});
