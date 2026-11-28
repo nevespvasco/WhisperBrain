@@ -126,6 +126,44 @@ test('Slack: one item per channel per day, mentions and links made readable, rep
   assert.equal(app.items.count(), 2);
 });
 
+test('Slack: a channel longer than the page cap is read over several runs, older days included, every day whole', async (t) => {
+  const w = await fakeWorld(); t.after(() => w.close());
+  const app = await boot(t, w);
+  app.settings.update({ slack: { token: 'xoxp-test' } });
+  // 10 days x 10 messages; the fake answers 2 per page, newest first, so the 20-page cap reads 40 messages per call
+  const day0 = Date.parse('2026-11-10T08:00:00Z') / 1000;
+  const msgs = [];
+  for (let d = 0; d < 10; d++) for (let i = 0; i < 10; i++) msgs.push({ ts: String(day0 + d * 86400 + i * 60), user: 'U1', text: `d${d} m${i}` });
+  w.on(/^\/api\/users.list$/, () => [200, { ok: true, members: [{ id: 'U1', real_name: 'Ana', profile: {} }] }]);
+  w.on(/^\/api\/conversations.list$/, () => [200, { ok: true, channels: [{ id: 'C1', name: 'atlas' }] }]);
+  w.on(/^\/api\/conversations.history$/, (u) => {
+    const oldest = Number(u.searchParams.get('oldest') || 0), latest = Number(u.searchParams.get('latest') || Infinity);
+    const inRange = msgs.filter((m) => Number(m.ts) >= oldest && Number(m.ts) < latest).sort((a, b) => Number(b.ts) - Number(a.ts));
+    const at = Number(u.searchParams.get('cursor') || 0), page = inRange.slice(at, at + 2);
+    return [200, { ok: true, messages: page, ...(at + 2 < inRange.length && { response_metadata: { next_cursor: String(at + 2) } }) }];
+  });
+  const src = app.sources.addRemote({ kind: 'slack', name: 'Slack', config: { channels: 'atlas' } });
+  const now = () => Date.parse('2026-11-20T12:00:00Z');
+  const sync = () => app.sources.services.slack.sync({ ...app.sources.ctx, source: app.items.source(src.id), items: app.items, now });
+  const days = () => app.items.list({ sourceId: src.id }).map((it) => [it.meta.day, it.meta.messages]).sort();
+  await sync();
+  assert.deepEqual(days(), [['2026-11-17', 10], ['2026-11-18', 10], ['2026-11-19', 10]], 'only whole days are kept; the partly read 11-16 waits');
+  msgs.push({ ts: String(day0 + 9 * 86400 + 3600), user: 'U1', text: 'late on the last day' });
+  await sync(); await sync();
+  assert.equal(days().length, 10, 'the older days came in on later runs');
+  assert.ok(days().every(([d, n]) => n === (d === '2026-11-19' ? 11 : 10)), JSON.stringify(days()));
+  assert.equal(app.items.source(src.id).config.cursors['backlog:C1'], undefined, 'nothing left to read');
+  await sync();
+  assert.equal(days().length, 10);
+  // one day busier than the cap: its newest part is kept, and the reading goes on to the days before it instead of looping
+  for (let i = 0; i < 60; i++) msgs.push({ ts: String(day0 - 86400 + i * 30), user: 'U1', text: `busy ${i}` });
+  msgs.push({ ts: String(day0 - 2 * 86400), user: 'U1', text: 'the day before' });
+  app.items.updateSource(src.id, { config: { ...app.items.source(src.id).config, cursors: { C1: String(day0 + 9 * 86400 + 3600), 'backlog:C1': [{ oldest: (day0 - 3 * 86400) * 1000, latest: day0 * 1000 }] } } });
+  await sync(); await sync();
+  assert.deepEqual(days().slice(0, 2), [['2026-11-08', 1], ['2026-11-09', 40]]);
+  assert.equal(app.items.source(src.id).config.cursors['backlog:C1'], undefined);
+});
+
 test('Slack: a bad token stops for good with a clear message instead of retrying forever', async (t) => {
   const w = await fakeWorld(); t.after(() => w.close());
   const app = await boot(t, w);
