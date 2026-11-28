@@ -2,7 +2,7 @@
 // discussed together are linked; by default only the links that hold the map together are drawn), themes
 // (clusters of topics that travel together), trends (rising, new, gone quiet, and a heatmap over time) and a
 // sortable list. The topic page has the meetings, who said what, related topics, activity and an AI synthesis.
-import { S, $, $$, api, t, esc, icon, fail, done, go, debounce, empty, fmtDate, fmtClock, avatar, menu, promptDialog, confirmDialog, safeSnippet, plural, seg } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, fail, done, go, debounce, empty, fmtDate, fmtClock, avatar, menu, promptDialog, confirmDialog, safeSnippet, plural, seg, throttleFrame } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 
@@ -466,7 +466,8 @@ async function topicPage(main, id) {
         const box = $('#brief', main), out = $('#brief-body', main);
         box.hidden = false; out.innerHTML = `<span class="muted">${t('Reading {n} meetings…', { n: tp.notes.length })}</span>`;
         let text = '';
-        await stream(`/api/topics/${id}/brief`, {}, { onDelta: (d) => { text += d; out.innerHTML = renderMarkdown(text); } });
+        const draw = throttleFrame(() => { out.innerHTML = renderMarkdown(text); });
+        await stream(`/api/topics/${id}/brief`, {}, { onDelta: (d) => { text += d; draw(); } }).finally(() => draw.flush());
         b.disabled = false;
       } else if (b.dataset.act === 'more') {
         menu(b, [

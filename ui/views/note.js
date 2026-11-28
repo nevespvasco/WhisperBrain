@@ -1,6 +1,6 @@
 // One meeting: summary (overview, key points, decisions, action items), transcript (who said what), notes,
 // snippets and chat; the side column has speaker analytics, topics, glossary terms, links and related meetings.
-import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, throttleFrame, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
@@ -909,15 +909,18 @@ async function enhance() {
   const n = N.note, id = N.id;
   S.streaming = { noteId: id, text: '', stage: '' };
   renderTab();
+  // the final notes are drawn by reloadOverview below, so a pending frame is dropped, not flushed
+  const draw = throttleFrame(() => { if (S.streaming?.noteId === id && N?.id === id && N.tab === 'summary' && $('#summary')) $('#summary').innerHTML = streamingHtml(); });
   try {
     const result = await stream(`/api/notes/${id}/summarize`, { templateId: $('#tpl')?.value }, {
-      onDelta: (d) => { S.streaming.text += d; if (N?.id === id && N.tab === 'summary' && $('#summary')) $('#summary').innerHTML = streamingHtml(); },
+      onDelta: (d) => { S.streaming.text += d; draw(); },
       onStage: (s) => { S.streaming.stage = s.stage === 'reduce' ? `${t('Reading the transcript…')} ${s.index}/${s.total}` : t('Writing…'); if ($('#summary')) $('#summary').innerHTML = streamingHtml(); },
     });
+    draw.cancel();
     if (N?.id === id) Object.assign(n, result);
     S.streaming = null;
     if (S.settings.autoInsights) { toast(t('Finding topics, glossary terms and action items…'), { iconName: 'wand', timeout: 4000 }); await api('POST', `/api/notes/${id}/insights`, {}).catch((e) => toast(e.message, { error: true })); }
-  } catch (e) { fail(e); } finally { S.streaming = null; if (N?.id === id) await reloadOverview($('#main')); window.dispatchEvent(new Event('wb:refresh')); }
+  } catch (e) { fail(e); } finally { draw.cancel(); S.streaming = null; if (N?.id === id) await reloadOverview($('#main')); window.dispatchEvent(new Event('wb:refresh')); }
 }
 
 async function analyse(btn, local = false) {

@@ -1,7 +1,7 @@
 // Chat with one meeting, or across everything in the app (answers link back to the meetings, documents and records they cite).
 // The answers sit in a fixed-height box with its own scrollbar (ui/follow.js): a new answer is followed as it is written, scrolling
 // up to re-read stops that and shows a floating arrow back to the newest message. The page around it never moves.
-import { S, $, api, t, esc, safeUrl, icon, fail, toast, confirmDialog } from '../lib.js';
+import { S, $, api, t, esc, safeUrl, icon, fail, toast, confirmDialog, throttleFrame } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
@@ -56,7 +56,8 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
     let text = '';
     S.streaming = { chat: true };
     try {
-      const res = await stream('/api/chat', { noteId, question: q }, { onDelta: (d) => { text += d; out.innerHTML = renderMarkdown(text); fol.update(); } });
+      const draw = throttleFrame(() => { out.innerHTML = renderMarkdown(text); fol.update(); });
+      const res = await stream('/api/chat', { noteId, question: q }, { onDelta: (d) => { text += d; draw(); } }).finally(() => draw.flush());
       out.classList.remove('typing');
       const sources = !noteId ? res?.sources : null;
       if (res?.answer) { text = res.answer; out.innerHTML = withCites(renderMarkdown(text), sources); }   // the checked answer: only numbers that were given stay

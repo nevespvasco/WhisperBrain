@@ -42,6 +42,21 @@ export function groupBy(items, keyFn) {
   return out;
 }
 export const debounce = (fn, ms) => { let id; return (...a) => { clearTimeout(id); id = setTimeout(() => fn(...a), ms); }; };
+// For a streamed answer: fn runs at most once a frame and once per `ms`, however fast the words come (each run re-renders the
+// whole Markdown so far). flush() runs a pending one now (the end of the stream), cancel() drops it.
+export function throttleFrame(fn, ms = 80) {
+  let pending = false, last = 0, raf = 0, timer = 0;
+  const run = () => { raf = 0; timer = 0; pending = false; last = performance.now(); fn(); };
+  const call = () => {
+    if (pending) return;
+    pending = true;
+    const wait = Math.max(0, ms - (performance.now() - last));
+    if (wait) timer = setTimeout(() => { timer = 0; raf = requestAnimationFrame(run); }, wait); else raf = requestAnimationFrame(run);
+  };
+  call.cancel = () => { clearTimeout(timer); cancelAnimationFrame(raf); timer = raf = 0; pending = false; };
+  call.flush = () => { if (pending) { call.cancel(); run(); } };
+  return call;
+}
 export const plural = (n, one, many) => `${n} ${n === 1 ? t(one) : t(many)}`;
 export const safeSnippet = (html) => String(html || '').replace(/#{1,6}\s+|\*\*/g, '').replace(/&/g, '&amp;').replace(/<(?!\/?mark>)/g, '&lt;');
 
