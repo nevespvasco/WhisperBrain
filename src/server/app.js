@@ -290,7 +290,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // Mail and messages linked to the people in them (item_mentions); picks up what changed since the last run
   runner.register('people.items', async () => {
     const key = 'mentions:after';
-    let cur = Number(conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value) || 0, n = 0;
+    let cur = conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value || '0', n = 0;
     for (;;) {
       const next = knowledge.entities.backfillItems(cur, 200);
       if (next == null) break;

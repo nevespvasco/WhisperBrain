@@ -202,3 +202,29 @@ test('embedding pages past chunks that may not be embedded instead of stopping b
   assert.equal(db.prepare("SELECT embedded FROM chunks WHERE owner_id = ?").get(ok).embedded, 1);
   assert.ok([...asked.values()].every((n) => n === 1), 'each owner is asked once per pass');
 });
+
+test('the people backfill pages on (updated_at, rowid): items sharing a time at a page edge are not skipped', () => {
+  const { Entities } = require('../src/graph/entities');
+  const db = open(':memory:');
+  db.exec("INSERT INTO sources (id, kind, created_at, updated_at) VALUES ('s', 'gmail', 1, 1)");
+  const add = db.prepare("INSERT INTO items (id, source_id, external_id, kind, occurred_at, ingested_at, updated_at) VALUES (?, 's', ?, 'email', 1, 1, ?)");
+  for (let i = 0; i < 7; i++) add.run(`i${i}`, `e${i}`, i < 5 ? 100 : 200);   // five at the same time
+  const entities = new Entities({ db });
+  const seen = [];
+  entities.syncItem = (id) => { seen.push(id); return 0; };
+  let cur = 0;
+  for (let i = 0; i < 20; i++) { const next = entities.backfillItems(cur, 2); if (next == null) break; cur = next; }
+  assert.deepEqual(seen.sort(), ['i0', 'i1', 'i2', 'i3', 'i4', 'i5', 'i6']);
+  assert.equal(entities.backfillItems(cur, 2), null, 'nothing new after the end');
+  add.run('i7', 'e7', 200);   // a new one at the same time as the last seen
+  assert.equal(typeof entities.backfillItems(cur, 2), 'string');
+  assert.ok(seen.includes('i7'));
+  const plan = db.prepare("EXPLAIN QUERY PLAN SELECT rowid FROM items WHERE kind = 'email' AND (updated_at > 1 OR (updated_at = 1 AND rowid > 0)) ORDER BY updated_at, rowid LIMIT 2").all().map((r) => r.detail).join(' ');
+  assert.match(plan, /USING (COVERING )?INDEX items_kind_updated/, 'and it uses an index');
+});
+
+test('merged people and promise reminders are looked up by index', () => {
+  const db = open(':memory:');
+  const idx = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((r) => r.name));
+  for (const name of ['items_kind_updated', 'entities_merged', 'reminders_assertion']) assert.ok(idx.has(name), name);
+});

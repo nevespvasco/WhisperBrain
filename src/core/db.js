@@ -772,6 +772,13 @@ const MIGRATIONS = [
     WHERE (owner_kind = 'note' AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = o.owner_id))
        OR (owner_kind = 'item' AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id = o.owner_id AND i.deleted_at IS NULL AND i.kind <> 'meeting'));
   `,
+  // v31: indexes for lookups that scanned: the people backfill's cursor over mail (kind, updated_at, then rowid, src/graph/entities.js),
+  // the people merged into someone (itemsOf, every person page), and the reminders of a promise (deleting or completing one).
+  `
+  CREATE INDEX items_kind_updated ON items(kind, updated_at);
+  CREATE INDEX entities_merged ON entities(merged_into) WHERE merged_into IS NOT NULL;
+  CREATE INDEX reminders_assertion ON reminders(assertion_id) WHERE assertion_id IS NOT NULL;
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
