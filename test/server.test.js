@@ -73,6 +73,28 @@ test('static UI is served with a CSP', async (t) => {
   assert.equal((await s.call('GET', '/app.js')).status, 200);
 });
 
+test('CSP: no plugins, no <base>, forms post only here, frames only for the print preview; /api answers can never run as a page', async (t) => {
+  const s = await boot(t);
+  const csp = (await s.call('GET', '/')).headers.get('content-security-policy');
+  for (const d of ["object-src 'none'", "base-uri 'none'", "form-action 'self'", 'frame-src blob:', "frame-ancestors 'none'"]) assert.ok(csp.includes(d), `${d} in ${csp}`);
+  // every /api answer: JSON, an error, a download, the event stream
+  const note = await s.json('POST', '/api/notes', { title: 'x' });
+  for (const [p, type] of [['/api/state', /json/], ['/api/nope', /json/], [`/api/notes/${note.id}/export?format=md`, /markdown|text/]]) {
+    const r = await s.call('GET', p);
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff', p);
+    assert.equal(r.headers.get('content-security-policy'), "default-src 'none'; sandbox", p);
+    assert.match(r.headers.get('content-type') || '', type, p);
+    await r.arrayBuffer();
+  }
+  const ac = new AbortController();
+  const ev = await fetch(`${s.base}/api/events`, { headers: { Cookie: `wb_token=${s.token}` }, signal: ac.signal });
+  assert.match(ev.headers.get('content-type'), /text\/event-stream/);
+  assert.equal(ev.headers.get('x-content-type-options'), 'nosniff');
+  const first = await ev.body.getReader().read();
+  assert.match(Buffer.from(first.value).toString(), /: ok/, 'the stream still flows');
+  ac.abort();
+});
+
 test('notes API: CRUD, search, folders, export', async (t) => {
   const s = await boot(t);
   const f = await s.json('POST', '/api/folders', { name: 'Clients' });

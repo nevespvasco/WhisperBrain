@@ -2,8 +2,9 @@ export class ApiError extends Error {
   constructor(message, status, code) { super(message); this.status = status; this.code = code; }
 }
 
-export async function api(method, path, body) {
-  const init = { method, headers: {} };
+// signal: a page passes its route signal so leaving it cancels what it was still loading (the await then throws AbortError)
+export async function api(method, path, body, { signal } = {}) {
+  const init = { method, headers: {}, signal };
   if (body !== undefined) {
     if (body instanceof Blob || body instanceof ArrayBuffer || ArrayBuffer.isView(body)) { init.body = body; init.headers['Content-Type'] = 'application/octet-stream'; }
     else { init.body = JSON.stringify(body); init.headers['Content-Type'] = 'application/json'; }

@@ -69,7 +69,7 @@ const secretsBanner = () => {
   return `<div class="banner small mb">${icon('lock')}<div class="grow">${why} ${st.policy === 'never' ? t('You chose not to save them: they are forgotten when the app closes.') : t('You chose to keep them as plain text.')}</div></div>`;
 };
 
-export async function render(main, { parts }) {
+export async function render(main, { parts, alive = () => true }) {
   const sec = SECTIONS.some(([k]) => k === parts[1]) ? parts[1] : 'account';
   const shell = (inner) => `<div class="page"><div class="page-head"><div><h1>${t('Settings')}</h1></div><button class="btn sm" data-setup-check>${icon('check', 'sm')} ${t('Setup check')}</button></div>
     ${policyBanner()}${secretsBanner()}<div class="settings-layout"><nav class="settings-nav">${SECTIONS.map(([k, l, ic]) => `<a class="navlink" href="#/settings/${k}" ${k === sec ? 'aria-current="page"' : ''}>${icon(ic)}<span class="lbl">${t(l)}</span></a>`).join('')}</nav>
@@ -80,6 +80,7 @@ export async function render(main, { parts }) {
   const y = main.scrollTop;
   if (!again) main.innerHTML = shell('<div class="panel"><div class="skel" style="width:40%"></div></div>');
   const html = await SECTION[sec]();
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   if (again) main.innerHTML = shell(html);
   else $('#secbody', main).innerHTML = html;
   if (again) main.scrollTop = y;
@@ -89,7 +90,7 @@ export async function render(main, { parts }) {
     const drawLock = async () => {
       const st = await api('GET', '/api/lock');
       $('#lk-state', main).textContent = st.enabled ? t('On') : t('Off');
-      const mins = `<select id="lk-min">${[[0, t('Never')], [5, '5 min'], [15, '15 min'], [60, '1 h']].map(([v, l]) => `<option value="${v}" ${st.minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+      const mins = `<select id="lk-min">${[[0, t('Never')], [5, t('{n} min', { n: 5 })], [15, t('{n} min', { n: 15 })], [60, t('{n} h', { n: 1 })]].map(([v, l]) => `<option value="${v}" ${st.minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
       lockBody.innerHTML = st.enabled
         ? `<div class="stack">${field('lk-cur', t('Current passphrase'), '<input id="lk-cur" type="password" autocomplete="current-password">')}${field('lk-new', t('New passphrase (to change it)'), '<input id="lk-new" type="password" autocomplete="new-password">')}${field('lk-min', t('Lock after'), mins)}
           <div class="row"><button class="btn" data-lk="change">${t('Change')}</button><button class="btn" data-lk="now">${icon('lock', 'sm')} ${t('Lock now')}</button><button class="btn ghost" data-lk="off">${t('Turn off')}</button><span class="small" id="lk-msg"></span></div></div>`
@@ -320,7 +321,8 @@ const SECTION = {
 };
 
 function bind(main, sec, body) {
-  const rerender = () => render(main, { parts: ['settings', sec] });
+  const { alive, signal } = S.route;   // a re-render (a download finishing) after the user left must not draw Settings over the next page
+  const rerender = () => (alive() ? render(main, { parts: ['settings', sec], alive }) : null);
   const map = {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-updates': (v) => ({ checkUpdates: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-ptx': (v) => ({ platformTranscript: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
@@ -420,7 +422,7 @@ function bind(main, sec, body) {
     if (['model.installed', 'model.removed', 'model.error'].includes(type)) later(true);
   };
   modelListener = onEv;
-  window.addEventListener('wb:event', onEv);
+  window.addEventListener('wb:event', onEv, { signal });
 }
 const llmForm = () => ({ provider: $('#llm-provider').value, baseUrl: $('#llm-url').value.trim(), apiKey: $('#llm-key').value, model: $('#llm-model').value.trim() });
 

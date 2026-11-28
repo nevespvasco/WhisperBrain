@@ -2,16 +2,22 @@
 // All input is HTML-escaped first; only http(s)/mailto links are emitted.
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+// Finished pieces of HTML (code spans, links) are held back as \u0000n\u0000 placeholders, so the passes that follow (autolinks,
+// emphasis) only ever see the user's text, never an href: run over generated <a> tags they could add attributes to it.
+const emphasis = (s) => s.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, (_, a, b) => `<strong>${a || b}</strong>`)
+  .replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, '$1<em>$2</em>').replace(/(^|[^\w])_([^_\s][^_]*)_(?!\w)/g, '$1<em>$2</em>')
+  .replace(/~~([^~]+)~~/g, '<del>$1</del>');
+const link = (href, html) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${html}</a>`;
+
 function inline(text) {
-  let s = esc(text);
-  const codes = [];
-  s = s.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `\u0000${codes.length - 1}\u0000`; });
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
-  s = s.replace(/\*\*([^*]+)\*\*|__([^_]+)__/g, (_, a, b) => `<strong>${a || b}</strong>`);
-  s = s.replace(/(^|[^\w*])\*([^*\s][^*]*)\*(?!\w)/g, '$1<em>$2</em>').replace(/(^|[^\w])_([^_\s][^_]*)_(?!\w)/g, '$1<em>$2</em>');
-  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[i]}</code>`);
+  const kept = [];
+  const hold = (html) => `\u0000${kept.push(html) - 1}\u0000`;
+  const back = (s) => s.replace(/\u0000(\d+)\u0000/g, (_, i) => kept[i]);
+  let s = esc(text).replace(/\u0000/g, '');   // a NUL in the text could otherwise name a held piece
+  s = s.replace(/`([^`]+)`/g, (_, c) => hold(`<code>${c}</code>`));
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g, (_, label, href) => hold(link(href, back(emphasis(label)))));
+  s = s.replace(/(^|[\s(])(https?:\/\/[^\s<)\u0000]+)/g, (_, pre, href) => pre + hold(link(href, href)));
+  return back(emphasis(s));
 }
 
 export function renderMarkdown(src) {
@@ -75,5 +81,8 @@ export function renderMarkdown(src) {
     }).join('')}</${tag}>`;
   }
 }
+
+// A URL from outside (a live-search hit, a calendar event) as an href: only web and mail links, anything else goes nowhere
+export const safeUrl = (u) => { const s = String(u || '').trim(); return /^(https?:|mailto:)/i.test(s) ? s : '#'; };
 
 export { esc };

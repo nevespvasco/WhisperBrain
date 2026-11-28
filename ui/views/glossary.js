@@ -2,9 +2,10 @@
 // where it was said. Terms are underlined in transcripts with their definition.
 import { S, $, api, t, esc, icon, fail, done, go, debounce, empty, modal, confirmDialog, fmtDate, fmtClock, avatar, safeSnippet, meetingRow } from '../lib.js';
 
-export async function render(main, { name, parts }) {
+export async function render(main, { name, parts, alive = () => true }) {
   if (name === 'term' && parts[1]) return termPage(main, parts[1]);
   const terms = await api('GET', '/api/glossary');
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const KINDS = [['all', t('All'), () => true], ['auto', t('Found by AI'), (g) => g.auto], ['mine', t('Added by you'), (g) => !g.auto], ['undef', t('Needs a definition'), (g) => !g.definition]];
   main.innerHTML = `<div class="page narrow">
     <div class="page-head"><div><h1>${t('Glossary')}</h1><div class="sub">${t('The words, acronyms and product names your meetings use — so newcomers (and future you) can follow along.')}</div></div>

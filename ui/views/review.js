@@ -6,9 +6,10 @@ const hours = (m) => (m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} 
 const link = (a) => `<a href="#/note/${a.noteId}?tab=transcript${a.segmentId ? `&seg=${a.segmentId}` : ''}">${icon('quote', 'sm')}</a>`;
 const list = (rows, f) => (rows.length ? `<ul class="list">${rows.map(f).join('')}</ul>` : `<div class="small muted">${t('Nothing.')}</div>`);
 
-export async function render(main, { params }) {
+export async function render(main, { params, alive = () => true }) {
   const weeks = Math.max(0, Number(params.get('weeks')) || 0);
   const r = await api('GET', `/api/review?weeks=${weeks}`);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const sec = (title, body) => `<section class="panel"><div class="panel-head"><h3>${title}</h3></div>${body}</section>`;
   main.innerHTML = `<div class="page narrow">
     <div class="page-head"><div><h1>${t('Weekly review')}</h1><div class="sub">${day(r.from)} – ${day(r.to - 86400000)} · ${weeks ? t('{n} weeks ago', { n: weeks }) : t('This week')}</div></div>

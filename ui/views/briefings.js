@@ -5,8 +5,9 @@ import { api, t, esc, icon, fail, done, modal, confirmDialog, fmtDate, empty } f
 const KINDS = [['project', 'Project'], ['agenda', 'Agenda'], ['client', 'Client'], ['company', 'Company'], ['notes', 'Notes']];
 const kindLabel = (k) => t((KINDS.find(([v]) => v === k) || [k, k])[1]);
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const list = await api('GET', '/api/briefings');
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   main.innerHTML = `<div class="page">
     <div class="page-head row between"><div><h1>${t('Briefings')}</h1><p class="muted small" style="margin:4px 0 0">${t('Your own material for the live assistant: suggestions only use facts found here and in the conversation. It stays on this computer.')}</p></div>
       <div class="row"><label class="btn">${icon('upload', 'sm')} ${t('Import file')}<input type="file" id="br-file" accept=".pdf,.docx,.md,.markdown,.txt,.html,.htm" hidden></label><button class="btn primary" data-act="new">${icon('plus', 'sm')} ${t('New briefing')}</button></div></div>

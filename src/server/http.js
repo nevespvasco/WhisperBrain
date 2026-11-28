@@ -453,6 +453,8 @@ function createServer(app, { uiDir, token = crypto.randomBytes(24).toString('hex
 
   async function api(req, res, url) {
     const query = Object.fromEntries(url.searchParams);
+    // An answer here is data, never a page: opened directly (a download, a mail with HTML) it cannot run or be sniffed into one.
+    res.setHeader('X-Content-Type-Options', 'nosniff'); res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     // the app lock: while locked, nothing but the lock itself (and the audio of a recording already running) is answered
     if (app.lock) {
       if (app.lock.locked() && !mayPass(req.method, url.pathname)) throw new HttpError(423, 'The app is locked.', 'locked');
@@ -484,7 +486,8 @@ function createServer(app, { uiDir, token = crypto.randomBytes(24).toString('hex
     res.writeHead(200, {
       'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
-      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; media-src 'self'; frame-ancestors 'none'",
+      // frame-src blob: is the print preview (transfer.js printNote); nothing else frames, posts a form elsewhere or needs a plugin
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; media-src 'self'; frame-src blob:; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
     });
     res.end(data);
