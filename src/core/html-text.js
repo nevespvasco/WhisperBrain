@@ -81,13 +81,14 @@ function walk(html, { onText = (t) => t, onTag = () => ' ', drop = DROP } = {}) 
   return out.join('');
 }
 
-// Remove [ \t] at the start and end of every line, without the `[ \t]+\n` regex (quadratic on a long run of spaces).
-function trimLines(s, { start = true, end = true } = {}) {
+// Remove [ \t] at the start and end of every line, without the `[ \t]+\n` regex (quadratic on a long run of spaces). Like
+// that regex, the start of the first line and the end of the last are left alone unless `edges` is set.
+function trimLines(s, { start = true, end = true, edges = false } = {}) {
   const lines = String(s).split('\n'), last = lines.length - 1;
   return lines.map((l, k) => {
     let a = 0, b = l.length;
-    if (start && k > 0) while (a < b && (l[a] === ' ' || l[a] === '\t')) a++;
-    if (end && k < last) while (b > a && (l[b - 1] === ' ' || l[b - 1] === '\t')) b--;
+    if (start && (k > 0 || edges)) while (a < b && (l[a] === ' ' || l[a] === '\t')) a++;
+    if (end && (k < last || edges)) while (b > a && (l[b - 1] === ' ' || l[b - 1] === '\t')) b--;
     return a || b < l.length ? l.slice(a, b) : l;
   }).join('\n');
 }

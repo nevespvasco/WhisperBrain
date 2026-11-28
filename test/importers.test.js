@@ -379,6 +379,21 @@ test('docx built in-test: headings, tabs, breaks, core properties, transcript he
   assert.equal(one(docx([para('Just one line of text')], {}), 'x.docx').body, 'Just one line of text');
 });
 
+test('docx: hostile XML is read in linear time (unclosed <w:p>, <w:t, <w:pPr, <w:style, <dc:title) and document.xml is capped at 20 MB', () => {
+  const time = (buf) => { const t = process.hrtime.bigint(); try { parseFile(buf, 'x.docx'); } catch { /* an empty document is refused; only the time matters */ } return Number(process.hrtime.bigint() - t) / 1e6; };
+  const xml = (body) => `<w:document ${W}><w:body>${body}</w:body></w:document>`;
+  const cases = {
+    unclosedP: makeZip({ 'word/document.xml': xml('<w:p>'.repeat(200000)) }),              // 40k took 0.9 s, quadratic
+    unclosedT: makeZip({ 'word/document.xml': xml(`<w:p>${'<w:t a'.repeat(150000)}</w:p>`) }),
+    unclosedPPr: makeZip({ 'word/document.xml': xml(`<w:p>${'<w:pPr>'.repeat(150000)}<w:r><w:t>x</w:t></w:r></w:p>`) }),
+    styles: makeZip({ 'word/document.xml': xml(para('hi')), 'word/styles.xml': `<w:styles>${'<w:style w:styleId="a">'.repeat(150000)}</w:styles>` }),
+    core: makeZip({ 'word/document.xml': xml(para('hi')), 'docProps/core.xml': `<cp:coreProperties>${'<dc:title><dcterms:created a'.repeat(100000)}</cp:coreProperties>` }),
+  };
+  for (const [name, buf] of Object.entries(cases)) { const t = time(buf); assert.ok(t < 300, `${name}: ${t.toFixed(0)} ms`); }
+  assert.equal(one(makeZip({ 'word/document.xml': xml(`${para('kept')}<w:p><w:r><w:t>never closed`) }), 'x.docx').body, 'kept');
+  assert.throws(() => parseFile(makeZip({ 'word/document.xml': '<w:p/>' }, { lie: { 'word/document.xml': 25 * 1048576 } }), 'huge.docx'), /too large to import/);
+});
+
 test('docx errors: not a zip, missing document.xml, zip bomb caps', () => {
   assert.throws(() => parseFile(Buffer.from('this is not a zip at all'), 'fake.docx'), /not supported|can't be opened/);
   assert.throws(() => parseFile(makeZip({ 'hello.txt': 'hi' }), 'odd.docx'), /word\/document\.xml is missing/);
