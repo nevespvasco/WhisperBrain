@@ -4,7 +4,7 @@
 // transcript (after ignoring case, accents and spacing) the item is thrown away. The date is worked out here too (dates.js). What
 // survives is saved as a suggestion for a person to accept; nothing is ever accepted by itself. Precision before recall: it is better
 // to miss a promise than to put a made-up one in front of someone.
-const { extractJson } = require('../llm/insights');
+const { parseJsonReply } = require('../llm/insights');
 const { neutralizeTags } = require('../llm/prompts');
 const { resolveDue } = require('./dates');
 
@@ -12,6 +12,9 @@ const fold = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCa
 const WINDOW = 5500;                 // characters of transcript per request: small local models do better on short input
 const OVERLAP_LINES = 3;
 const MIN_QUOTE = 14;
+// Reply cap per window. With thinking off it is all JSON: ~100 tokens a finding, and a window rarely holds more than a dozen. A reply
+// that still hits it keeps its complete findings (parseJsonReply) and is counted as `truncated`, apart from findings without proof.
+const MAX_TOKENS = 1600;
 
 const SYSTEM = `You find decisions and commitments in a meeting transcript.
 Each line is "[L<number> <time>] <speaker>: <text>".
@@ -63,15 +66,17 @@ async function extractAssertions(deps, noteId, { signal } = {}) {
   if (lines.length < 2) return { added: 0, dropped: 0, windows: 0 };
   const me = String(settings.get('userName') || '').trim();
   const model = (await llm.resolveModel?.(llm.getConfig()).catch(() => '')) || llm.getConfig()?.model || '';
-  let added = 0, dropped = 0, n = 0;
+  let added = 0, dropped = 0, truncated = 0, n = 0;
   for (const win of windows(lines)) {
     n++;
     const body = win.map((l) => `[${l.id} ${clock(l.seg.startMs)}] ${neutralizeTags(l.label)}: ${neutralizeTags(l.text)}`).join('\n');
-    let reply;
-    try { reply = await llm.complete([{ role: 'system', content: SYSTEM }, { role: 'user', content: `<transcript>\n${body}\n</transcript>` }], { signal, temperature: 0.1, maxTokens: 1200, reasoning: 'off' }); } catch (e) { if (e.name === 'AbortError') throw e; dropped++; continue; }
-    let items;
-    try { items = extractJson(reply)?.items; } catch { items = null; }
-    if (!Array.isArray(items)) { dropped++; continue; }
+    let reply, finish = null;
+    try { reply = await llm.complete([{ role: 'system', content: SYSTEM }, { role: 'user', content: `<transcript>\n${body}\n</transcript>` }], { signal, temperature: 0.1, maxTokens: MAX_TOKENS, reasoning: 'off', onFinish: (r) => { finish = r; } }); } catch (e) { if (e.name === 'AbortError') throw e; dropped++; continue; }
+    let parsed;
+    try { parsed = parseJsonReply(reply); } catch { parsed = { value: null, truncated: false }; }
+    if (parsed.truncated || finish === 'length') truncated++;
+    const items = parsed.value?.items;
+    if (!Array.isArray(items)) { if (!parsed.truncated && finish !== 'length') dropped++; continue; }
     for (const it of items.slice(0, 25)) {
       const kind = it?.kind === 'decision' || it?.kind === 'commitment' ? it.kind : null;
       const found = kind && locate(it.quote, String(it.line || '').trim(), lines);
@@ -87,7 +92,7 @@ async function extractAssertions(deps, noteId, { signal } = {}) {
       if (r.created) added++;
     }
   }
-  return { added, dropped, windows: n };
+  return { added, dropped, truncated, windows: n };
 }
 
 module.exports = { extractAssertions, windows, locate, SYSTEM };

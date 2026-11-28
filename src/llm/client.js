@@ -96,8 +96,9 @@ class LlmClient {
   // (Ollama) or with a larger cap. If that is empty too it is an error, never a silent empty answer.
   // idleMs / firstByteMs: see IDLE_MS. onStart(): the request is under way (the scheduler calls it when a slot is granted instead).
   // onProgress(): every chunk the server sends, thinking included, so a caller's own "has it started?" timer can tell a model that
-  // thinks from one that is stuck.
-  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning, idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onStart, onProgress } = {}) {
+  // thinks from one that is stuck. onFinish(reason): the server's finish_reason at the end ('length': the reply hit maxTokens, so
+  // JSON in it may be cut off).
+  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning, idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onStart, onProgress, onFinish } = {}) {
     onStart?.();
     const cfg = this.getConfig();
     const model = await this.resolveModel(cfg, { signal });
@@ -110,7 +111,7 @@ class LlmClient {
     for (let attempt = 0; ; attempt++) {
       const run = { yielded: false, thought: false, finish: null };
       for await (const t of this.attempt(cfg, body, signal, run, { idleMs, firstByteMs, onProgress })) { run.yielded = true; yield t; }
-      if (run.yielded || run.finish !== 'length' || !run.thought) return;
+      if (run.yielded || run.finish !== 'length' || !run.thought) { try { onFinish?.(run.finish); } catch { /* a caller's hook */ } return; }
       if (attempt > 0) throw new LlmError(`The model "${model}" used its whole reply budget thinking and gave no answer. Pick a model that does not reason first in Settings → AI.`, { code: 'thinking-cutoff' });
       if (ollama && body.reasoning_effort !== 'none') body.reasoning_effort = 'none';
       else body.max_tokens = Math.max(body.max_tokens * 8, 2048);
