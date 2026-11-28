@@ -135,3 +135,16 @@ test('over HTTP: streaming audio does not keep the app unlocked, and live events
   for (;;) { const { done, value } = await reader.read(); if (done) break; text += Buffer.from(value).toString(); }
   assert.match(text, /event: lock\.changed/, 'the page is told, then the stream ends');
 });
+
+test('a running recording keeps the app from locking by idle time; the idle time starts when it ends', () => {
+  let t = 1_000_000, recording = true;
+  const l = new AppLock({ db: open(':memory:'), now: () => t, busy: () => recording, tickMs: 0 });
+  l.enable({ passphrase: 'correct horse', minutes: 10 });
+  t += 3 * 60 * 60_000;   // a three-hour meeting, nobody at the keyboard
+  assert.equal(l.locked(), false, 'recording: not locked');
+  recording = false;
+  t += 9 * 60_000;
+  assert.equal(l.locked(), false, 'the idle time started when the recording ended');
+  t += 2 * 60_000;
+  assert.equal(l.locked(), true, 'ten idle minutes after it: locked');
+});

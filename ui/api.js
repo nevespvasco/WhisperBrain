@@ -57,5 +57,8 @@ export function events(handlers) {
   es.addEventListener('open', () => handlers.open?.());
   // the app locked (idle, or from another window): the lock screen takes over at once; the server closes this stream
   es.addEventListener('lock.changed', (e) => { try { if (JSON.parse(e.data).locked) window.dispatchEvent(new Event('wb:locked')); } catch { /* not JSON */ } });
+  // The browser gives up for good when the server answers the stream with an error (423 while the app is locked, or the app is
+  // restarting). The main window reloads after an unlock; the floating recorder and the teleprompter do not, so they ask again.
+  es.addEventListener('error', () => { if (es.readyState === 2) setTimeout(() => events(handlers), 3000); });
   return es;
 }

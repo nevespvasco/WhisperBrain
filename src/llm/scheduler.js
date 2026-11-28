@@ -76,7 +76,7 @@ class LlmScheduler {
     const llm = this.llm;
     // whole: the consumer collects the whole reply (complete()), so being pre-empted after some text throws code 'preempted' for
     // complete() to start over; a plain stream instead stops being pre-emptible once it has handed text on.
-    async function* attempt(messages, { signal, key, sources = null, preemptible = PREEMPTIBLE.has(priority), live = false, onStart, ...opts }, whole) {
+    async function* attempt(messages, { signal, key, sources = null, live = false, preemptible = PREEMPTIBLE.has(priority) && !live, onStart, ...opts }, whole) {
       for (let requeue = false; ; requeue = true) {
         const slot = await scheduler.acquire(priority, { signal, key, preemptible, live, requeue });
         try { onStart?.(); } catch { /* a caller's hook never breaks the request */ }

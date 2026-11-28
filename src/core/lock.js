@@ -17,8 +17,10 @@ const err = (message, status = 400, code) => Object.assign(new Error(message), {
 
 class AppLock {
   // tickMs: how often the idle time is checked without waiting for a request, and the heartbeat for MCP written (0 = never)
-  constructor({ db, bus = null, now = () => Date.now(), tickMs = TICK_MS }) {
-    Object.assign(this, { db, bus, now });
+  // busy(): something is running for the person (a recording): the app does not lock while it is, however long they are away from the
+  // keyboard. Its audio is not 'use' (see isUse), so without this a long meeting would lock the app and cover the live transcript.
+  constructor({ db, bus = null, now = () => Date.now(), tickMs = TICK_MS, busy = () => false }) {
+    Object.assign(this, { db, bus, now, busy });
     this.isLocked = this.enabled();      // starts locked when a passphrase is set
     this.persist();
     this.lastUse = now();
@@ -45,7 +47,10 @@ class AppLock {
   locked() {
     if (!this.enabled()) return false;
     const m = this.minutes();
-    if (!this.isLocked && m > 0 && this.now() - this.lastUse > m * 60_000) this.lock();
+    if (!this.isLocked && m > 0 && this.now() - this.lastUse > m * 60_000) {
+      if (this.busy()) this.lastUse = this.now();   // a recording is running: idle time starts when it ends
+      else this.lock();
+    }
     return this.isLocked;
   }
   touch() { if (!this.isLocked) this.lastUse = this.now(); }

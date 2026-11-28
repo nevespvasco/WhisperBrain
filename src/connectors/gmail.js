@@ -223,7 +223,9 @@ async function sync({ source, items, budget = MAX_THREADS, ...ctx }) {
   // position, plus the threads it listed but did not read yet, so they are neither lost nor listed again.
   try {
 
-    if (!listing) {
+    // threads a failed run left unread already fill this run's budget: they go first and nothing new is listed (the position stays)
+    const backlog = ids.size >= budget;
+    if (!listing && !backlog) {
       try {
         let page = c.hp, last = c.h;
         do {
@@ -240,7 +242,7 @@ async function sync({ source, items, budget = MAX_THREADS, ...ctx }) {
     }
     const seen = new Set();
     let wholeListing = false;
-    if (listing) {
+    if (listing && !backlog) {
       const lh = c.lh || String(profile.historyId || '');
       let page = c.lp;
       wholeListing = !c.lp;                                                       // started at the top: a complete listing may tombstone
@@ -263,7 +265,7 @@ async function sync({ source, items, budget = MAX_THREADS, ...ctx }) {
       save(threadItem(t, me, { metadataOnly, account, extraText }));
       seen.add(`thread:${id}`);
     };
-    for (const id of ids) {
+    for (const id of [...ids].slice(0, budget)) {   // the budget holds even for a long backlog; the rest stays in `remaining` for the next run
       try { await readOne(id); } catch (e) { remaining.delete(id); remaining.add(id); throw e; }   // a thread that failed goes last next time
       remaining.delete(id);
     }

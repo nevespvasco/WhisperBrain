@@ -431,3 +431,17 @@ test('the ledger records the server and the model a request went to, read when i
   assert.equal(runs[0].config.baseUrl, 'http://127.0.0.1:11434/v1', 'the server it was sent to, though the setting changed meanwhile');
   assert.equal(runs[0].config.model, 'llama3.2', 'the model the server was asked for, not an empty setting');
 });
+
+test('a live request (the meeting in progress) is not pre-empted by the assistant: it would start over at every question and never finish', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const live = s.client('summary').complete(ask('live summary'), { live: true });
+  await tick(); await tick();
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['ok'] });
+  await tick(); await tick();
+  assert.equal(llm.calls[0].aborted, false, 'the live summary was left running');
+  assert.equal(s.stats().queued.assistant, 1, 'the assistant waits for its slot');
+  llm.calls[0].go.open();
+  assert.equal(await live, 'done');
+  assert.equal(await as, 'ok');
+});

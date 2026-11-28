@@ -861,15 +861,18 @@ function migrate(db, migrations = MIGRATIONS) {
   refuseNewer(db, migrations);
   const { user_version: current } = db.prepare('PRAGMA user_version').get();
   if (current >= migrations.length) return;
-  const key = (r) => `${r.table}:${r.rowid}:${r.parent}:${r.fkid}`;
+  // counted per table and reference, not per rowid: a rebuilt table gives its rows new rowids, and a row that was already dangling must not look new
+  const key = (r) => `${r.table}:${r.parent}:${r.fkid}`;
+  const count = (rows) => { const m = new Map(); for (const r of rows) m.set(key(r), (m.get(key(r)) || 0) + 1); return m; };
   db.exec('PRAGMA foreign_keys = OFF');
   try {
     for (let v = current; v < migrations.length; v++) {
       db.exec('BEGIN');
       try {
-        const before = new Set(db.prepare('PRAGMA foreign_key_check').all().map(key));
+        const before = count(db.prepare('PRAGMA foreign_key_check').all());
         db.exec(migrations[v]);
-        const broken = db.prepare('PRAGMA foreign_key_check').all().filter((r) => !before.has(key(r)));
+        const after = db.prepare('PRAGMA foreign_key_check').all(), seenNow = new Map();
+        const broken = after.filter((r) => { const n = (seenNow.get(key(r)) || 0) + 1; seenNow.set(key(r), n); return n > (before.get(key(r)) || 0); });
         if (broken.length) {
           const where = [...new Set(broken.map((r) => `${r.table} -> ${r.parent}`))].join(', ');
           throw new Error(`migration ${v + 1} would leave ${broken.length} foreign key reference(s) dangling (${where}); not applied`);

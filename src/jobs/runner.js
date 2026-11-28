@@ -19,6 +19,7 @@ class JobRunner {
     this.pauseTimer = null;
     this.deadlineMs = deadlineMs;
     this.deadlineOf = {};
+    this.overrun = new Map();   // kind -> handlers still running after their deadline (see runOne): that kind claims nothing until they end
     this.handlers = {};
     this.onError = onError;
     this.setTimer = setTimer;
@@ -40,6 +41,8 @@ class JobRunner {
   }
 
   kinds(lane = null) { return Object.keys(this.handlers).filter((k) => !lane || this.laneOf[k] === lane); }
+  // the kinds that may start now: one whose earlier attempt passed its deadline but is still running is not started a second time
+  ready(lane = null) { return this.kinds(lane).filter((k) => !this.overrun.get(k)); }
 
   // Queue a job and make sure it runs soon (see JobQueue.enqueue for the options).
   enqueue(kind, payload, opts) {
@@ -86,7 +89,7 @@ class JobRunner {
       while (this.running) {
         if (this.paused(name)) { this.wakeAfterPause(); break; }
         let job;
-        try { job = this.queue.claim(this.kinds(name)); } catch (e) { this.onError?.(null, e); break; }
+        try { const kinds = this.ready(name); if (!kinds.length) break; job = this.queue.claim(kinds); } catch (e) { this.onError?.(null, e); break; }
         if (!job) break;
         lane.current = this.runOne(job);
         await lane.current;
@@ -121,12 +124,21 @@ class JobRunner {
       timer = this.setTimer(fire, ms);
       timer?.unref?.();
     });
+    // a handler that ignores ctx.signal goes on after its deadline: the attempt fails and the lane moves on, but the same kind is not
+    // started again until that handler has really ended (two copies of one job at once would do its work twice)
+    let handled = null, timedOut = false;
     try {
-      const result = await Promise.race([this.handlers[job.kind](job.payload, ctx), deadline]);
+      handled = (async () => this.handlers[job.kind](job.payload, ctx))();
+      const result = await Promise.race([handled, deadline.catch((e) => { timedOut = true; throw e; })]);
       try { this.queue.complete(job.id, result ?? null); } catch { /* the database closed under us: the job runs again at next start */ }
     } catch (err) {
       try { this.queue.fail(job.id, err, { retry: !err?.permanent }); } catch { /* as above */ }
       this.onError?.(job, err);
+      if (timedOut && handled) {
+        this.overrun.set(job.kind, (this.overrun.get(job.kind) || 0) + 1);
+        const ended = () => { const n = (this.overrun.get(job.kind) || 1) - 1; if (n) this.overrun.set(job.kind, n); else this.overrun.delete(job.kind); this.kick(); };
+        handled.then(ended, ended);
+      }
     } finally {
       this.clearTimer(timer);
     }
@@ -136,7 +148,7 @@ class JobRunner {
   schedule() {
     if (!this.running) return;
     let at = null;
-    try { at = this.queue.nextRunAt(this.kinds()); } catch { return; }
+    try { const kinds = this.ready(); if (!kinds.length) return; at = this.queue.nextRunAt(kinds); } catch { return; }
     if (at == null) return;
     const wait = Math.max(0, at - Date.now());
     if (wait === 0) { this.kick(); return; }

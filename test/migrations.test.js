@@ -53,6 +53,18 @@ test('a dangling reference that was already there before does not block a migrat
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2);
 });
 
+test('a dangling row in a table the migration rebuilds (new rowids) is still not "new"; one more dangling row is', () => {
+  const db = fresh();
+  migrate(db, [PARENT_CHILD]);
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec("INSERT INTO child (parent_id, text) VALUES ('p1', 'ok')");   // keeps the child table non-empty with gaps in its rowids
+  db.exec("INSERT INTO child (parent_id, text) VALUES ('gone', 'old')"); db.exec('DELETE FROM child WHERE text = \'ok\''); db.exec('PRAGMA foreign_keys = ON');
+  const rebuild = 'CREATE TABLE child_v2 (id INTEGER PRIMARY KEY, parent_id TEXT REFERENCES parent(id), text TEXT); INSERT INTO child_v2 (parent_id, text) SELECT parent_id, text FROM child; DROP TABLE child; ALTER TABLE child_v2 RENAME TO child;';
+  migrate(db, [PARENT_CHILD, rebuild]);
+  assert.equal(db.prepare('PRAGMA user_version').get().user_version, 2, 'the old dangling row, with a new rowid, did not block the rebuild');
+  assert.throws(() => migrate(db, [PARENT_CHILD, rebuild, "INSERT INTO child (parent_id, text) VALUES ('also gone', 'new')"]), /dangling/);
+});
+
 test('every real migration applies on an empty database with no foreign key left dangling', () => {
   const db = open(':memory:');
   assert.equal(db.prepare('PRAGMA user_version').get().user_version, MIGRATIONS.length);

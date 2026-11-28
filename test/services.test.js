@@ -235,6 +235,27 @@ test('Gmail: a run that fails half way keeps its place and the threads it had no
   assert.equal(app.items.source(src.id).cursor, '25');
 });
 
+test('Gmail: threads a failed run left unread are read within the run budget, and nothing new is listed while they fill it', async (t) => {
+  const w = await fakeWorld(); t.after(() => w.close());
+  const app = await boot(t, w);
+  app.settings.update({ google: { ...app.settings.get('google'), clientId: 'c', clientSecret: 's', refreshToken: 'r', accessToken: 'a', expiresAt: Date.now() + 3600_000, gmail: true, email: 'ana@x.pt' } });
+  const ids = Array.from({ length: 9 }, (_, i) => `t${i + 1}`);
+  const threads = Object.fromEntries(ids.map((id) => [id, { id, historyId: '10', messages: [mail(`m${id}`, 'Rui <rui@x.pt>', 'ana@x.pt', 'Tue, 24 Nov 2026 10:00:00 +0000', `text of ${id}`)] }]));
+  let lists = 0, fetched = [];
+  w.on(/^\/gmail\/v1\/users\/me\/profile$/, () => [200, { emailAddress: 'ana@x.pt', historyId: '20', messagesTotal: 9 }]);
+  w.on(/^\/gmail\/v1\/users\/me\/threads$/, () => { lists++; return [200, { threads: ids.map((id) => ({ id })) }]; });
+  w.on(/^\/gmail\/v1\/users\/me\/threads\/(\w+)$/, (u, req, m) => { fetched.push(m[1]); return [200, threads[m[1]]]; });
+  w.on(/^\/gmail\/v1\/users\/me\/history$/, () => [200, { historyId: '25', history: [] }]);
+  const src = app.sources.addRemote({ kind: 'gmail', name: 'Mail', config: {} });
+  const gmail = app.sources.services.gmail;
+  // a failed run left all nine unread (as ids in the cursor)
+  app.items.updateSource(src.id, { cursor: JSON.stringify({ h: '20', ids }) });
+  const r = await gmail.sync({ ...app.sources.ctx, source: app.items.source(src.id), items: app.items, budget: 4 });
+  assert.equal(r.created, 4, 'only the budget is read');
+  assert.equal(lists, 0, 'and nothing new is listed while the backlog fills the budget');
+  assert.deepEqual(gmail.readCursor(app.items.source(src.id).cursor).ids, ids.slice(4), 'the rest waits, in order');
+});
+
 test('Gmail: first run lists the window, later runs read only the history; a stale history starts again from scratch', async (t) => {
   const w = await fakeWorld(); t.after(() => w.close());
   const app = await boot(t, w);

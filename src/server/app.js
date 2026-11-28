@@ -364,7 +364,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
     else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
   };
-  const lock = new AppLock({ db: conn, bus });
+  const lock = new AppLock({ db: conn, bus, busy: () => recording.status().active });
   const ready = settings.init();
   // Work that reads secrets (the extension's pairing token, the Discord token) starts once they are opened.
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day

@@ -331,3 +331,24 @@ test('a paused lane claims nothing new, and a deadline that falls while paused w
   g.open();
   await r.stop();
 });
+
+test('a handler that ignores its deadline is not started a second time while it still runs (the retry waits for it to end)', async () => {
+  const q = new JobQueue(open(':memory:'), { backoff: [1] });
+  const r = new JobRunner({ queue: q, onError: () => {} });
+  let running = 0, peak = 0, starts = 0, release;
+  r.register('deaf', () => {
+    starts++; running++; peak = Math.max(peak, running);
+    if (starts > 1) { running--; return 'ok'; }
+    return new Promise((res) => { release = () => { running--; res('late'); }; });   // the first attempt ignores its signal and runs on
+  }, { deadlineMs: 30 });
+  const job = r.enqueue('deaf', {}, { maxAttempts: 2 });
+  r.start();
+  await new Promise((res) => setTimeout(res, 150));   // past the deadline and past the retry's back-off
+  assert.equal(starts, 1, 'the retry has not started while the first handler is still running');
+  release();
+  for (let i = 0; i < 50 && q.get(job.id).state !== 'done'; i++) await new Promise((res) => setTimeout(res, 20));
+  assert.equal(q.get(job.id).state, 'done');
+  assert.equal(starts, 2);
+  assert.equal(peak, 1, 'never two copies at once');
+  await r.stop();
+});
