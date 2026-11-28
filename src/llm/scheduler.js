@@ -47,6 +47,7 @@ class LlmScheduler {
     this.holds.add(token);
     return () => { if (this.holds.delete(token)) this.pump(); };
   }
+  isHeld() { return this.holds.size > 0; }
 
   // Resolves with fn(signal)'s result once a slot is free.
   // signal: cancels the job while it waits (rejects with AbortError); once it runs, the abort is forwarded to
@@ -128,7 +129,7 @@ class LlmScheduler {
   }
 
   stats() {
-    return { running: this.running, held: this.holds.size > 0, queued: Object.fromEntries(PRIORITIES.map((p) => [p, this.queues[p].length])) };
+    return { running: this.running, held: this.isHeld(), queued: Object.fromEntries(PRIORITIES.map((p) => [p, this.queues[p].length])) };
   }
 
   // Waits for a slot. Resolves with { signal, release, preempted, pin }: signal aborts when the caller's signal does (or when the job

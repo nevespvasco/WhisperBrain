@@ -128,7 +128,8 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // and action items. Each step is its own job and queues the next one; each is safe to run twice. Failures are reported as
   // before (a warning or a "failed" event) and the chain goes on, exactly like the in-memory version it replaces.
   const jobs = new JobQueue(conn, { bus });
-  const runner = new JobRunner({ queue: jobs, onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
+  // the AI jobs (the 'main' lane) wait while the live assistant holds the AI queue, and their deadline with them (src/jobs/runner.js)
+  const runner = new JobRunner({ queue: jobs, paused: (lane) => lane === 'main' && scheduler.isHeld(), onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
   const NEXT = { 'note.names': 'note.summarize', 'note.summarize': 'note.insights' };
   const chain = (step, noteId, payload, enqueue) => { if (NEXT[step]) enqueue(NEXT[step], { noteId, ...payload }, { key: noteId }); };
   runner.register('note.names', async ({ noteId }, { enqueue }) => {

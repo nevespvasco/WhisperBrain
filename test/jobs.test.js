@@ -279,3 +279,35 @@ test('a job gets an abort signal and a deadline: a stuck handler is aborted, the
   assert.deepEqual(errors, [['stuck', 'deadline'], ['deaf', 'deadline']]);
   await r.stop();
 });
+
+test('a paused lane claims nothing new, and a deadline that falls while paused waits for the pause to end', async () => {
+  const q = new JobQueue(open(':memory:'));
+  let paused = true;
+  const r = new JobRunner({ queue: q, paused: (lane) => paused && lane === 'main', pausePollMs: 20 });
+  const ran = [];
+  r.register('ai', async () => { ran.push('ai'); });
+  r.register('files', async () => { ran.push('files'); }, { lane: 'sources' });
+  r.enqueue('ai', {});
+  r.enqueue('files', {});
+  r.start();
+  await new Promise((res) => setTimeout(res, 60));
+  assert.deepEqual(ran, ['files'], 'only the lane that is not paused ran');
+  paused = false;
+  await new Promise((res) => setTimeout(res, 60));
+  assert.deepEqual(ran, ['files', 'ai'], 'picked up again once the pause ends, with nothing else to wake it');
+  // already running when the pause starts: its deadline waits
+  let signal;
+  const g = { open: null };
+  r.register('long', (p, ctx) => { signal = ctx.signal; return new Promise((res) => { g.open = res; }); }, { deadlineMs: 30 });
+  const job = r.enqueue('long', {});
+  await new Promise((res) => setTimeout(res, 10));
+  paused = true;
+  await new Promise((res) => setTimeout(res, 90));
+  assert.equal(signal.aborted, false, 'not stopped while paused');
+  paused = false;
+  await new Promise((res) => setTimeout(res, 60));
+  assert.equal(signal.aborted, true, 'stopped once the pause is over and it is still stuck');
+  assert.equal(q.get(job.id).error, 'long took longer than 30 ms and was stopped.');
+  g.open();
+  await r.stop();
+});
