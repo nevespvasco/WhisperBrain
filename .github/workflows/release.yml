@@ -1,19 +1,66 @@
 name: release
 # Installers for every system, published as a GitHub Release so WhisperBrain can be installed on other computers.
-# Push a tag (git tag v0.2.0 && git push origin v0.2.0) or run it by hand with the tag to publish.
+# Push a tag (git tag v0.2.0 && git push origin v0.2.0) or run it by hand with an existing tag to publish.
 # The builds are unsigned (no Apple or Windows signing secrets yet): macOS and Windows warn on first start, see the notes.
+#
+# Gates, because Windows (installer) and the AppImage update themselves from what this publishes:
+#   - the tag must exist, match package.json's version, and is what is checked out and built (also when run by hand);
+#   - the tests run on that commit first, and no installer is built if they fail;
+#   - the token can only read, except in the publish job;
+#   - an already published release is never overwritten; files go into a draft only;
+#   - if any system failed to build, the release stays a draft (a published release without one system's latest*.yml would
+#     make that system's installs fail at every update check). Fix it, re-run the failed jobs, and the draft is published.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag: { description: 'Tag to publish, e.g. v0.2.0 (created on the current commit if it does not exist)', required: true }
+      tag: { description: 'Existing tag to publish, e.g. v0.2.0 (it must match package.json at that tag)', required: true }
 
 permissions:
-  contents: write
+  contents: read
+
+# one run per tag at a time
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
+  check:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ref: ${{ steps.tag.outputs.ref }}
+    steps:
+      - id: tag
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then echo "::error::'$TAG' is not a version tag (v1.2.3)"; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=refs/tags/$TAG" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ steps.tag.outputs.ref }}', persist-credentials: false }
+      - name: The tag matches package.json
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          WANT="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$WANT" ]; then echo "::error::tag $TAG does not match package.json version ($WANT)"; exit 1; fi
+          echo "tag $TAG = package.json, commit $(git rev-parse HEAD)"
+
+  # The same tests as every push (build.yml), on the tagged commit. The installers below need them to pass.
+  test:
+    needs: check
+    uses: ./.github/workflows/build.yml
+    with:
+      ref: ${{ needs.check.outputs.ref }}
+      tests_only: true
+    permissions:
+      contents: read
+
   build:
+    needs: [check, test]
     strategy:
       fail-fast: false
       matrix:
@@ -24,8 +71,9 @@ jobs:
           - { os: windows-latest, script: dist:win, name: windows }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ needs.check.outputs.ref }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: npm }
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev xvfb
@@ -48,7 +96,17 @@ jobs:
           APP="$(find dist -maxdepth 2 -name 'WhisperBrain.app' | head -1)"
           WB_SMOKE=1 WB_USER_DATA="$RUNNER_TEMP/wb" "$APP/Contents/MacOS/WhisperBrain" | tee smoke.log
           grep -q SMOKE_OK smoke.log
-      - uses: actions/upload-artifact@v4
+      # Windows: a GUI program's console output does not reach the step, so the result is read from the app's own log.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $env:WB_SMOKE = '1'; $env:WB_USER_DATA = "$env:RUNNER_TEMP\wb"
+          Start-Process -FilePath 'dist\win-unpacked\WhisperBrain.exe' -ArgumentList '--disable-gpu' -Wait
+          $log = Get-Content "$env:WB_USER_DATA\logs\app.log" -Raw
+          $log
+          if ($log -notmatch 'SMOKE_OK') { throw 'smoke test failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: whisperbrain-${{ matrix.name }}
           if-no-files-found: error
@@ -63,21 +121,26 @@ jobs:
             dist/*.exe.blockmap
 
   publish:
-    needs: build
-    if: ${{ !cancelled() }}   # publish what was built, even if one system failed (the notes say which)
+    needs: [check, test, build]
+    # Publish what was built even if one system failed, but then only as a draft (see the top). Never without the tag check and the tests.
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.test.result == 'success' }}
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write   # the only job that can write: create the release and upload its files
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with: { path: out, merge-multiple: true }
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.check.outputs.tag }}
+          ALL_BUILT: ${{ needs.build.result == 'success' }}
         run: |
           ls -la out
+          if [ -z "$(ls -A out 2>/dev/null)" ]; then echo "::error::no system built anything"; exit 1; fi
           cd out && sha256sum * > SHA256SUMS.txt && cd ..
-          cat > notes.md <<'EOF'
+          cat > notes.md <<'NOTES'
           ## Install
 
           | System | File | First start |
@@ -91,9 +154,22 @@ jobs:
           Windows (installer) and Linux (AppImage) check for new versions by themselves and ask before restarting; the `latest*.yml` and `.blockmap` files in this release are what they read, do not delete them. The `.deb` and macOS builds are updated by installing the new file.
           Speech models are downloaded on first use from Settings → Audio & transcription. Checksums: `SHA256SUMS.txt`.
           Linux is tested on real hardware; the macOS and Windows builds start and pass the smoke test on CI, but have not been tried on a real call yet.
-          EOF
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          NOTES
+          if [ "$ALL_BUILT" != "true" ]; then
+            printf '\n> **Draft:** at least one system failed to build (see the workflow run). Re-run the failed jobs; the draft is published when every system has built.\n' >> notes.md
+          fi
+          if STATE="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            # A published release is never touched again: its installers and latest*.yml are what existing installs trust.
+            if [ "$STATE" != "true" ]; then echo "::error::$TAG is already published; make a new version instead of replacing its files"; exit 1; fi
+            # A draft (an earlier run where a system failed): replace its files with this run's
             gh release upload "$TAG" out/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
           else
-            gh release create "$TAG" out/* --title "WhisperBrain ${TAG#v}" --notes-file notes.md --target "$GITHUB_SHA"
+            gh release create "$TAG" out/* --draft --verify-tag --title "WhisperBrain ${TAG#v}" --notes-file notes.md
+          fi
+          if [ "$ALL_BUILT" = "true" ]; then
+            gh release edit "$TAG" --draft=false
+            echo "published $TAG"
+          else
+            echo "::warning::$TAG left as a draft: not every system built"
           fi
