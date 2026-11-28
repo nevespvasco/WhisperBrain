@@ -2,6 +2,11 @@
 // Minimal OpenAI-compatible chat client. Works with Ollama (/v1), llama.cpp, LM Studio, vLLM, OpenRouter, OpenAI...
 
 const DEFAULT_MAX_TOKENS = 4096; // ~3000 words: longer than any summary or answer the app asks for
+// Our own time limits, so a stuck server never holds the one AI slot until undici's 300 s defaults run out. Once the reply is
+// streaming every chunk (thinking included) arrives within a second or two, so a minute of silence means it is stuck. The first
+// byte may take much longer: Ollama loading a model, or reading a long prompt on a CPU, sends nothing until it is done.
+const IDLE_MS = 60_000;
+const FIRST_BYTE_MS = 300_000;
 
 class LlmError extends Error {
   constructor(message, { status, code } = {}) { super(message); this.status = status; this.code = code; }
@@ -53,16 +58,16 @@ class LlmClient {
     return h;
   }
 
-  async listModels() {
+  async listModels({ signal } = {}) {
     const cfg = this.getConfig();
-    const res = await this.request(`${normalizeBase(cfg.baseUrl)}/models`, { headers: this.headers(cfg) });
+    const res = await this.request(`${normalizeBase(cfg.baseUrl)}/models`, { headers: this.headers(cfg), signal });
     const json = await res.json();
     return (json.data || json.models || []).map((m) => m.id || m.name).filter(Boolean);
   }
 
-  async resolveModel(cfg) {
+  async resolveModel(cfg, { signal } = {}) {
     if (cfg.model) return cfg.model;
-    const models = await this.listModels();
+    const models = await this.listModels({ signal });
     if (!models.length) throw new LlmError('The LLM server has no models. Pull one (for Ollama: `ollama pull llama3.2`) and pick it in Settings → AI.', { code: 'no-model' });
     return models[0];
   }
@@ -89,9 +94,13 @@ class LlmClient {
   // reasoning: 'off' asks the server not to think first (short, structured replies: titles, JSON). Whatever is asked, a
   // reply that ended on the token cap while still thinking, with no answer yet, is tried once more: without thinking
   // (Ollama) or with a larger cap. If that is empty too it is an error, never a silent empty answer.
-  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning } = {}) {
+  // idleMs / firstByteMs: see IDLE_MS. onStart(): the request is under way (the scheduler calls it when a slot is granted instead).
+  // onProgress(): every chunk the server sends, thinking included, so a caller's own "has it started?" timer can tell a model that
+  // thinks from one that is stuck.
+  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning, idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onStart, onProgress } = {}) {
+    onStart?.();
     const cfg = this.getConfig();
-    const model = await this.resolveModel(cfg);
+    const model = await this.resolveModel(cfg, { signal });
     const ollama = LlmClient.isOllama(cfg);
     // Always cap the reply: a small local model can fall into a repeat loop, and without a cap Ollama keeps
     // generating forever (it shifts the context), holding its single slot so every later request waits.
@@ -100,7 +109,7 @@ class LlmClient {
     if (reasoning === 'off' && ollama) body.reasoning_effort = 'none';
     for (let attempt = 0; ; attempt++) {
       const run = { yielded: false, thought: false, finish: null };
-      for await (const t of this.attempt(cfg, body, signal, run)) { run.yielded = true; yield t; }
+      for await (const t of this.attempt(cfg, body, signal, run, { idleMs, firstByteMs, onProgress })) { run.yielded = true; yield t; }
       if (run.yielded || run.finish !== 'length' || !run.thought) return;
       if (attempt > 0) throw new LlmError(`The model "${model}" used its whole reply budget thinking and gave no answer. Pick a model that does not reason first in Settings → AI.`, { code: 'thinking-cutoff' });
       if (ollama && body.reasoning_effort !== 'none') body.reasoning_effort = 'none';
@@ -108,13 +117,24 @@ class LlmClient {
     }
   }
 
-  async *attempt(cfg, body, signal, run) {
-    const res = await this.request(`${normalizeBase(cfg.baseUrl)}/chat/completions`, { method: 'POST', headers: this.headers(cfg), body: JSON.stringify(body), signal });
+  // One request. Our own controller sits between the caller's signal and the fetch: the caller's abort still ends it as an AbortError,
+  // our idle limit ends it as an LlmError with code 'timeout'. The limit counts only time spent waiting for the server, not time the
+  // consumer spends on a chunk.
+  async *attempt(cfg, body, signal, run, { idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onProgress } = {}) {
+    const ctl = new AbortController();
+    const onAbort = () => ctl.abort(signal.reason);
+    if (signal?.aborted) onAbort(); else signal?.addEventListener('abort', onAbort, { once: true });
+    let timer = null, timedOut = 0;
+    const arm = (ms) => { clearTimeout(timer); timer = setTimeout(() => { timedOut = ms; ctl.abort(); }, ms); timer.unref?.(); };
     const filter = new ThinkFilter();
     const decoder = new TextDecoder();
     let buf = '';
     try {
+      arm(firstByteMs);
+      const res = await this.request(`${normalizeBase(cfg.baseUrl)}/chat/completions`, { method: 'POST', headers: this.headers(cfg), body: JSON.stringify(body), signal: ctl.signal });
+      arm(idleMs);
       for await (const chunk of res.body) {
+        clearTimeout(timer);
         buf += decoder.decode(chunk, { stream: true });
         let nl;
         while ((nl = buf.indexOf('\n')) >= 0) {
@@ -129,13 +149,24 @@ class LlmClient {
           const choice = json.choices?.[0];
           if (choice?.finish_reason) run.finish = choice.finish_reason;
           if (choice?.delta?.reasoning || choice?.delta?.reasoning_content) run.thought = true;
+          if (choice?.delta) { try { onProgress?.(); } catch { /* a caller's hook never breaks the stream */ } }
           const delta = choice?.delta?.content;
           if (delta) { const t = filter.push(delta); if (t && (run.yielded || t.trim())) yield t; }
         }
+        arm(idleMs);
       }
       const tail = filter.flush();
       if (tail.trim() || (run.yielded && tail)) yield tail;
-    } finally { if (filter.saw) run.thought = true; }
+    } catch (e) {
+      if (timedOut && !signal?.aborted) {
+        throw new LlmError(`The AI server stopped sending: nothing for ${Math.round(timedOut / 1000)} s, so the request was stopped. Is the model still loading, or the server stuck?`, { code: 'timeout' });
+      }
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (filter.saw) run.thought = true;
+    }
   }
 
   async complete(messages, opts) {
@@ -158,4 +189,4 @@ class LlmClient {
   }
 }
 
-module.exports = { LlmClient, LlmError, ThinkFilter };
+module.exports = { LlmClient, LlmError, ThinkFilter, IDLE_MS, FIRST_BYTE_MS };
