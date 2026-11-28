@@ -15,25 +15,34 @@ const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', '
 let N = null; // the open meeting's state
 let offEvents = null;
 
-export async function render(main, { parts, params }) {
+// alive(): false once the user has moved on. N is shared by the whole module, so a slow load that comes back late must stop
+// before it touches N (it would be the next meeting's) or the page; every await below is followed by that check.
+export async function render(main, { parts, params, signal = S.route.signal, alive = () => true }) {
   const id = parts[1];
   offEvents?.();
-  const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`), api('GET', `/api/notes/${id}/transcript`), api('GET', `/api/notes/${id}/speakers`), api('GET', `/api/chat?noteId=${id}`), api('GET', '/api/integrations').catch(() => null)]);
+  const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`, undefined, { signal }), api('GET', `/api/notes/${id}/transcript`, undefined, { signal }), api('GET', `/api/notes/${id}/speakers`, undefined, { signal }), api('GET', `/api/chat?noteId=${id}`, undefined, { signal }), api('GET', '/api/integrations').catch(() => null)]);
+  if (!alive()) return;
   if (ints) S.integrations = ints;
-  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length || (!ov.note.body.trim() && preflightOn(ov.note, segs)) ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
-  N.offer = await api('GET', `/api/notes/${id}/platform-transcript`).catch(() => ({ state: 'none' }));
+  N = { id, alive, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length || (!ov.note.body.trim() && preflightOn(ov.note, segs)) ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
+  const offer = await api('GET', `/api/notes/${id}/platform-transcript`).catch(() => ({ state: 'none' }));
+  if (!alive()) return;
+  N.offer = offer;
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
   await trInit();
+  if (!alive()) return;
   const wantTr = params.get('tr');   // "Translate this meeting" in the top bar
   if (wantTr && trOn()) await trSelect(wantTr, { render: false });
   if (preflightOn(N.note, N.segs)) await warmPreflight();   // the devices and languages its chips list
+  if (!alive()) return;
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
   renderTab(); renderAside();
   bind(main);
   const onEvent = (e) => handleEvent(main, e.detail.type, e.detail.data);
-  window.addEventListener('wb:event', onEvent);
+  window.addEventListener('wb:event', onEvent, { signal });
   offEvents = () => window.removeEventListener('wb:event', onEvent);
+  // leaving the page (or opening this meeting again) ends the polling for the platform's transcript
+  signal.addEventListener('abort', () => clearTimeout(offerTimer), { once: true });
   window.addEventListener('hashchange', () => { if (!location.hash.startsWith(`#/note/${id}`)) { offEvents?.(); offEvents = null; dropAssistant(id); } }, { once: true });
 }
 
@@ -67,26 +76,27 @@ const spLabel = speakerEntryText;
 // arrives (live while recording, or on demand), and the summary can be read in another language.
 const trOn = () => !!S.settings?.translation?.enabled;
 const langName = (c) => S.languages?.find((l) => l.code === c)?.name || c;
+// tr and id are held locally: a meeting opened meanwhile replaces N, and these answers must not land on it
 async function trInit() {
-  const cfg = S.settings?.translation;
-  N.tr = { lang: '', view: cfg?.view || 'original', text: new Map(), info: { languages: [], running: [] }, job: null, sumLang: '', summary: '' };
+  const cfg = S.settings?.translation, id = N.id;
+  const tr = N.tr = { lang: '', view: cfg?.view || 'original', text: new Map(), info: { languages: [], running: [] }, job: null, sumLang: '', summary: '' };
   if (!trOn()) return;
   try {
     S.languages ||= await api('GET', '/api/languages');
-    N.tr.info = await api('GET', `/api/notes/${N.id}/translations`);
-    const job = N.tr.info.running[0];
-    if (job) N.tr.job = job;
+    tr.info = await api('GET', `/api/notes/${id}/translations`);
+    const job = tr.info.running[0];
+    if (job) tr.job = job;
     // while recording with live translation on, the first language is what is being written; otherwise the language the settings
     // ask to see first, if the meeting already has it
-    const have = N.tr.info.languages.map((l) => l.lang);
+    const have = tr.info.languages.map((l) => l.lang);
     const first = recHere() && cfg.live ? cfg.targets[0] : cfg.view !== 'original' ? cfg.targets.find((c) => have.includes(c)) || have[0] : '';
-    if (first) { N.tr.lang = first; if (N.tr.view === 'original') N.tr.view = 'both'; await trLoad(first); }
-  } catch { N.tr.lang = ''; }
+    if (first) { tr.lang = first; if (tr.view === 'original') tr.view = 'both'; await trLoad(first, tr, id); }
+  } catch { tr.lang = ''; }
 }
-async function trLoad(lang) {
-  N.tr.text = new Map();
+async function trLoad(lang, tr = N.tr, id = N.id) {
+  const text = tr.text = new Map();
   if (!lang) return;
-  for (const s of await api('GET', `/api/notes/${N.id}/transcript?lang=${encodeURIComponent(lang)}`)) if (s.translation) N.tr.text.set(s.id, s.translation);
+  for (const s of await api('GET', `/api/notes/${id}/transcript?lang=${encodeURIComponent(lang)}`)) if (s.translation) text.set(s.id, s.translation);
 }
 async function trStart(lang) {
   const r = await api('POST', `/api/notes/${N.id}/translate`, { lang });
@@ -286,8 +296,10 @@ function offerCard() {
 }
 let offerTimer = null;
 async function refreshOffer() {
-  if (!N) return;
-  try { N.offer = await api('GET', `/api/notes/${N.id}/platform-transcript`); } catch { return; }
+  if (!N?.alive()) return;
+  const n = N;
+  try { n.offer = await api('GET', `/api/notes/${n.id}/platform-transcript`); } catch { return; }
+  if (n !== N || !n.alive()) return;
   if (N.tab === 'transcript') renderTab();
   clearTimeout(offerTimer);
   if (N.offer.state === 'working') offerTimer = setTimeout(refreshOffer, 4000);

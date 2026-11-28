@@ -4,9 +4,10 @@ import { S, $, api, t, esc, icon, fail, done, empty, fmtDate, fmtClock, go, conf
 const day = (ms) => fmtDate(ms, { day: 'numeric', month: 'short', year: 'numeric' });
 const link = (a) => `<a href="#/note/${a.noteId}?tab=transcript${a.segmentId ? `&seg=${a.segmentId}` : ''}">${icon('quote', 'sm')}${a.startMs != null ? ` ${fmtClock(a.startMs)}` : ''}</a>`;
 
-export async function render(main, { name, parts }) {
+export async function render(main, { name, parts, alive = () => true }) {
   if (name === 'project' && parts[1]) return page(main, parts[1]);
   const projects = await api('GET', '/api/projects');
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   main.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>${t('Projects')}</h1><div class="sub">${t('A project is a name and the words that belong to it. Meetings, notes, decisions and promises that mention them are gathered here by themselves.')}</div></div></div>
     <section class="panel mb"><div class="panel-head"><h3>${icon('plus')} ${t('New project')}</h3></div>

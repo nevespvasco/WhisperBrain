@@ -42,8 +42,10 @@ async function launch({ bin = findBrowser(), width = 1280, height = 800 } = {}) 
   let id = 0;
   const pending = new Map();
   const errors = [];
+  const subs = new Map();   // protocol event → handlers (e.g. Fetch.requestPaused)
   ws.addEventListener('message', (ev) => {
     const m = JSON.parse(ev.data);
+    if (m.method) for (const fn of subs.get(m.method) || []) fn(m.params);
     if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); if (m.error) p.reject(new Error(m.error.message)); else p.resolve(m.result); }
     else if (m.method === 'Runtime.exceptionThrown') errors.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args.map((a) => a.value ?? a.description).join(' '));
@@ -71,8 +73,16 @@ async function launch({ bin = findBrowser(), width = 1280, height = 800 } = {}) 
     const end = Date.now() + ms;
     for (;;) { const v = await evaluate(expr).catch(() => null); if (v) return v; if (Date.now() > end) throw new Error(`timed out waiting for ${expr}`); await sleep(50); }
   };
+  const on = (method, fn) => { if (!subs.has(method)) subs.set(method, new Set()); subs.get(method).add(fn); return () => subs.get(method).delete(fn); };
+  const once = (method, ms = 10000) => new Promise((resolve, reject) => { const t = setTimeout(() => { off(); reject(new Error(`no ${method}`)); }, ms); const off = on(method, (p) => { clearTimeout(t); off(); resolve(p); }); });
+  // the listeners of one type on document (or window): what a page left behind shows here
+  const listeners = async (type, target = 'document') => {
+    const { result } = await send('Runtime.evaluate', { expression: target });
+    const { listeners: all } = await send('DOMDebugger.getEventListeners', { objectId: result.objectId });
+    return all.filter((l) => l.type === type).length;
+  };
   const close = () => { try { ws.close(); } catch { /* gone */ } ch.kill('SIGKILL'); ch.once('exit', () => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* left for the OS */ } }); };
-  return { send, evaluate, click, clickOn, centre, press, insertText, goto, waitFor, close, errors };
+  return { send, on, once, listeners, evaluate, click, clickOn, centre, press, insertText, goto, waitFor, close, errors };
 }
 
 module.exports = { findBrowser, browserMissing, launch, sleep };

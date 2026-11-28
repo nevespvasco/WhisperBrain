@@ -6,9 +6,10 @@ let tab = 'mine';
 const day = (ms) => fmtDate(ms, { day: 'numeric', month: 'short' });
 const src = (a) => (!a.noteId ? t('added by you') : `<a class="quote-src" href="#/note/${a.noteId}?tab=transcript${a.segmentId ? `&seg=${a.segmentId}` : ''}" title="${esc(a.quote || '')}">${icon('quote', 'sm')} ${a.startMs != null ? fmtClock(a.startMs) : t('meeting')}</a>`);
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const draw = async () => {
     const [open, decisions, finished, acts] = await Promise.all([api('GET', '/api/commitments'), api('GET', '/api/assertions?state=accepted,superseded&kind=decision&limit=100'), api('GET', '/api/assertions?state=done&kind=commitment&limit=50'), api('GET', '/api/outbound').catch(() => ({ kinds: [] }))]);
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     const ready = acts.kinds.filter((k) => k.ready);
     const lists = { mine: open.mine, theirs: open.theirs, decisions, finished };
     const rows = lists[tab] || [];

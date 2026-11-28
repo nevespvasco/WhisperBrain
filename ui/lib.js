@@ -9,7 +9,7 @@ export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 export const S = {
-  settings: null, state: null, models: [], templates: [], spaces: [], tags: [], counts: {}, view: { name: 'home' },
+  settings: null, state: null, models: [], templates: [], spaces: [], tags: [], counts: {}, view: { name: 'home' }, route: { signal: new AbortController().signal, alive: () => true },   // route: the page on screen (app.js route())
   rec: { active: false }, level: { mic: 0, system: 0 }, liveText: '', liveDraft: '', drafts: {}, detector: null, streaming: null, integrations: null,
 };
 

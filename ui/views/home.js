@@ -8,7 +8,7 @@ import { openBrief } from '../brief.js';
 const platformFromUrl = (u) => (/meet\.google/.test(u) ? 'meet' : /zoom\.us/.test(u) ? 'zoom' : /teams\.(microsoft|live)/.test(u) ? 'teams' : /webex/.test(u) ? 'webex' : /whereby/.test(u) ? 'whereby' : /jit\.si|jitsi/.test(u) ? 'jitsi' : null);
 let mode = 'online';
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const hour = new Date().getHours();
   const greet = hour < 5 ? t('Good evening') : hour < 12 ? t('Good morning') : hour < 18 ? t('Good afternoon') : t('Good evening');
   const now = Date.now();
@@ -23,6 +23,7 @@ export async function render(main) {
   const needModel = !S.models.some((m) => m.installed);
   const needLlm = !S.state?.llmConfigured;
   const [needs, open] = await Promise.all([api('GET', '/api/inbox').then((r) => r.counts).catch(() => null), api('GET', '/api/commitments').catch(() => null)]);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const hasCal = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   main.innerHTML = `<div class="page">
     <div class="page-head hello"><div><h1>${greet}${S.settings.userName ? `, ${esc(S.settings.userName.split(' ')[0])}` : ''}</h1><div class="sub">${new Date().toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div></div>

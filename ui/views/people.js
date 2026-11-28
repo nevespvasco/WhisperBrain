@@ -10,9 +10,10 @@ const REASON = {
   'a first name that matches': 'One of them is just a first name that matches the other.',
 };
 
-export async function render(main, { name, parts }) {
+export async function render(main, { name, parts, alive = () => true }) {
   if (name === 'person' && parts[1]) return personPage(main, parts[1]);
   const [people, proposals] = await Promise.all([api('GET', '/api/people'), api('GET', '/api/people/proposals').catch(() => [])]);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   main.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>${t('People')}</h1><div class="sub">${t('Named speakers and meeting attendees. Name a speaker in a transcript to see who said what across meetings.')}</div></div></div>
     ${proposals.length ? `<div class="banner mb">${icon('users')}<div class="grow"><b>${proposals.length === 1 ? t('1 possible duplicate') : t('{n} possible duplicates', { n: proposals.length })}</b><div class="small muted">${t('The same person may appear under two names. Nothing is merged unless you say so.')}</div></div><button class="btn sm primary" data-act="review">${t('Review')}</button></div>` : ''}

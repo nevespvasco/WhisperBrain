@@ -4,13 +4,14 @@ import { takeNotesFor } from '../recording.js';
 
 let offset = 0; // weeks from now
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const from = dayStart() + offset * 7 * 86400000, to = from + 7 * 86400000;
   const [cal, prefs, past] = await Promise.all([
     api('GET', `/api/calendar/events?from=${from}&to=${to}&refresh=${offset === 0 ? '0' : '0'}`).catch((e) => ({ events: [], errors: [{ source: 'Calendar', error: e.message }] })),
     api('GET', '/api/calendar/prefs').catch(() => ({})),
     api('GET', '/api/meetings?limit=300').catch(() => []),
   ]);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const byEvent = new Map(past.filter((n) => n.eventUid).map((n) => [`${n.eventUid}:${n.eventStart}`, n]));
   const connected = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   const mode = S.settings.captureCalendar;

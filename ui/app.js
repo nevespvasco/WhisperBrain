@@ -58,7 +58,15 @@ function setDrawer(open) {
 const ROUTES = {
   '': home, meetings, note, calendar, actions, topics, topic: topics, glossary, term: glossary, briefings, people, person: people, chat, integrations, settings, activity, sources, access, documents, inbox, promises, review, projects, project: projects, rules,
 };
+// Each page gets a signal that aborts when the next one starts, and alive(): a slow page that comes back after the user has
+// moved on must not draw over the new one (views check alive() after their awaits; route() drops what a stale one throws).
+// Listeners and timers a page adds to document/window go with { signal: S.route.signal }.
+let routeSeq = 0, routeAc = null, shownSeq = 0;
 async function route() {
+  routeAc?.abort();
+  const ac = routeAc = new AbortController(), seq = ++routeSeq;
+  const alive = () => seq === routeSeq;
+  S.route = { signal: ac.signal, alive };
   const hash = location.hash.replace(/^#\/?/, '');
   const [path, qs] = hash.split('?');
   const parts = path.split('/').filter(Boolean).map(decodeURIComponent);
@@ -76,13 +84,16 @@ async function route() {
   // the next page's buttons (a Briefings "delete" handler once fired on Action items).
   for (const k of ['onclick', 'onchange', 'oninput', 'onsubmit', 'onkeydown', 'ondblclick']) main[k] = null;
   const slow = setTimeout(() => { appEl.classList.add('loading'); main.setAttribute('aria-busy', 'true'); }, 220);
-  try { await view.render(main, { parts, params, name }); } catch (e) {
+  try { await view.render(main, { parts, params, name, signal: ac.signal, alive }); } catch (e) {
+    if (!alive() || e?.name === 'AbortError') return;
     if (e instanceof ApiError && e.status === 404) { toast(t('That item no longer exists.'), { error: true }); go('#/'); return; }
     fail(e);
     main.innerHTML = `<div class="page"><div class="banner danger mt" role="alert">${icon('alert')}<div class="grow">${esc(e.message)}</div><a class="btn sm" href="#/">${t('Home')}</a></div></div>`;
   } finally {
     clearTimeout(slow);
-    appEl.classList.remove('loading'); main.removeAttribute('aria-busy');
+    if (alive()) { appEl.classList.remove('loading'); main.removeAttribute('aria-busy'); shownSeq = seq; if (main.firstElementChild) main.firstElementChild.dataset.route = seq; }
+    // A page that does not check alive() came back late and replaced the newer page that was already drawn: draw that one again
+    else if (shownSeq > seq && main.firstElementChild?.dataset.route !== String(shownSeq)) route();
   }
 }
 window.addEventListener('hashchange', route);

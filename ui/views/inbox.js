@@ -71,9 +71,10 @@ const card = (c) => {
   return '';
 };
 
-export async function render(main) {
+export async function render(main, { alive = () => true, signal = S.route.signal } = {}) {
   const draw = async () => {
     const { counts, cards } = await api('GET', '/api/inbox');
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     main.innerHTML = `<div class="page narrow">
       <div class="page-head"><div><h1>${t('Inbox')}</h1><div class="sub">${t('What needs a decision from you. The AI only suggests: each suggestion shows the words it rests on, and nothing counts until you accept it.')}</div></div></div>
       ${cards.length ? `<div class="stack">${cards.map(card).join('')}</div>` : `<div class="panel">${empty('inbox', t('All clear'), t('Nothing needs you. Decisions and promises found in your meetings appear here for you to accept.'))}</div>`}
@@ -117,7 +118,7 @@ export async function render(main) {
     const k = e.key.toLowerCase();
     if (k === 'a') act(first, 'accept'); else if (k === 'd') act(first, 'dismiss'); else if (k === 'e') act(first, 'edit');
   };
-  document.addEventListener('keydown', keys);
+  document.addEventListener('keydown', keys, { signal });   // gone with the page: opening the Inbox again used to add a second one (A accepted twice)
 }
 
 // Fix what the AI got wrong: the words and where they were said stay as they were

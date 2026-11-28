@@ -10,9 +10,11 @@ const RPC_STATE = { off: 'Off', 'not-set-up': 'Not set up', closed: 'The Discord
 const rpcLine = (r) => (r.call ? `${t('In the call')} “${r.call.name || t('voice channel')}” · ${r.call.people} ${t(r.call.people === 1 ? 'person' : 'people')}` : t(RPC_STATE[r.state] || r.state) + (r.state === 'closed' || r.state === 'not-authorised' || !r.detail ? '' : ` · ${r.detail}`));
 const rpcLabel = (r) => (r.call ? rpcLine(r) : t(RPC_STATE[r.state] || r.state));
 
-export async function render(main) {
-  const ints = S.integrations = await api('GET', '/api/integrations');
+export async function render(main, { alive = () => true } = {}) {
+  const ints = await api('GET', '/api/integrations');
   const tsrc = await api('GET', '/api/transcript-sources').catch(() => []);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
+  S.integrations = ints;
   const s = S.settings;
   const g = ints.google;
   main.innerHTML = `<div class="page">
@@ -127,7 +129,11 @@ async function loadTeams(ints) {
 
 let rpcPoll = null;   // the Discord card shows which call you are in, live
 function bind(main, ints) {
+  // this page's lifetime (app.js route()): a redraw that comes after the user left would draw Integrations over the next page
+  const { alive, signal } = S.route;
+  const redraw = () => (alive() ? render(main, { alive }) : null);
   clearInterval(rpcPoll);
+  signal.addEventListener('abort', () => clearInterval(rpcPoll), { once: true });
   rpcPoll = setInterval(async () => {
     const el = $('#r-status');
     if (!el) { clearInterval(rpcPoll); return; }   // the page was left
@@ -143,7 +149,7 @@ function bind(main, ints) {
     if (b.dataset.ts) {
       const id = b.dataset.id, setting = TS[id].setting, say = (msg, ok) => { const el = $(`#ts-status-${id}`); if (el) { el.textContent = msg; el.style.color = ok ? 'var(--ok)' : 'var(--danger)'; } };
       try {
-        if (b.dataset.ts === 'off') { await api('DELETE', `/api/transcript-sources/${id}`); render(main); return; }
+        if (b.dataset.ts === 'off') { await api('DELETE', `/api/transcript-sources/${id}`); redraw(); return; }
         const patch = { clientId: $(`#ts-id-${id}`).value.trim() };
         const sec = $(`#ts-secret-${id}`)?.value; if (sec && sec !== MASK) patch.clientSecret = sec.trim();
         if (id === 'teams') patch.tenant = $('#ts-tenant-teams').value.trim() || 'organizations';
@@ -151,8 +157,8 @@ function bind(main, ints) {
         const r = await api('POST', `/api/transcript-sources/${id}/connect`);
         say(t('Waiting for you to approve in the browser…'), true);
         if (r.authUrl) window.open(r.authUrl, '_blank', 'noopener');
-        const onEv = (ev) => { if (['transcript-source.connected', 'transcript-source.error'].includes(ev.detail.type) && ev.detail.data?.id === id) { window.removeEventListener('wb:event', onEv); render(main); } };
-        window.addEventListener('wb:event', onEv);
+        const onEv = (ev) => { if (['transcript-source.connected', 'transcript-source.error'].includes(ev.detail.type) && ev.detail.data?.id === id) { window.removeEventListener('wb:event', onEv); redraw(); } };
+        window.addEventListener('wb:event', onEv, { signal });
       } catch (err) { say(err.message, false); }
       return;
     }
@@ -162,11 +168,11 @@ function bind(main, ints) {
         const r = await api('POST', '/api/google/connect', { clientId: $('#g-id').value.trim(), clientSecret: $('#g-secret').value.trim(), gmail: false });
         $('#g-status').innerHTML = `${t('Waiting for you to approve in the browser…')} ${r.opened ? '' : `<a href="${esc(r.authUrl)}" target="_blank" rel="noopener noreferrer">${t('Open the Google sign-in page')}</a>`}`;
         if (!r.opened) window.open(r.authUrl, '_blank', 'noopener');
-        const onEv = (ev) => { if (ev.detail.type === 'google.connected' || ev.detail.type === 'google.error') { window.removeEventListener('wb:event', onEv); render(main); } };
-        window.addEventListener('wb:event', onEv);
-      } else if (a === 'g-disconnect') { if (await confirmDialog(t('Disconnect Google Calendar? Meetings you already recorded are kept.'), { ok: t('Disconnect') })) { await api('POST', '/api/google/disconnect'); S.settings = await api('GET', '/api/settings'); render(main); } }
-      else if (a === 'g-refresh') { await api('GET', '/api/google/calendars'); S.settings = await api('GET', '/api/settings'); render(main); }
-      else if (b.dataset.calDel) { await api('DELETE', `/api/calendar/sources/${b.dataset.calDel}`); S.settings = await api('GET', '/api/settings'); render(main); }
+        const onEv = (ev) => { if (ev.detail.type === 'google.connected' || ev.detail.type === 'google.error') { window.removeEventListener('wb:event', onEv); redraw(); } };
+        window.addEventListener('wb:event', onEv, { signal });
+      } else if (a === 'g-disconnect') { if (await confirmDialog(t('Disconnect Google Calendar? Meetings you already recorded are kept.'), { ok: t('Disconnect') })) { await api('POST', '/api/google/disconnect'); S.settings = await api('GET', '/api/settings'); redraw(); } }
+      else if (a === 'g-refresh') { await api('GET', '/api/google/calendars'); S.settings = await api('GET', '/api/settings'); redraw(); }
+      else if (b.dataset.calDel) { await api('DELETE', `/api/calendar/sources/${b.dataset.calDel}`); S.settings = await api('GET', '/api/settings'); redraw(); }
       else if (a === 'cal-add') {
         const url = $('#cal-url').value.trim();
         if (!url) return;
@@ -174,22 +180,22 @@ function bind(main, ints) {
         S.settings = await api('GET', '/api/settings');
         const r = await api('GET', '/api/calendar/events?refresh=1');
         if (r.errors.length) toast(r.errors[0].error, { error: true }); else done(t('{n} upcoming events found', { n: r.events.length }));
-        render(main);
+        redraw();
       } else if (a === 'n-save') {
         const token = $('#n-token').value.trim();
         await save({ notion: { token } });
         const r = await api('POST', '/api/integrations/notion/test');
         status('#n-status', true, `${r.name || 'OK'}${r.workspace ? ' · ' + r.workspace : ''}`);
-        setTimeout(() => render(main), 900);
-      } else if (a === 'n-pick') await pickNotionParent(main);
-      else if (a === 'n-remove') { await save({ notion: { token: '', parentId: '', parentTitle: '', autoExport: false } }); render(main); }
+        setTimeout(() => redraw(), 900);
+      } else if (a === 'n-pick') await pickNotionParent(main, redraw);
+      else if (a === 'n-remove') { await save({ notion: { token: '', parentId: '', parentTitle: '', autoExport: false } }); redraw(); }
       else if (a === 'l-save') {
         await save({ linear: { apiKey: $('#l-key').value.trim() } });
         const r = await api('POST', '/api/integrations/linear/test');
         status('#l-status', true, `${r.viewer.name} · ${r.teams.length} ${t('teams')}`);
         if (!S.settings.linear.teamId && r.teams.length === 1) await save({ linear: { teamId: r.teams[0].id, teamName: r.teams[0].name } });
-        setTimeout(() => render(main), 900);
-      } else if (a === 'l-remove') { await save({ linear: { apiKey: '', teamId: '', teamName: '' } }); render(main); }
+        setTimeout(() => redraw(), 900);
+      } else if (a === 'l-remove') { await save({ linear: { apiKey: '', teamId: '', teamName: '' } }); redraw(); }
       else if (a === 'd-save') {
         await save({ discord: { token: $('#d-token').value.trim(), userId: $('#d-user').value.trim(), channelId: $('#d-channel').value.trim(), enabled: $('#d-on').checked } });
         $('#d-status').textContent = t('Joining your call for a few seconds — say something…');
@@ -206,20 +212,20 @@ function bind(main, ints) {
           const r = await api('POST', '/api/recording/start', { speakerTest: true, title: t('Speaker test') });
           go(`#/note/${r.noteId}?tab=transcript`);
         } catch (e) { fail(e); } finally { b.disabled = false; }
-      } else if (a === 'd-remove') { await save({ discord: { token: '', enabled: false, channelId: '' } }); render(main); }
+      } else if (a === 'd-remove') { await save({ discord: { token: '', enabled: false, channelId: '' } }); redraw(); }
       else if (a === 'r-save') {
         const secret = $('#r-secret').value.trim();
         await save({ discordRpc: { clientId: $('#r-id').value.trim(), ...(secret && secret !== MASK ? { clientSecret: secret } : {}), enabled: $('#r-on').checked } });
-        done(t('Saved')); render(main);
+        done(t('Saved')); redraw();
       } else if (a === 'r-auth') {
         b.disabled = true; $('#r-status').textContent = t('Accept in the Discord app…');
-        try { const r = await api('POST', '/api/integrations/discord-rpc/authorise'); status('#r-status', true, rpcLine(r)); setTimeout(() => render(main), 900); } catch (e) { status('#r-status', false, e.message); } finally { b.disabled = false; }
-      } else if (a === 'r-remove') { await api('POST', '/api/integrations/discord-rpc/disconnect'); render(main); }
+        try { const r = await api('POST', '/api/integrations/discord-rpc/authorise'); status('#r-status', true, rpcLine(r)); setTimeout(() => redraw(), 900); } catch (e) { status('#r-status', false, e.message); } finally { b.disabled = false; }
+      } else if (a === 'r-remove') { await api('POST', '/api/integrations/discord-rpc/disconnect'); redraw(); }
       else if (a === 'o-save') {
         await save({ obsidian: { vaultPath: $('#o-path').value.trim(), folder: $('#o-folder').value.trim() || 'Meetings', transcript: $('#o-tr').checked, autoExport: $('#o-auto').checked } });
         const r = await api('POST', '/api/integrations/obsidian/test');
         status('#o-status', true, `${r.isVault ? t('Obsidian vault') : t('Folder (no .obsidian found)')} · ${r.notes} ${t('notes')}`);
-        setTimeout(() => render(main), 1200);
+        setTimeout(() => redraw(), 1200);
       } else if (a === 'o-all') {
         if (!(await confirmDialog(t('Write every meeting into your Obsidian vault? Existing exports are updated in place.'), { ok: t('Export'), danger: false }))) return;
         const ids = (await api('GET', '/api/meetings?limit=5000')).map((n) => n.id);
@@ -228,9 +234,9 @@ function bind(main, ints) {
         const ok = r.results.filter((x) => x.ok).length;
         toast(t('{ok} of {n} exported', { ok, n: r.results.length }), { ok: ok === r.results.length, error: ok < r.results.length });
         b.disabled = false;
-      } else if (a === 'hook-add') await addHook(main);
+      } else if (a === 'hook-add') await addHook(main, redraw);
       else if (b.dataset.hookTest) { const r = await api('POST', `/api/integrations/webhooks/${b.dataset.hookTest}/test`); done(t('Delivered (HTTP {s})', { s: r.status })); }
-      else if (b.dataset.hookDel) { await save({ webhooks: S.settings.webhooks.filter((w) => w.id !== b.dataset.hookDel) }); render(main); }
+      else if (b.dataset.hookDel) { await save({ webhooks: S.settings.webhooks.filter((w) => w.id !== b.dataset.hookDel) }); redraw(); }
       else if (a === 'import-notion') openImport({ tab: 'notion' });
       else if (a === 'import-linear') openImport({ tab: 'linear' });
       else if (a === 'import-obsidian') openImport({ tab: 'obsidian' });
@@ -253,7 +259,7 @@ function bind(main, ints) {
   void ints;
 }
 
-function pickNotionParent(main) {
+function pickNotionParent(main, redraw) {
   return modal({
     title: t('Where should meeting notes go?'),
     body: `<div class="hint">${t('Only pages and databases shared with your integration appear here.')}</div><div class="search-in" style="max-width:none">${icon('search', 'sm')}<input id="np-q" placeholder="${t('Search Notion…')}"></div><div class="picklist" id="np-list"><div class="empty"><div class="skel" style="width:50%"></div></div></div>`,
@@ -267,7 +273,7 @@ function pickNotionParent(main) {
             const row = ev.target.closest('[data-i]'); if (!row) return;
             const it = items[Number(row.dataset.i)];
             await save({ notion: { parentId: it.id, parentKind: it.kind, parentTitle: it.title || 'Untitled' } });
-            done(); close(); render(main);
+            done(); close(); redraw();
           };
         } catch (e) { list.innerHTML = `<div class="banner danger">${esc(e.message)}</div>`; }
       }, 250);
@@ -277,7 +283,7 @@ function pickNotionParent(main) {
   });
 }
 
-function addHook(main) {
+function addHook(main, redraw) {
   return modal({
     title: t('Add a webhook'),
     body: `${field('wh-name', t('Name'), '<input id="wh-name" placeholder="Zapier">')}${field('wh-url', 'URL', '<input id="wh-url" type="url" placeholder="https://hooks.zapier.com/…">')}${field('wh-secret', t('Signing secret (optional)'), '<input id="wh-secret" autocomplete="off">')}
@@ -285,7 +291,7 @@ function addHook(main) {
     foot: `<button class="btn" data-close>${t('Cancel')}</button><button class="btn primary" data-ok>${t('Add')}</button>`,
     onMount: (d, close) => {
       $('[data-ok]', d).onclick = async () => {
-        try { await save({ webhooks: [...S.settings.webhooks, { name: $('#wh-name', d).value, url: $('#wh-url', d).value.trim(), secret: $('#wh-secret', d).value, auto: $('#wh-auto', d).checked }] }); close(true); render(main); } catch (e) { fail(e); }
+        try { await save({ webhooks: [...S.settings.webhooks, { name: $('#wh-name', d).value, url: $('#wh-url', d).value.trim(), secret: $('#wh-secret', d).value, auto: $('#wh-auto', d).checked }] }); close(true); redraw(); } catch (e) { fail(e); }
       };
     },
   });

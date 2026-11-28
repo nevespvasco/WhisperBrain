@@ -20,9 +20,10 @@ const STATE = {
 };
 const when = (ms) => (ms ? fmtDate(ms, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '');
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const draw = async () => {
     const [{ counts, jobs }, ledger] = await Promise.all([api('GET', '/api/jobs?limit=200'), api('GET', '/api/ai-runs?limit=15&days=30').catch(() => null)]);
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     const busy = counts.queued + counts.running;
     main.innerHTML = `<div class="page">
       <div class="page-head"><div><h1>${t('Activity')}</h1><div class="sub">${t('What WhisperBrain does in the background after a meeting. If the app closes in the middle, it carries on the next time it opens.')}</div></div></div>
@@ -64,5 +65,5 @@ export async function render(main) {
     if (S.view.name !== 'activity') { window.removeEventListener('wb:event', onEvent); onEvent = null; return; }
     if (e.detail?.type === 'job.changed') redraw();
   };
-  window.addEventListener('wb:event', onEvent);
+  window.addEventListener('wb:event', onEvent, { signal: S.route.signal });   // and gone with the page (app.js route())
 }

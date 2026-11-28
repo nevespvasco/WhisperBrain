@@ -99,3 +99,38 @@ test('pickers: the Access sheet\'s "May an AI see it?" can be changed with the m
   assert.equal(await b.evaluate(`document.querySelector('#as-reach').value`), 'any');
   assert.deepEqual(b.errors, []);
 });
+
+test('navigation: opening the Inbox again does not stack its keyboard handler (one press of A accepted twice)', { skip, timeout: 60000 }, async (t) => {
+  const { b } = await boot(t);
+  const before = await b.listeners('keydown');
+  await b.evaluate(`location.hash = '#/inbox'`);
+  await b.waitFor(`document.querySelector('#main h1')?.textContent === 'Inbox'`);
+  const once = await b.listeners('keydown');
+  assert.equal(once, before + 1, 'the Inbox adds its handler');
+  for (const q of ['?a=1', '?a=2', '?a=3']) {
+    await b.evaluate(`location.hash = '#/inbox${q}'`);
+    await sleep(300);
+  }
+  assert.equal(await b.listeners('keydown'), once, 'still one handler after opening it three more times');
+  await b.evaluate(`location.hash = '#/glossary'`);
+  await b.waitFor(`document.querySelector('#main h1')?.textContent === 'Glossary'`);
+  assert.equal(await b.listeners('keydown'), before, 'and none once the page is left');
+  assert.deepEqual(b.errors, []);
+});
+
+test('navigation: a meeting that loads slowly does not draw over the page the user went to meanwhile', { skip, timeout: 60000 }, async (t) => {
+  const { app, b } = await boot(t);
+  const n = app.notes.create({ source: 'manual', title: 'Slow meeting' });
+  await b.send('Fetch.enable', { patterns: [{ urlPattern: `*/api/notes/${n.id}/overview*`, requestStage: 'Request' }] });
+  const paused = b.once('Fetch.requestPaused');
+  await b.evaluate(`location.hash = '#/note/${n.id}'`);
+  const req = await paused;   // the meeting's first answer is held back
+  await b.evaluate(`location.hash = '#/glossary'`);
+  await b.waitFor(`document.querySelector('#main h1')?.textContent === 'Glossary'`);
+  await b.send('Fetch.continueRequest', { requestId: req.requestId }).catch(() => { /* already cancelled by leaving */ });
+  await sleep(800);
+  assert.equal(await b.evaluate(`document.querySelector('#main h1')?.textContent`), 'Glossary', 'the Glossary is still what is on screen');
+  assert.equal(await b.evaluate(`document.querySelector('#main').textContent.includes('Slow meeting')`), false);
+  assert.equal(await b.evaluate(`location.hash`), '#/glossary');
+  assert.deepEqual(b.errors.filter((e) => !/AbortError|aborted/i.test(e)), []);
+});

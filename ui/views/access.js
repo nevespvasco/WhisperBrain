@@ -8,9 +8,10 @@ const when = (ms) => (ms ? fmtDate(ms, { day: 'numeric', month: 'short', hour: '
 const kb = (n) => (n > 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n > 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const OPS = { 'live.search': 'Live search sent', 'live.open': 'A result was opened', 'action.run': 'Action run', 'grant.changed': 'Access changed', 'grant.revoked': 'Access revoked' };
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const draw = async () => {
     const [ov, log, people] = await Promise.all([api('GET', '/api/access'), api('GET', '/api/access-log?limit=40'), api('GET', '/api/people').catch(() => [])]);
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     const byId = new Map(ov.sources.map((s) => [s.id, s]));
     main.innerHTML = `<div class="page">
       <div class="page-head"><div><h1>${t('Access & privacy')}</h1><div class="sub">${t('What each connected service may do, what has been read from it, and where copies of it are. Narrowing an access forgets what is no longer allowed straight away.')}</div></div></div>
@@ -115,5 +116,5 @@ export async function render(main) {
   const redraw = debounce(() => { if (S.view.name === 'access') draw().catch(() => {}); }, 400);
   if (onEvent) window.removeEventListener('wb:event', onEvent);
   onEvent = (e) => { if (S.view.name !== 'access') { window.removeEventListener('wb:event', onEvent); onEvent = null; return; } if (['sources.changed', 'google.connected', 'items.purged', 'actions.changed'].includes(e.detail?.type)) redraw(); };
-  window.addEventListener('wb:event', onEvent);
+  window.addEventListener('wb:event', onEvent, { signal: S.route.signal });   // and gone with the page (app.js route())
 }

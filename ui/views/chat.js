@@ -88,8 +88,9 @@ export function renderChat(root, history, { noteId, suggestions, placeholder, on
   requestAnimationFrame(() => fol.end());
 }
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const history = await api('GET', '/api/chat');
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   main.innerHTML = `<div class="page narrow chat-page"><div class="page-head"><div><h1>${t('Ask AI')}</h1><div class="sub">${t('Questions across everything — meetings, documents, messages, action items, decisions, people, projects and your calendar. Answers cite where they come from.')}</div></div></div><div class="panel" id="gchat"></div></div>`;
   renderChat($('#gchat'), history, { noteId: null, suggestions: [t('Summarise the last meeting'), t('What did we decide this week?'), t('What do I owe people?'), t('Open action items'), t('What is on my calendar this week?'), t('Summarise my latest e-mails'), t('Which topics keep coming up?')], placeholder: t('Ask about anything in WhisperBrain…') });
 }

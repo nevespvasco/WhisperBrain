@@ -26,6 +26,7 @@ export async function render(main, ctx) {
   if (name === 'topic' && parts[1]) return topicPage(main, parts[1]);
   const days = PERIODS[period] ?? 0;
   const ov = await api('GET', `/api/topics/overview?since=${days ? Date.now() - days * DAY : 0}`);
+  if (ctx.alive && !ctx.alive()) return;   // the user moved on meanwhile (app.js route())
   const d = prepare(ov, days);
   const head = `<div class="page-head"><div><h1>${t('Topics')}</h1><div class="sub">${t('Subjects that come up across your meetings. Lines join topics discussed in the same meeting.')}</div></div>
     <div class="actions">${seg('mode', [['map', t('Map'), 'network'], ['themes', t('Themes'), 'layers'], ['trends', t('Trends'), 'graph'], ['list', t('List'), 'list']], mode)}</div></div>`;
