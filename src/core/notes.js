@@ -93,10 +93,7 @@ class Notes {
   }
 
   remove(id) {
-    const changes = tx(this.db, () => {
-      this.db.prepare('DELETE FROM search WHERE note_id = ?').run(id);
-      return this.db.prepare('DELETE FROM notes WHERE id = ?').run(id).changes;
-    });
+    const changes = this.db.prepare('DELETE FROM notes WHERE id = ?').run(id).changes;   // its search row goes with it (trigger, migration 32)
     if (changes) this.bus?.publish('note.deleted', { id });
     return changes > 0;
   }
@@ -121,12 +118,13 @@ class Notes {
   search(q, limit = 20, opts = {}) {
     const fts = ftsQuery(q, opts);
     if (!fts) return [];
-    return this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT note_id, bm25(search, 0, 8, 3, 2, 1) AS rank,
              snippet(search, -1, '<mark>', '</mark>', '…', 14) AS snippet
-      FROM search WHERE search MATCH ? ORDER BY rank LIMIT ?`).all(fts, limit)
-      .map((r) => ({ note: this.get(r.note_id), snippet: r.snippet, rank: r.rank }))
-      .filter((r) => r.note);
+      FROM search WHERE search MATCH ? ORDER BY rank LIMIT ?`).all(fts, limit);
+    const ids = [...new Set(rows.map((r) => r.note_id))];
+    const byId = new Map(ids.length ? this.db.prepare(`SELECT ${NOTE_COLS} FROM notes WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids).map((r) => [r.id, rowToNote(r)]) : []);   // one query, not one per hit
+    return rows.map((r) => ({ note: byId.get(r.note_id) || null, snippet: r.snippet, rank: r.rank })).filter((r) => r.note);
   }
 
   // Advanced search: free text limited to one part of the note, plus filters. Every filter is optional.
@@ -171,13 +169,19 @@ class Notes {
     });
   }
 
+  // The note's row in the whole-note search, replaced by its rowid (search_rowid): note_id is not indexed there, so a delete by it
+  // would scan every note.
   reindex(id) {
     const n = this.get(id);
-    this.db.prepare('DELETE FROM search WHERE note_id = ?').run(id);
-    if (!n) return;
-    const transcript = this.transcriptText(id);
-    this.db.prepare('INSERT INTO search(note_id, title, body, summary, transcript) VALUES(?, ?, ?, ?, ?)')
-      .run(id, n.title, n.body, n.summary, transcript);
+    const transcript = n ? this.transcriptText(id) : '';
+    const run = () => {
+      const had = this.db.prepare('SELECT fts_rowid AS r FROM search_rowid WHERE note_id = ?').get(id);
+      if (had) this.db.prepare('DELETE FROM search WHERE rowid = ?').run(had.r);
+      if (!n) { this.db.prepare('DELETE FROM search_rowid WHERE note_id = ?').run(id); return; }
+      const r = this.db.prepare('INSERT INTO search(note_id, title, body, summary, transcript) VALUES(?, ?, ?, ?, ?)').run(id, n.title, n.body, n.summary, transcript);
+      this.db.prepare('INSERT INTO search_rowid (note_id, fts_rowid) VALUES (?, ?) ON CONFLICT (note_id) DO UPDATE SET fts_rowid = excluded.fts_rowid').run(id, Number(r.lastInsertRowid));
+    };
+    if (this.db.isTransaction) run(); else tx(this.db, run);
   }
 
   // ---- transcript ----

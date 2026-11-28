@@ -64,6 +64,26 @@ test('jobs left running by a closed app are queued again at start', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('a job that was on its last attempt when the app closed fails at start instead of running again (no crash loop)', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'db.sqlite');
+  let db = open(file);
+  const q0 = new JobQueue(db);
+  const last = q0.enqueue('source.sync', {}, { maxAttempts: 1 });
+  const more = q0.enqueue('note.summarize', {}, { maxAttempts: 3 });
+  q0.claim(); q0.claim();
+  db.close();   // the process died (an out-of-memory in source.sync, say) while both ran
+  db = open(file);
+  const q = new JobQueue(db);
+  assert.equal(q.recover({ all: true }), 2);
+  assert.equal(q.get(last.id).state, 'failed', 'no attempts left: it is not run again at every start');
+  assert.equal(q.get(last.id).error, 'interrupted (app closed or crashed)');
+  assert.ok(q.get(last.id).finishedAt);
+  assert.equal(q.get(more.id).state, 'queued', 'attempts left: queued again');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('the runner runs jobs in order, chains the next step, and records failures', async () => {
   const q = new JobQueue(open(':memory:'));
   const r = new JobRunner({ queue: q });

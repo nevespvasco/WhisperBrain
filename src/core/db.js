@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
+// Rules for new migrations: append at the end, never edit one that shipped (users already ran it). They run with foreign keys off
+// (see migrate()), so a table can be rebuilt with create / copy / DROP / RENAME. GUARD: items_fts (and the contentless chunks_fts by
+// chunks.id) are keyed on rowids. items has a TEXT primary key, so its rowid is hidden: a rebuild of items MUST copy rowid explicitly
+// (INSERT INTO items_v2 (rowid, ...) SELECT rowid, ... FROM items), or every word-search hit points at another item, across sources
+// and grants (test/data-layer.test.js checks the mapping survives VACUUM). Likewise a rebuilt search table must keep its rowids (search_rowid, v32).
 const MIGRATIONS = [
   // v1
   `
@@ -708,6 +713,92 @@ const MIGRATIONS = [
   ALTER TABLE actions ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE actions ADD COLUMN args_hash TEXT NOT NULL DEFAULT '';
   `,
+  // v29: an approved action the app was running when it quit or crashed: whether it reached the service is unknown, so it is neither
+  // retried nor shown as failed. 'interrupted' waits in the Inbox for the person to check (src/brain/actions.js recoverInterrupted).
+  // Rebuilt to change the CHECK (safe since migrations run with foreign keys off, see migrate()); same rows, same columns.
+  `
+  CREATE TABLE actions_v3 (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'interrupted', 'rejected', 'done', 'failed', 'expired')),
+    origin TEXT NOT NULL DEFAULT 'user',
+    assertion_id TEXT REFERENCES assertions(id) ON DELETE SET NULL,
+    result TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    expires_at INTEGER,
+    flags TEXT NOT NULL DEFAULT '[]',
+    provenance TEXT NOT NULL DEFAULT '[]',
+    args_hash TEXT NOT NULL DEFAULT ''
+  );
+  INSERT INTO actions_v3 (id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at, expires_at, flags, provenance, args_hash)
+    SELECT id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at, expires_at, flags, provenance, args_hash FROM actions;
+  DROP TABLE actions;
+  ALTER TABLE actions_v3 RENAME TO actions;
+  CREATE INDEX actions_state ON actions(state);
+  `,
+  // v30: the search index's change queue (src/search/index.js). Triggers put every meeting or item whose pieces may have changed in
+  // dirty_owners, and an index pass takes a few of them instead of comparing every note and item with what was indexed (which cost
+  // ~55-230 ms per pass on a 2k-note/20k-item database, on the main thread, after every autosave). A transcript's pieces carry the
+  // speakers' names, so renaming, merging or moving a voice, or renaming a saved voice, queues the meeting too (they changed no hash).
+  // Upgrade: every meeting is queued once (a pass that finds the same pieces keeps them and their vectors), plus the items whose hash
+  // differs from what was indexed and whatever was indexed and is gone. The triggers insert WHERE NOT EXISTS rather than OR IGNORE: the
+  // conflict policy of the statement that fires a trigger overrides the trigger's own (an upsert into note_speakers would fail).
+  `
+  CREATE TABLE dirty_owners (
+    owner_kind TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id)
+  );
+  CREATE TRIGGER dirty_note_ins AFTER INSERT ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_note_upd AFTER UPDATE ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_note_del AFTER DELETE ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.id); END;
+  CREATE TRIGGER dirty_seg_ins AFTER INSERT ON segments BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_seg_upd AFTER UPDATE OF note_id, speaker, speaker_id, start_ms, end_ms, text ON segments BEGIN
+    INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id);
+    INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_seg_del AFTER DELETE ON segments BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_ns_ins AFTER INSERT ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_ns_upd AFTER UPDATE OF name, voice_id, speaker_id ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_ns_del AFTER DELETE ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_voice_name AFTER UPDATE OF name ON voices BEGIN
+    INSERT INTO dirty_owners SELECT DISTINCT 'note', ns.note_id FROM note_speakers ns WHERE ns.voice_id = NEW.id
+      AND NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = ns.note_id); END;
+  CREATE TRIGGER dirty_item_ins AFTER INSERT ON items WHEN NEW.kind <> 'meeting' BEGIN INSERT INTO dirty_owners SELECT 'item', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_item_upd AFTER UPDATE OF title, text, hash, kind, deleted_at ON items BEGIN INSERT INTO dirty_owners SELECT 'item', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_item_del AFTER DELETE ON items BEGIN INSERT INTO dirty_owners SELECT 'item', OLD.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = OLD.id); END;
+  INSERT OR IGNORE INTO dirty_owners SELECT 'note', id FROM notes;
+  INSERT OR IGNORE INTO dirty_owners SELECT 'item', i.id FROM items i LEFT JOIN index_owner o ON o.owner_kind = 'item' AND o.owner_id = i.id
+    WHERE i.deleted_at IS NULL AND i.kind <> 'meeting' AND (o.hash IS NULL OR o.hash <> i.hash);
+  INSERT OR IGNORE INTO dirty_owners SELECT owner_kind, owner_id FROM index_owner o
+    WHERE (owner_kind = 'note' AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = o.owner_id))
+       OR (owner_kind = 'item' AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id = o.owner_id AND i.deleted_at IS NULL AND i.kind <> 'meeting'));
+  `,
+  // v31: indexes for lookups that scanned: the people backfill's cursor over mail (kind, updated_at, then rowid, src/graph/entities.js),
+  // the people merged into someone (itemsOf, every person page), and the reminders of a promise (deleting or completing one).
+  `
+  CREATE INDEX items_kind_updated ON items(kind, updated_at);
+  CREATE INDEX entities_merged ON entities(merged_into) WHERE merged_into IS NOT NULL;
+  CREATE INDEX reminders_assertion ON reminders(assertion_id) WHERE assertion_id IS NOT NULL;
+  `,
+  // v32: the whole-note search table (v1 'search', src/core/notes.js) found a note's row by note_id, an UNINDEXED column: every delete
+  // or re-index scanned the table, so retention and "delete transcripts" were quadratic. search_rowid maps a note to its row; a note's
+  // row goes with the note whatever deletes it. Duplicate rows (the newest is kept) and rows of deleted notes are dropped once here.
+  `
+  CREATE TABLE search_rowid (
+    note_id TEXT PRIMARY KEY,
+    fts_rowid INTEGER NOT NULL UNIQUE
+  );
+  DELETE FROM search WHERE note_id NOT IN (SELECT id FROM notes) OR rowid NOT IN (SELECT MAX(rowid) FROM search GROUP BY note_id);
+  INSERT INTO search_rowid (note_id, fts_rowid) SELECT note_id, rowid FROM search;
+  CREATE TRIGGER search_note_del AFTER DELETE ON notes BEGIN
+    DELETE FROM search WHERE rowid = (SELECT fts_rowid FROM search_rowid WHERE note_id = OLD.id);
+    DELETE FROM search_rowid WHERE note_id = OLD.id;
+  END;
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
@@ -715,8 +806,11 @@ function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : {});
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  if (file !== ':memory:') backupBeforeMigrating(db, file);
-  migrate(db);
+  try {
+    refuseNewer(db);
+    if (file !== ':memory:') backupBeforeMigrating(db, file);
+    migrate(db);
+  } catch (e) { try { db.close(); } catch { /* already closed */ } throw e; }
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }
   return db;
 }
@@ -731,22 +825,58 @@ function backupBeforeMigrating(db, file) {
   if (fs.existsSync(copy)) return copy;
   db.exec(`VACUUM INTO '${copy.replaceAll("'", "''")}'`);
   try { fs.chmodSync(copy, 0o600); } catch { /* not supported on this fs */ }
+  pruneCopies(file);
   return copy;
 }
 
-function migrate(db) {
+// Each copy is a whole database: one per schema change piled up for ever. The newest KEEP_COPIES are the way back; older ones go.
+const KEEP_COPIES = 2;
+function pruneCopies(file, keep = KEEP_COPIES) {
+  const dir = path.dirname(file), base = path.basename(file);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const copies = names.map((f) => ({ f, v: f.startsWith(`${base}.before-v`) && /^\d+$/.test(f.slice(base.length + 9)) ? Number(f.slice(base.length + 9)) : null }))
+    .filter((c) => c.v != null).sort((a, b) => b.v - a.v);
+  for (const c of copies.slice(keep)) { try { fs.rmSync(path.join(dir, c.f), { force: true }); } catch { /* in use: next time */ } }
+}
+
+// A database a newer WhisperBrain moved to a schema this one does not know: opening it would read columns wrongly and write
+// rows the newer version does not expect. It is refused (and left as it was) rather than opened.
+function refuseNewer(db, migrations = MIGRATIONS) {
   const { user_version: current } = db.prepare('PRAGMA user_version').get();
-  for (let v = current; v < MIGRATIONS.length; v++) {
-    db.exec('BEGIN');
-    try {
-      db.exec(MIGRATIONS[v]);
-      db.exec(`PRAGMA user_version = ${v + 1}`);
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
+  if (current <= migrations.length) return;
+  throw Object.assign(new Error(`This data was made by a newer WhisperBrain (schema ${current}; this version knows up to ${migrations.length}). Install the newer version to open it; nothing was changed.`), { code: 'SCHEMA_TOO_NEW' });
+}
+
+// Foreign keys are switched off while migrations run, BEFORE the transaction (inside one the pragma is a no-op): the
+// create / copy / DROP / RENAME pattern SQLite needs to change a CHECK would otherwise cascade the DROP into every child row
+// (segments, reminders, item links...). What a migration leaves dangling that was not dangling before is checked before COMMIT,
+// so a migration that loses a parent row is undone instead of committed. Old dangling rows (if any) never block an update.
+function migrate(db, migrations = MIGRATIONS) {
+  refuseNewer(db, migrations);
+  const { user_version: current } = db.prepare('PRAGMA user_version').get();
+  if (current >= migrations.length) return;
+  const key = (r) => `${r.table}:${r.rowid}:${r.parent}:${r.fkid}`;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    for (let v = current; v < migrations.length; v++) {
+      db.exec('BEGIN');
+      try {
+        const before = new Set(db.prepare('PRAGMA foreign_key_check').all().map(key));
+        db.exec(migrations[v]);
+        const broken = db.prepare('PRAGMA foreign_key_check').all().filter((r) => !before.has(key(r)));
+        if (broken.length) {
+          const where = [...new Set(broken.map((r) => `${r.table} -> ${r.parent}`))].join(', ');
+          throw new Error(`migration ${v + 1} would leave ${broken.length} foreign key reference(s) dangling (${where}); not applied`);
+        }
+        db.exec(`PRAGMA user_version = ${v + 1}`);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
     }
-  }
+  } finally { db.exec('PRAGMA foreign_keys = ON'); }
 }
 
 function tx(db, fn) {
@@ -761,4 +891,4 @@ function tx(db, fn) {
   }
 }
 
-module.exports = { open, tx, MIGRATIONS };
+module.exports = { open, tx, migrate, MIGRATIONS };

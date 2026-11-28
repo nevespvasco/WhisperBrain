@@ -42,6 +42,12 @@ const card = (c) => {
       ${c.needsSecondYes ? `<label class="row small" style="gap:8px;margin-top:8px"><input type="checkbox" data-second> ${t('I have read the warnings and still want this.')}</label>` : ''}
       <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve" ${c.needsSecondYes ? 'disabled' : ''}>${verbOk}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not do it')}</button></div></div>`;
   }
+  if (c.type === 'action-interrupted') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="action-interrupted"><div class="xsmall muted">${icon('alert', 'sm')} ${t('Outcome unknown — check before retrying')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.title)}</div>
+      <div class="small muted">${t('The app closed while this was being done, so it may or may not have happened. It will not be tried again by itself.')}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm" data-do="resolve-done">${t('It was done')}</button><button class="btn sm ghost" data-do="resolve-not">${t('It was not done')}</button></div></div>`;
+  }
   if (c.type === 'supersede') {
     return `<div class="card inbox-card" data-id="${esc(c.id)}" data-type="supersede"><div class="xsmall muted">${icon('merge', 'sm')} ${t('Does this replace an earlier decision?')}</div>
       <div class="small" style="margin:6px 0"><span class="muted">${day(c.older.at)}</span> <s>${esc(c.older.text)}</s></div><div class="small"><span class="muted">${day(c.newer.at)}</span> <b>${esc(c.newer.text)}</b></div>
@@ -100,6 +106,7 @@ export async function render(main) {
       else if (what === 'review-ok') await api('POST', `/api/inbox/access-review/${id}/dismiss`);
       else if (what === 'followup') { await composeMail({ itemId: id, title: t('Follow up'), body: '' }); }
       else if (what === 'reject-action') await api('POST', `/api/outbound/${id}/reject`);
+      else if (what === 'resolve-done' || what === 'resolve-not') await api('POST', `/api/outbound/${id}/resolve`, { done: what === 'resolve-done' });
       else if (what === 'sup-yes' || what === 'sup-no') { const [o, n] = id.split(':'); await api('POST', `/api/inbox/supersede/${o}/${n}/${what === 'sup-yes' ? 'confirm' : 'reject'}`); }
       else if (what === 'idle-no') await api('POST', `/api/inbox/idle/${id}/dismiss`);
       else if (what === 'nodismiss') await api('POST', `/api/inbox/noreply/${id}/dismiss`);

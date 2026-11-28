@@ -48,6 +48,7 @@ class Inbox {
     for (const a of open.overdueMine) out.push({ type: 'overdue', id: a.id, text: a.text, owner: a.owner.name, dueAt: a.dueAt, dueText: a.dueText, source: this.source(a) });
     for (const a of open.overdueTheirs) out.push({ type: 'waiting', id: a.id, text: a.text, owner: a.owner.name || a.speaker, dueAt: a.dueAt, dueText: a.dueText, source: this.source(a) });
     for (const r of this.reminders.pending()) if (!r.assertionId || !open.overdueMine.some((a) => a.id === r.assertionId)) out.push({ type: 'reminder', id: r.id, text: r.text, dueAt: r.dueAt, assertionId: r.assertionId });
+    for (const a of this.actions?.interrupted?.() || []) out.push({ type: 'action-interrupted', id: a.id, kind: a.kind, title: a.title, args: a.args, decidedAt: a.decidedAt });
     for (const a of this.actions?.pending() || []) out.push({ type: 'action', id: a.id, kind: a.kind, title: a.title, args: a.args, flags: a.flags || [], needsSecondYes: !!a.needsSecondYes, expiresAt: a.expiresAt });
     for (const c of this.supersession?.candidates(5) || []) out.push({ type: 'supersede', id: `${c.older.id}:${c.newer.id}`, older: { id: c.older.id, text: c.older.text, at: c.older.occurredAt }, newer: { id: c.newer.id, text: c.newer.text, at: c.newer.occurredAt }, shared: c.shared });
     for (const p of this.projects?.idle((pr, last) => this.db.prepare('SELECT 1 FROM index_meta WHERE key = ?').get(`dismiss:idle:${pr.id}:${last}`)) || []) out.push({ type: 'idle', id: p.id, name: p.name, days: p.days, open: p.open, lastAt: p.lastAt });
@@ -60,7 +61,7 @@ class Inbox {
   counts() {
     const c = this.cards();
     const by = (t) => c.filter((x) => x.type === t).length;
-    return { total: c.length, suggestions: by('suggestion'), overdue: by('overdue'), waiting: by('waiting'), reminders: by('reminder'), merges: by('merge'), noreply: by('noreply'), accessReview: by('access-review'), actions: by('action'), supersede: by('supersede'), idle: by('idle') };
+    return { total: c.length, suggestions: by('suggestion'), overdue: by('overdue'), waiting: by('waiting'), reminders: by('reminder'), merges: by('merge'), noreply: by('noreply'), accessReview: by('access-review'), actions: by('action'), interrupted: by('action-interrupted'), supersede: by('supersede'), idle: by('idle') };
   }
 }
 

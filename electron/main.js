@@ -626,4 +626,4 @@ app.on('before-quit', (e) => {
   shutdown().finally(() => app.exit(0));
 });
 
-app.whenReady().then(start).catch((e) => { console.error(e); app.exit(1); });
+app.whenReady().then(start).catch((e) => { console.error(e); if (e?.code === 'SCHEMA_TOO_NEW') dialog.showErrorBox('WhisperBrain', e.message); app.exit(1); });

@@ -71,12 +71,16 @@ class JobQueue {
     return out;
   }
 
-  // At start (nothing can be running yet) or when a lease ran out: those jobs are queued again, keeping their attempt count.
+  // At start (nothing can be running yet) or when a lease ran out: those jobs are queued again, keeping their attempt count. One that
+  // was on its last attempt fails instead: a job that kills the process (out of memory in a sync) must not run again at every start.
   recover({ all = false } = {}) {
     const t = this.now();
     const cond = all ? "state = 'running'" : "state = 'running' AND lease_until < ?";
     const ids = this.db.prepare(`SELECT id FROM jobs WHERE ${cond}`).all(...(all ? [] : [t])).map((r) => r.id);
-    for (const id of ids) this.db.prepare("UPDATE jobs SET state = 'queued', lease_until = NULL, updated_at = ? WHERE id = ?").run(t, id);
+    const put = this.db.prepare(`UPDATE jobs SET state = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'queued' END,
+      last_error = CASE WHEN attempts >= max_attempts THEN 'interrupted (app closed or crashed)' ELSE last_error END,
+      finished_at = CASE WHEN attempts >= max_attempts THEN ? ELSE finished_at END, lease_until = NULL, updated_at = ? WHERE id = ?`);
+    for (const id of ids) put.run(t, t, id);
     return ids.length;
   }
 

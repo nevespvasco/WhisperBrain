@@ -232,8 +232,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     const mine = String(settings.get('google').email || '').toLowerCase().split('@')[1];
     return !!mine && mail.endsWith(`@${mine}`);
   };
-  // Access was narrowed or revoked: what was read is forgotten from the search index now, not at the next scheduled pass.
-  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
+  // Access was narrowed or revoked: the triggers queued what was read (search leaves queued items out at once) and it is forgotten from
+  // the search index by a pass of its own, enqueued now rather than run for seconds inside this bus event.
+  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { runner.enqueue('index.sync', {}, { key: 'purge', maxAttempts: 2 }); } catch { /* closing */ } });
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare, items, live: liveSearch, visible: (sid) => { const s = items.source(sid); return !!s && s.enabled && s.readLevel !== 'none' && (s.expiresAt == null || s.expiresAt > Date.now()); } });
   const projects = new Projects({ db: conn, notes, items, assertions });
   // Ask AI reaches the whole workspace, not only meetings (src/llm/workspace.js)
@@ -254,6 +255,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   };
   const actions = new Actions({ db: conn, bus, handlers: ALL_HANDLERS, allowed: actionAllowed, onRun: ({ kind, args, ok, error }) => accessLog.add({ sourceId: args?.sourceId || null, op: 'action.run', detail: `${kind} ${ok ? 'done' : `failed: ${String(error).slice(0, 100)}`}` }),
     deps: { settings, items, get googleAccounts() { return googleAccounts; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, get integrations() { return integrations; } } });
+  actions.recoverInterrupted();   // nothing runs yet: what is still 'running' was cut off by a quit or a crash
   const timeline = new Timeline({ db: conn, notes, entities: knowledge.entities, items, projects, index: chunkIndex, allow: () => true });
   const rules = new Rules({ db: conn, assertions, actions, reminders, notes, bus });
   rules.attach();
@@ -266,7 +268,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
     let embedded = 0;
-    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
+    for (let i = 0, after = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, after, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (r.next == null || r.left < 0) break; after = r.next; await tick(); }
     return { indexed: total, embedded };
   }, { lane: 'sources' });
   // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the
@@ -288,7 +290,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // Mail and messages linked to the people in them (item_mentions); picks up what changed since the last run
   runner.register('people.items', async () => {
     const key = 'mentions:after';
-    let cur = Number(conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value) || 0, n = 0;
+    let cur = conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value || '0', n = 0;
     for (;;) {
       const next = knowledge.entities.backfillItems(cur, 200);
       if (next == null) break;

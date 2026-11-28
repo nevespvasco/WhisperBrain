@@ -84,6 +84,25 @@ class Actions {
     return this.get(id);
   }
 
+  // At start, before anything can run: an action left 'running' was cut off by a quit or a crash. Whether the service got it is
+  // unknown (the mail may have gone), so it is never retried by itself; the Inbox asks the person to check. -> how many
+  recoverInterrupted() {
+    const n = this.db.prepare("UPDATE actions SET state = 'interrupted', error = ? WHERE state = 'running'").run('outcome unknown: the app closed while it ran; check before retrying').changes;
+    if (n) this.bus?.publish('actions.changed', {});
+    return n;
+  }
+  interrupted() { return this.db.prepare("SELECT * FROM actions WHERE state = 'interrupted' ORDER BY decided_at, created_at").all().map(row); }
+
+  // The person checked an interrupted action: it was done (done) or it was not (failed; a new proposal is how to try again).
+  resolveInterrupted(id, { done = false } = {}) {
+    const a = this.get(id);
+    if (!a) throw err('not found', 404);
+    if (a.state !== 'interrupted') throw err(`this action is ${a.state}, not interrupted`, 409);
+    this.db.prepare("UPDATE actions SET state = ?, error = ? WHERE id = ? AND state = 'interrupted'").run(done ? 'done' : 'failed', done ? null : 'interrupted; not done (checked by you)', id);
+    this.bus?.publish('actions.changed', { id });
+    return this.get(id);
+  }
+
   reject(id) {
     const a = this.get(id);
     if (!a) throw err('not found', 404);

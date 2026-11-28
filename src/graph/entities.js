@@ -104,12 +104,16 @@ class Entities {
     return n;
   }
 
-  // Items changed since `after` (a time), a batch at a time, for the job that keeps item_mentions current. -> the next `after`, or null
+  // Items changed since `after`, a batch at a time, for the job that keeps item_mentions current. -> the next `after`, or null.
+  // The cursor is 'updated_at:rowid' (updated_at alone is not unique: a sync stamps many items with the same time, and a page that
+  // ended inside them skipped the rest). A bare number (the old cursor) means that time, from its first row.
   backfillItems(after = 0, size = 200) {
-    const rows = this.db.prepare("SELECT id, updated_at FROM items WHERE updated_at > ? AND kind = 'email' ORDER BY updated_at LIMIT ?").all(after, size);
+    const [t, r] = String(after ?? 0).split(':').map((x) => Number(x) || 0);
+    const rows = this.db.prepare("SELECT rowid AS r, id, updated_at FROM items WHERE kind = 'email' AND (updated_at > ? OR (updated_at = ? AND rowid > ?)) ORDER BY updated_at, rowid LIMIT ?").all(t, t, r, size);
     if (!rows.length) return null;
-    this.tx(() => { for (const r of rows) this.syncItem(r.id); });
-    return rows[rows.length - 1].updated_at;
+    this.tx(() => { for (const x of rows) this.syncItem(x.id); });
+    const last = rows[rows.length - 1];
+    return `${last.updated_at}:${last.r}`;
   }
 
   // What the person has with someone, newest first, across the sources the grants allow: mail and messages (item_mentions) as a list
@@ -247,11 +251,12 @@ class Entities {
   }
 
   // "Ana" next to "Ana Silva": a one-word person whose name starts a longer name. A suggestion only, never a merge.
+  // The longer names are a range of the unique key index (keys from "ana " up to "ana!"), not a scan of every person for each one.
   proposeMerges() {
-    const rows = this.db.prepare('SELECT id, key FROM entities WHERE merged_into IS NULL').all();
-    const single = rows.filter((r) => !r.key.includes(' ') && !r.key.includes('~'));
+    const single = this.db.prepare("SELECT id, key FROM entities WHERE merged_into IS NULL AND instr(key, ' ') = 0 AND instr(key, '~') = 0").all();
+    const range = this.db.prepare('SELECT id FROM entities WHERE key >= ? AND key < ? AND merged_into IS NULL LIMIT 4');
     for (const s of single) {
-      const longer = rows.filter((r) => r.key.startsWith(`${s.key} `));
+      const longer = range.all(`${s.key} `, `${s.key}!`);
       if (longer.length && longer.length <= 3) for (const l of longer) this.propose(s.id, l.id, 'a first name that matches', 0.45);
     }
   }
