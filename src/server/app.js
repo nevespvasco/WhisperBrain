@@ -169,11 +169,11 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // carries the exact words it rests on, checked in code against the transcript, and waits for a person.
   const reminders = new Reminders({ db: conn, bus });
   const assertions = new Assertions({ db: conn, notes, entities: knowledge.entities, settings, reminders, bus });
-  runner.register('note.assertions', async ({ noteId }) => {
+  runner.register('note.assertions', async ({ noteId }, { signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     if (!ai.configured()) return { skipped: 'no AI server' };
     if (!mayShare('note', noteId)) return { added: 0, dropped: 0, windows: 0, skipped: 'local-only' };   // kept on this computer
-    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId);
+    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId, { signal });   // the job's deadline reaches the AI calls
   });
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.

@@ -2,11 +2,18 @@
 // Runs the jobs in the queue (src/jobs/queue.js) one at a time, in the order they may run. A handler is
 // `async (payload, { job, enqueue }) => result`; it may enqueue the next step of a chain. Throwing fails the attempt (the queue
 // retries with a back-off); an error with `permanent: true` fails the job at once.
+// Every attempt has a deadline (DEADLINE_MS, or the kind's own `deadlineMs`): then ctx.signal aborts, so an AI call that was handed
+// the signal stops, and the attempt fails with code 'deadline' even if the handler ignores the signal, so one stuck call (a hung AI
+// server) never stops the lane for good.
 // The runner lives in the main process for now; nothing here depends on that, so it can move to a utilityProcess later.
 
+const DEADLINE_MS = 15 * 60_000;   // generous: a long meeting's summary on a slow local model takes minutes, never a quarter of an hour
+
 class JobRunner {
-  constructor({ queue, onError = null, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  constructor({ queue, onError = null, setTimer = setTimeout, clearTimer = clearTimeout, deadlineMs = DEADLINE_MS } = {}) {
     this.queue = queue;
+    this.deadlineMs = deadlineMs;
+    this.deadlineOf = {};
     this.handlers = {};
     this.onError = onError;
     this.setTimer = setTimer;
@@ -18,8 +25,10 @@ class JobRunner {
   }
 
   // lane: handlers in different lanes run at the same time (one job at a time within a lane). The default lane is 'main'.
-  register(kind, fn, { lane = 'main' } = {}) {
+  // deadlineMs: this kind's own deadline per attempt (see the top of this file).
+  register(kind, fn, { lane = 'main', deadlineMs } = {}) {
     this.handlers[kind] = fn;
+    if (deadlineMs) this.deadlineOf[kind] = deadlineMs;
     this.laneOf[kind] = lane;
     this.lanes[lane] ||= { busy: false, current: null };
     return this;
@@ -83,13 +92,26 @@ class JobRunner {
   }
 
   async runOne(job) {
-    const ctx = { job, enqueue: (kind, payload, opts) => this.queue.enqueue(kind, payload, opts) };
+    const ac = new AbortController();
+    const ctx = { job, signal: ac.signal, enqueue: (kind, payload, opts) => this.queue.enqueue(kind, payload, opts) };
+    const ms = this.deadlineOf[job.kind] || this.deadlineMs;
+    let timer = null;
+    const deadline = new Promise((_, reject) => {
+      timer = this.setTimer(() => {
+        const err = Object.assign(new Error(`${job.kind} took longer than ${ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${ms} ms`} and was stopped.`), { code: 'deadline' });
+        ac.abort(err);
+        reject(err);
+      }, ms);
+      timer?.unref?.();
+    });
     try {
-      const result = await this.handlers[job.kind](job.payload, ctx);
+      const result = await Promise.race([this.handlers[job.kind](job.payload, ctx), deadline]);
       try { this.queue.complete(job.id, result ?? null); } catch { /* the database closed under us: the job runs again at next start */ }
     } catch (err) {
       try { this.queue.fail(job.id, err, { retry: !err?.permanent }); } catch { /* as above */ }
       this.onError?.(job, err);
+    } finally {
+      this.clearTimer(timer);
     }
   }
 
@@ -106,4 +128,4 @@ class JobRunner {
   }
 }
 
-module.exports = { JobRunner };
+module.exports = { JobRunner, DEADLINE_MS };
