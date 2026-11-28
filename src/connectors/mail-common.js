@@ -128,6 +128,6 @@ function buildThreadItem({ externalId, uri = '', msgs, me, metadataOnly = false,
 const digest = sha;
 
 module.exports = {
-  MAX_TEXT, list, emailOf, domainOf, b64url, unb64url, cutQuote, neverRead, passesFilter, effectiveFilter, normalizeSubject, threadKeyOf, parseKey,
+  MAX_TEXT, MAX_MESSAGE_TEXT, list, emailOf, domainOf, b64url, unb64url, cutQuote, neverRead, passesFilter, effectiveFilter, normalizeSubject, threadKeyOf, parseKey,
   buildThreadItem, addressString, REPLY_PREFIX, digest,
 };
