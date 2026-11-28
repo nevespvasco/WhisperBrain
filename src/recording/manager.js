@@ -42,7 +42,8 @@ const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and r
 // MAX_RESTARTS deaths in one recording it is left down and the audio, still saved, is transcribed after Stop.
 const RESTART_BACKOFF_MS = [500, 2000, 5000];
 const MAX_RESTARTS = 5;
-const QUIT_FLUSH_MS = 5000;      // quitting: the flush may take this long; what it did not finish is transcribed at the next start
+const QUIT_FLUSH_MS = 5000;
+const ECHO_WINDOW_MS = 5 * 60 * 1000; // the echo check compares a line with the other side's lines this close to it (kept in memory)      // quitting: the flush may take this long; what it did not finish is transcribed at the next start
 
 class RecordingError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -72,6 +73,11 @@ class RecordingManager {
     // The worker holds this recording's VAD buffers: nobody else (dictation, a settings change) may replace it while
     // the recording runs. Their options are kept and applied by the first start() after it stops.
     this.engine.holdRestart = () => !!this.active;
+    // the labels a line is shown with are worked out again only when they can have changed (see lineLabel)
+    this.bus.subscribe?.((e) => {
+      const a = this.active;
+      if (a?.display && (e.type === 'settings' || (e.data?.noteId === a.noteId && (e.type.startsWith('speakers.') || e.type === 'transcript.removed')))) a.display = null;
+    });
   }
 
   status() {
@@ -136,6 +142,8 @@ class RecordingManager {
       acoustic: new Map(), describeQueue: [], describing: false, // utterance voice descriptions made while recording (describeSoon)
       settled: new Set(),                  // channels whose number of speakers is known (user or calendar): refine keeps it
       recentSystem: [],                    // the last few final system segments, to tell a mic draft that merely echoes them
+      ring: { me: [], them: [] },          // this recording's lines of the last few minutes, per side, for the echo check (saveSegment)
+      display: null,                       // the speaker labels as last worked out (lineLabel), until something can have changed them
       remote: new Map(),                   // Discord: channel ('dc:<id>') -> { userId, name, speakerId, t0, chain }, one per person heard
       discord: null,                       // { info, onAudio } while the bot is in the call
       meet: null,                          // what the meeting window shows while recording: highlights, roster, captions (src/meet/collector.js)
@@ -524,13 +532,14 @@ class RecordingManager {
     const speaker = remote ? 'them' : (SPEAKER[ch] || ch);
     const seg = { speaker, startMs: Math.max(0, a.epoch[ch] + startMs), endMs: Math.max(0, a.epoch[ch] + endMs), text };
     if (this.settings.get('echoDedupe')) {
+      // against this recording's recent lines kept in memory: reading the whole transcript for every line was O(n²) over a meeting
       if (kind === 'mic') {
-        const sys = this.notes.segments(a.noteId).filter((x) => x.speaker === 'them');
-        if (sys.some((x) => isEcho(seg, x))) { a.echoDropped.text++; return; }
+        if (a.ring.them.some((x) => isEcho(seg, x))) { a.echoDropped.text++; return; }
         if (micSegmentIsEnergyEcho(a.env.mic, a.env.system, seg)) { a.echoDropped.energy++; return; }
       } else {
-        const echoes = this.notes.segments(a.noteId).filter((x) => x.speaker === 'me' && isEcho(x, seg));
+        const echoes = a.ring.me.filter((x) => isEcho(x, seg));
         if (echoes.length) {
+          a.ring.me = a.ring.me.filter((x) => !echoes.includes(x));
           this.notes.removeSegments(a.noteId, echoes.map((x) => x.id));
           this.bus.publish('transcript.removed', { noteId: a.noteId, ids: echoes.map((x) => x.id) });
         }
@@ -540,24 +549,45 @@ class RecordingManager {
     if (seg.speakerId && !remote) a.last[ch] = { id: seg.speakerId, endMs: seg.endMs };
     else if (embedding && !remote) a.last[ch] = null; // a voice nobody matched: the next line without a print must not be handed to the speaker before it
     const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, channel: ch, embedding, words, logProbMean, logProbMin }]);
+    this.remember(a, kind === 'mic' ? 'me' : 'them', { id: saved.id, startMs: seg.startMs, endMs: seg.endMs, text });
     const spool = a.spool[ch];
     if (spool && a.gapFrom[ch] == null) a.done[ch] = Math.max(a.done[ch] ?? 0, a.base[ch] + Math.round(endMs * 16));
     if (spool && !spool.broken) {
       const ref = { segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) };
       a.refs.push(ref);
-      if (this.settings.get('speakerRefine')) this.describeSoon(a, ref);
+      if (this.settings.get('speakerRefine') && !this.ownedWillDiarize()) this.describeSoon(a, ref); // the owned pass skips the acoustic one; if it fails, Stop describes them
     }
     const d = this.lineLabel(a, seg.speakerId, speaker);
     if (kind === 'system') a.recentSystem = [...a.recentSystem.filter((x) => x.endMs > seg.endMs - 15000), { startMs: seg.startMs, endMs: seg.endMs, text }].slice(-8);
     this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker, speakerId: seg.speakerId, label: d.label, labelKind: d.kind, displayNo: d.n, speakerName: d.kind === 'name' ? d.label : '', startMs: seg.startMs, endMs: seg.endMs, text } });
   }
 
+  // One side's recent lines, newest last; older than the echo window (from the newest) they go.
+  remember(a, who, row) {
+    const r = a.ring[who];
+    r.push(row);
+    const newest = r.reduce((m, x) => Math.max(m, x.endMs), 0);
+    while (r.length && (r[0].endMs < newest - ECHO_WINDOW_MS || r.length > 500)) r.shift();
+  }
+
+  // Whether the owned speaker pass will run after Stop (it then skips the acoustic pass the utterance descriptions are for).
+  ownedWillDiarize() {
+    const s = this.settings.all(), m = this.models;
+    return !!(s.speakerDiarize && s.speakerPipeline === 'owned' && !this.diarization.run && m.segmentationInstalled?.() && m.speakerInstalled?.());
+  }
+
   // What a line is called on screen right now (speakers/display.js). When that brings a voice on show, the lines already drawn
   // are told to rename themselves. Without a speaker store a line is just Me or Them.
+  // The labels are kept (a.display) and worked out again (a pass over the whole transcript) only when they can change: a line of
+  // a voice not on show yet (it may now be), or a change to the speakers (a.display is dropped on speakers.* and on a removal).
+  // A line of a voice already on show changes nobody's label.
   lineLabel(a, speakerId, speaker) {
     if (!this.speakers) return describe(new Map(), { speaker });
-    const shown = this.speakers.display(a.noteId, this.settings.get('userName'));
-    if (shown.shown !== a.shown) { a.shown = shown.shown; this.bus.publish('speakers.updated', { noteId: a.noteId }); }
+    let shown = a.display;
+    if (!shown || (speakerId && !shown.map.get(speakerId)?.shown)) {
+      shown = a.display = this.speakers.display(a.noteId, this.settings.get('userName'));
+      if (shown.shown !== a.shown) { a.shown = shown.shown; this.bus.publish('speakers.updated', { noteId: a.noteId }); }
+    }
     return shown.of(speakerId, speaker);
   }
 
