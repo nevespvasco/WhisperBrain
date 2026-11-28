@@ -11,6 +11,7 @@
 // old (404), the listing starts again from scratch and anything no longer in it is tombstoned. Threads that are only in Trash or Spam
 // are tombstoned too. Mail is private by default: only an AI on this computer may read it.
 const { canReadBodies } = require('../access/gmail-scopes');
+const { mailHtmlToText } = require('../core/html-text');
 
 const every = 10 * 60_000;
 const MAX_THREADS = 400;          // threads read per run (the rest waits for the next run, from the saved cursor)
@@ -49,7 +50,8 @@ function compileQuery(config = {}, filter = {}) {
 
 const header = (msg, name) => (msg.payload?.headers || []).find((h) => h.name.toLowerCase() === name)?.value || '';
 const b64 = (s) => Buffer.from(String(s || ''), 'base64url').toString('utf8');
-const stripHtml = (h) => h.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"');
+// the shared linear HTML pass, capped at 256 KB of HTML (a Gmail body had no size cap, and the old regexes were quadratic)
+const stripHtml = (h) => mailHtmlToText(h);
 
 // The readable text of a message: the text/plain part, else the text/html part without its tags; the quoted earlier mail is cut
 // (Gmail's "On … wrote:", the Portuguese "Em … escreveu:", Outlook's "From:/De: … Sent:/Enviado:" block, "-----Original Message", "> ").

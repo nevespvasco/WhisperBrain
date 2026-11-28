@@ -7,6 +7,8 @@
 //
 // Nothing here throws on odd input: a broken header or a truncated message gives the part that could be read.
 
+const { mailHtmlToText } = require('../core/html-text');
+
 const CRLF = '\r\n';
 
 // ---------- charsets ----------
@@ -194,16 +196,8 @@ function parseDate(value) {
 }
 
 // ---------- html ----------
-function htmlToText(h) {
-  return String(h)
-    .replace(/<(style|script|head)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<br\s*\/?>|<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => { try { return String.fromCodePoint(Number(n)); } catch { return ' '; } })
-    .replace(/&#x([0-9a-f]+);/gi, (_, n) => { try { return String.fromCodePoint(parseInt(n, 16)); } catch { return ' '; } })
-    .replace(/[ \t]+\n/g, '\n').replace(/\n[ \t]+/g, '\n').replace(/[ \t]{2,}/g, ' ');
-}
+// the shared linear pass (src/core/html-text.js): the old regexes here took seconds on a 0.5 MB body of unclosed "<style"
+const htmlToText = (h) => mailHtmlToText(h);
 
 // ---------- structure ----------
 function splitBlock(buf) {

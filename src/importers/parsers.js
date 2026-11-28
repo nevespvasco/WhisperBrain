@@ -7,7 +7,8 @@ const blank = () => ({ title: '', date: null, attendees: [], body: '', summary: 
 
 // ---------- text helpers ----------
 const clean = (s) => String(s ?? '').replace(/[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, '').replace(/\s+/g, ' ').trim();
-const tidy = (s) => String(s ?? '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+// trailing blanks cut per line without `[ \t]+$`/gm, which is quadratic on a long run of spaces
+const tidy = (s) => trimLines(String(s ?? ''), { start: false }).replace(/\n{3,}/g, '\n\n').trim();
 const mdInline = (s) => clean(String(s).replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/(\*\*|__|`)/g, ''));
 const userError = (msg) => Object.assign(new Error(msg), { code: 'EIMPORT' });
 
@@ -27,16 +28,8 @@ function decodeText(buf) {
   return s.replace(/\r\n?/g, '\n');
 }
 
-const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ensp: ' ', emsp: ' ', thinsp: ' ', lrm: '', rlm: '', zwj: '', zwnj: '', shy: '',
-  ndash: '–', mdash: '—', hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', bull: '•', middot: '·',
-  copy: '©', reg: '®', trade: '™', euro: '€', pound: '£', deg: '°', times: '×', szlig: 'ß', aelig: 'æ', oslash: 'ø', Oslash: 'Ø' };
-for (const [acc, mark] of Object.entries({ acute: '\u0301', grave: '\u0300', circ: '\u0302', tilde: '\u0303', uml: '\u0308', cedil: '\u0327', ring: '\u030a' })) {
-  for (const l of 'aeiouyncAEIOUYNC') { const ch = (l + mark).normalize('NFC'); if (ch.length === 1) ENT[l + acc] = ch; }
-}
-const fromCp = (n) => (n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '');
-const decodeEntities = (s) => String(s).replace(/&(#x[\da-f]+|#\d+|[a-z]+\d*);/gi, (m, e) =>
-  e[0] === '#' ? fromCp(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ENT[e] ?? ENT[e.toLowerCase()] ?? m);
-const stripTags = (s) => decodeEntities(String(s).replace(/<[^>]*>/g, ''));
+// entities, tags and the HTML pass are shared with the mail readers (linear: the old regexes here backtracked on hostile input)
+const { decodeEntities, stripTags, walk, titleOf, trimLines } = require('../core/html-text');
 
 // ---------- timestamps & dates ----------
 const TS = String.raw`(?:\d{1,3}:)?\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?`;
@@ -492,14 +485,21 @@ function parseCsv(text) {
 }
 
 // ---------- HTML ----------
+const BLOCK = /^(?:p|div|tr|ul|ol|table|section|article|blockquote|pre|header|footer|main|nav|aside|dl|dt|dd|figure|hr)$/;
 function htmlToText(html) {
-  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
-  let s = html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style|head|noscript|template|svg|iframe)\b[\s\S]*?<\/\1\s*>/gi, ' ');
-  s = s.replace(/\s+/g, ' ');
-  s = s.replace(/<h([1-6])\b[^>]*>/gi, (_, n) => `\n\n${'#'.repeat(+n)} `).replace(/<\/h[1-6]\s*>/gi, '\n\n')
-    .replace(/<br\s*\/?>/gi, '\n').replace(/<li\b[^>]*>/gi, '\n- ').replace(/<\/t[dh]\s*>/gi, ' ')
-    .replace(/<\/?(p|div|tr|ul|ol|table|section|article|blockquote|pre|header|footer|main|nav|aside|dl|dt|dd|figure|hr)\b[^>]*>/gi, '\n');
-  s = decodeEntities(s.replace(/<[^>]*>/g, ''));
+  const title = titleOf(html);
+  // whitespace collapsed in the text runs first, so the breaks the tags add below are kept
+  const s = walk(html, {
+    onText: (t) => decodeEntities(t.replace(/\s+/g, ' ')),
+    onTag: (name, closing) => {
+      const h = /^h([1-6])$/.exec(name);
+      if (h) return closing ? '\n\n' : `\n\n${'#'.repeat(+h[1])} `;
+      if (name === 'br') return '\n';
+      if (name === 'li') return closing ? '' : '\n- ';
+      if (name === 'td' || name === 'th') return closing ? ' ' : '';
+      return BLOCK.test(name) ? '\n' : '';
+    },
+  });
   const text = tidy(s.split('\n').map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim()).join('\n'));
   return { text, title: title ? clean(stripTags(title)) : '' };
 }
