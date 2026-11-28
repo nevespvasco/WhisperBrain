@@ -7,6 +7,7 @@ const DEFAULT_MAX_TOKENS = 4096; // ~3000 words: longer than any summary or answ
 // byte may take much longer: Ollama loading a model, or reading a long prompt on a CPU, sends nothing until it is done.
 const IDLE_MS = 60_000;
 const FIRST_BYTE_MS = 300_000;
+const CTX_TTL_MS = 5 * 60_000, CTX_MISS_TTL_MS = 60_000;   // the context an Ollama server reports: asked again after this long
 
 class LlmError extends Error {
   constructor(message, { status, code } = {}) { super(message); this.status = status; this.code = code; }
@@ -50,7 +51,7 @@ function partialTagLength(s, tag) {
 
 class LlmClient {
   // getConfig: () => settings.llm
-  constructor(getConfig, { fetchImpl = globalThis.fetch } = {}) { this.getConfig = getConfig; this.fetch = fetchImpl; }
+  constructor(getConfig, { fetchImpl = globalThis.fetch } = {}) { this.getConfig = getConfig; this.fetch = fetchImpl; this.ctxCache = new Map(); }
 
   headers(cfg) {
     const h = { 'Content-Type': 'application/json' };
@@ -89,6 +90,31 @@ class LlmClient {
   // Ollama's OpenAI endpoint switches a reasoning model's thinking off with reasoning_effort "none" (it ignores `think`).
   // Other servers are not sent it: OpenAI rejects reasoning_effort for models that do not reason.
   static isOllama(cfg) { return cfg.provider === 'ollama' || /:11434(\/|$)/.test(String(cfg.baseUrl || '')); }
+
+  // The context, in tokens, an Ollama server runs the model with, or null when unknown: another kind of server, an Ollama that has not
+  // loaded the model yet and sets no num_ctx for it, or any failure. Only what the server will really use counts: the loaded model's
+  // context_length (/api/ps), else a num_ctx in the model's parameters (/api/show). The model's trained maximum (model_info) is not it:
+  // Ollama runs every model with its own default (OLLAMA_CONTEXT_LENGTH) unless told otherwise. Cached; never throws.
+  async contextLength({ signal } = {}) {
+    const cfg = this.getConfig();
+    if (!LlmClient.isOllama(cfg)) return null;
+    let root;
+    try { root = normalizeBase(cfg.baseUrl).replace(/\/v1$/, ''); } catch { return null; }
+    const key = `${root}|${cfg.model || ''}`;
+    const hit = this.ctxCache.get(key);
+    if (hit && Date.now() - hit.at < (hit.n ? CTX_TTL_MS : CTX_MISS_TTL_MS)) return hit.n;
+    let n = null;
+    try {
+      const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(3000)]) : AbortSignal.timeout(3000);
+      const get = (path, init = {}) => this.fetch(`${root}${path}`, { ...init, headers: this.headers(cfg), signal: sig }).then((r) => (r.ok ? r.json() : null), () => null);
+      const name = await this.resolveModel(cfg, { signal: sig });
+      const loaded = (await get('/api/ps'))?.models?.find((m) => m?.name === name || m?.model === name);
+      n = Number(loaded?.context_length) || null;
+      if (!n) n = Number(/(?:^|\n)\s*num_ctx\s+(\d+)/.exec((await get('/api/show', { method: 'POST', body: JSON.stringify({ model: name }) }))?.parameters || '')?.[1]) || null;
+    } catch { n = null; }
+    this.ctxCache.set(key, { n, at: Date.now() });
+    return n;
+  }
 
   // Async generator of text deltas.
   // reasoning: 'off' asks the server not to think first (short, structured replies: titles, JSON). Whatever is asked, a

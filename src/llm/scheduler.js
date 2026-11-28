@@ -128,6 +128,7 @@ class LlmScheduler {
       test: () => llm.test(),
       getConfig: () => llm.getConfig(),
       resolveModel: (cfg) => llm.resolveModel(cfg),
+      contextLength: async (o) => (typeof llm.contextLength === 'function' ? llm.contextLength(o) : null),   // metadata only: not queued
     };
   }
 

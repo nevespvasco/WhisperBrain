@@ -12,6 +12,7 @@ const { Redactor } = require('../access/redact');
 const { isLocalUrl } = require('../core/policy');
 const { queryWords } = require('../search/index');
 const { workspaceRecords, sourceCoverage, LABEL } = require('./workspace');
+const { fitBudget } = require('./budget');
 
 const HISTORY_TURNS = 10;
 // Across all meetings each question brings its own meetings: older turns are kept only so a follow-up makes sense, and fewer of
@@ -20,6 +21,8 @@ const GLOBAL_HISTORY_TURNS = 3;
 // Output caps for the enhanced notes: the condensed notes of one part, and the final notes
 const PARTIAL_MAX_TOKENS = 1024;
 const SUMMARY_MAX_TOKENS = 4096;
+// The instructions and the meeting header of a prompt, in tokens, kept free of material when the server's context is known (budget())
+const INSTRUCTION_TOKENS = 1000;
 
 // A glossary "definition" that only says a term was used, or guesses ("A term used by Speaker 1, possibly referring to a specific
 // item or concept"): the model did not know what it means, so it is not kept. English and Portuguese.
@@ -89,6 +92,7 @@ class AiService {
     let data = null, mode = 'local', error = null;
     if (!local && this.configured() && this.mayShareNote(noteId)) {   // a local-only meeting gets the offline extraction instead
       try {
+        await this.refreshContext(signal);
         const budget = this.budget();
         let transcript = prompts.formatTranscript(this.notes.segments(noteId));
         if (transcript.length > budget) {
@@ -120,6 +124,7 @@ class AiService {
   async topicBrief(topicId, { onDelta, signal } = {}) {
     const t = this.knowledge.topic(topicId);
     if (!t) throw new Error('Topic not found');
+    await this.refreshContext(signal);
     const budget = this.budget();
     const parts = [];
     for (const n of [...t.notes].reverse()) {
@@ -137,7 +142,16 @@ class AiService {
     return { text: out };
   }
 
-  budget() { return Math.max(2000, this.settings.get('llm').contextChars); }
+  // Characters of material a prompt may carry: the setting, and within the server's context when it says what that is (src/llm/budget.js).
+  // replyTokens: the reply's cap (the client's default 4096 for most calls).
+  budget(replyTokens = SUMMARY_MAX_TOKENS) {
+    return fitBudget({ setting: Math.max(2000, this.settings.get('llm').contextChars), contextTokens: this.contextTokens, systemTokens: INSTRUCTION_TOKENS, replyTokens });
+  }
+
+  // What context the server runs the model with (Ollama only; null otherwise or when unknown, which keeps the setting). Cached by the client.
+  async refreshContext(signal) {
+    try { this.contextTokens = (await this.llm.contextLength?.({ signal })) || null; } catch { this.contextTokens = null; }
+  }
 
   // Generates (and stores) the enhanced notes. Long transcripts are reduced chunk by chunk first.
   // language: write the notes in it (an ISO code); left out, the language chosen in Settings → Translation (when translation is on),
@@ -149,6 +163,7 @@ class AiService {
     const template = this.templates.get(templateId || note.templateId || this.settings.get('defaultTemplate')) || this.templates.get('general');
     const segments = this.notes.segments(noteId);
     if (!note.body.trim() && !segments.length) throw new Error('Nothing to summarize yet: add notes or record a transcript first.');
+    await this.refreshContext(signal);
     const budget = this.budget();
     const live = !!onDelta;   // somebody is watching it being written: it runs even while the live assistant holds background work
     let transcript = prompts.formatTranscript(segments);
@@ -302,6 +317,7 @@ class AiService {
   async chat(noteId, question, { onDelta, signal } = {}) {
     const q = String(question || '').trim();
     if (!q) throw new Error('Empty question');
+    await this.refreshContext(signal);
     if (noteId) this.assertShareable(noteId);
     let context, sources, ex = [], searched = [];
     if (noteId) ({ context, sources } = this.noteContext(noteId, q));
