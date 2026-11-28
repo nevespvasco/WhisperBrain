@@ -68,12 +68,13 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   await openModal(b, '<input type="date" id="d2">');
   await settled(b, '#d2');
   // remembers who removes the list, so a failure says what closed it
+  await b.evaluate(`(() => { window.__log = []; for (const t of ['mousedown', 'click', 'cancel', 'close', 'keydown', 'resize', 'focusout']) window.addEventListener(t, (e) => window.__log.push(t + ':' + ((e.target && (e.target.tagName || e.target.nodeName)) || '') + '.' + ((e.target && e.target.className) || '')), true); })()`);
   await b.evaluate(`(() => { window.__closed = []; const rm = Element.prototype.remove; Element.prototype.remove = function () { if (this.classList && this.classList.contains('datepick')) window.__closed.push(new Error().stack.split('\\n').slice(1, 6).join(' <- ')); return rm.call(this); }; })()`);
   await b.clickOn('#d2');
   await b.waitFor(`!!document.querySelector('dialog .menu.datepick') && document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 4`);
   const day2 = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[3].dataset.v`);
   await settled(b, `.menu.datepick [data-v="${day2}"]`);
-  if (!(await b.evaluate(`!!document.querySelector('.menu.datepick')`))) assert.fail('the calendar closed by itself: ' + (await b.evaluate('JSON.stringify(window.__closed)')));
+  if (!(await b.evaluate(`!!document.querySelector('.menu.datepick')`))) assert.fail('the calendar closed by itself: ' + (await b.evaluate('JSON.stringify({ closed: window.__closed, events: window.__log, dialogOpen: !!document.querySelector("dialog[open]"), anyDialog: document.querySelectorAll("dialog").length, d2: !!document.querySelector("#d2"), w: innerWidth, h: innerHeight })')));
   await b.clickOn(`.menu.datepick [data-v="${day2}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d2').value`), day2);
   assert.deepEqual(b.errors, []);
