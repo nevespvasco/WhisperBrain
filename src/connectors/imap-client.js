@@ -26,11 +26,14 @@ function openSocket({ host, port, tls: secure = true, rejectUnauthorized = true,
   });
 }
 // upgrade a connected plain socket to TLS (STARTTLS)
-function startTls(socket, { host, rejectUnauthorized = true, ca }) {
+function startTls(socket, { host, rejectUnauthorized = true, ca, timeoutMs = DEFAULT_TIMEOUT }) {
   return new Promise((resolve, reject) => {
     const secure = tls.connect({ socket, servername: net.isIP(host) ? undefined : host, rejectUnauthorized, ca });
-    secure.once('secureConnect', () => resolve(secure));
-    secure.once('error', (e) => reject(Object.assign(new Error(`TLS failed (${e.code || e.message}).`), { code: 'tls' })));
+    // a server that never answers the handshake must not hang the run
+    const t = setTimeout(() => { secure.destroy(); reject(Object.assign(new Error('TLS failed (the handshake timed out).'), { code: 'tls' })); }, timeoutMs);
+    t.unref?.();
+    secure.once('secureConnect', () => { clearTimeout(t); resolve(secure); });
+    secure.once('error', (e) => { clearTimeout(t); reject(Object.assign(new Error(`TLS failed (${e.code || e.message}).`), { code: 'tls' })); });
   });
 }
 
@@ -196,13 +199,15 @@ class ImapClient {
   // ---- connection ----
   attach(socket) {
     this.socket = socket;
-    socket.on('data', (d) => { this.buf = Buffer.concat([this.buf, d]); this.pump(); });
+    // the command timer measures silence, not length: a big FETCH that keeps arriving is not cut off at timeoutMs
+    socket.on('data', (d) => { this.cur?.timer?.refresh(); this.buf = Buffer.concat([this.buf, d]); this.pump(); });
     socket.on('error', (e) => this.fail(Object.assign(new Error(`IMAP connection error (${e.code || e.message}).`), { code: 'unreachable' })));
     socket.on('close', () => { this.closed = true; this.fail(Object.assign(new Error('IMAP connection closed.'), { code: 'closed' })); });
   }
   fail(err) { const c = this.cur; if (c) { this.cur = null; clearTimeout(c.timer); c.reject(err); } this.pendingGreeting?.reject(err); }
   pump() {
     for (;;) {
+      if (this.upgrading && !this.cur) return;   // after STARTTLS's OK nothing more is read from the plain socket (see connect)
       const r = takeResponse(this.buf);
       if (!r) return;
       this.buf = this.buf.subarray(r.used);
@@ -236,10 +241,18 @@ class ImapClient {
     if (!this.caps.size) await this.capability();
     if (!this.opts.tls) {
       if (this.caps.has('STARTTLS') && this.opts.starttls !== 'never') {
+        this.upgrading = true;
         await this.command('STARTTLS');
+        this.upgrading = false;
         const plain = this.socket;
         plain.removeAllListeners('data'); plain.removeAllListeners('close'); plain.removeAllListeners('error');
-        const secure = await startTls(plain, { host, rejectUnauthorized, ca });
+        // anything after the OK and before the handshake was not protected by TLS (a man in the middle can append a forged
+        // CAPABILITY, the CVE-2011-0411 class): never read it, and give up on a server that sends it
+        if (this.buf.length) {
+          this.buf = Buffer.alloc(0); this.close();
+          throw Object.assign(new Error('The IMAP server sent data before the TLS handshake (possible tampering): not continuing.'), { code: 'insecure' });
+        }
+        const secure = await startTls(plain, { host, rejectUnauthorized, ca, timeoutMs });
         this.attach(secure);
         this.caps = new Set();
         await this.capability();

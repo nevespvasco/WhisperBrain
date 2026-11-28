@@ -16,7 +16,7 @@
 // and compare them with the UIDs each stored thread remembers (meta.refs).
 //
 // UNVERIFIED against real servers: written from the RFCs and tested against a simulated server (test/imap.test.js).
-const { ImapClient, qs, uidSet } = require('./imap-client');
+const { ImapClient, qs, uidSet, isLoopback } = require('./imap-client');
 const { parseMessage } = require('../importers/mime');
 const { can } = require('../access/grants');
 const M = require('./mail-common');
@@ -24,6 +24,8 @@ const M = require('./mail-common');
 const every = 10 * 60_000;
 const MAX_MESSAGES = 400;               // messages read per run
 const MAX_SEEN = 20_000;
+const ARRIVALS_FLOOR = 50;              // new messages read per folder per run even when the budget is spent (new mail never starves)
+const RETRY_TRIES = 3, MAX_RETRY = 200; // a thread the server refused is tried again on the next runs, then given up (counted as errors)
 const FETCH_BYTES = 1_000_000;          // a message is read to this size (attachments past it are not needed: only names and sizes are kept)
 const HEADER_FIELDS = 'FROM TO CC SUBJECT DATE MESSAGE-ID IN-REPLY-TO REFERENCES LIST-UNSUBSCRIBE';
 const SKIP_USE = new Set(['\\trash', '\\junk']);
@@ -45,12 +47,28 @@ function saveAccount(ctx, id, patch) {
 }
 // the access token of an XOAUTH2 account: the one kept while it is fresh, else a new one from its refresh token (when the account has the
 // means to refresh: tokenUrl and clientId), kept for next time
+// Two runs of the same account at once (a sync and a live search) share one refresh: refresh tokens are often single-use, and a
+// second refresh with the old one would revoke the sign-in.
+const refreshing = new Map();
 async function accessTokenOf(ctx, account, { now = Date.now() } = {}) {
   if (account.accessToken && (!account.expiresAt || account.expiresAt - now > 60_000)) return account.accessToken;
   if (!account.refreshToken || !account.tokenUrl || !account.clientId) {
     if (account.accessToken) return account.accessToken;               // no way to refresh: try what there is, the server will say
     throw Object.assign(new Error('This account has no access token: sign in again.'), { permanent: true, code: 'imap-auth' });
   }
+  let url;
+  try { url = new URL(account.tokenUrl); } catch { url = null; }
+  // the refresh token and client secret go in the body: never over plain http (a loopback address is allowed, for tests)
+  if (!url || !(url.protocol === 'https:' || (url.protocol === 'http:' && isLoopback(url.hostname)))) {
+    throw Object.assign(new Error('The token address of this mail account must start with https://.'), { permanent: true, code: 'imap-auth' });
+  }
+  const id = account.id ?? account.tokenUrl;
+  if (refreshing.has(id)) return refreshing.get(id);
+  const p = refreshToken(ctx, account, now).finally(() => refreshing.delete(id));
+  refreshing.set(id, p);
+  return p;
+}
+async function refreshToken(ctx, account, now) {
   const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: account.refreshToken, client_id: account.clientId, ...(account.clientSecret ? { client_secret: account.clientSecret } : {}), ...(account.oauthScope ? { scope: account.oauthScope } : {}) });
   const res = await (ctx.fetchImpl || globalThis.fetch)(account.tokenUrl, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
   const j = await res.json().catch(() => ({}));
@@ -132,29 +150,59 @@ async function fetchChunks(client, uids, items, chunk = 50) {
 }
 
 // the uids in the selected folder that belong to a thread key (before the local check that makes it exact)
+// Control characters are left out of the search (a CR/LF or NUL in a crafted Message-ID makes servers refuse the command); the
+// search only finds candidates, the exact key is checked locally after fetching.
 async function memberUids(client, key) {
   const k = M.parseKey(key);
-  if (!k || !k.value) return [];
-  if (k.kind === 'm') return client.search(['NOT', 'DELETED', 'OR', 'OR', 'HEADER', 'Message-ID', qs(k.value), 'HEADER', 'References', qs(k.value), 'HEADER', 'In-Reply-To', qs(k.value)]);
-  return client.search(['NOT', 'DELETED', 'SUBJECT', qs(k.value)]);
+  const value = k?.value?.replace(/[\x00-\x1f\x7f]/g, '').trim();
+  if (!value) return [];
+  if (k.kind === 'm') return client.search(['NOT', 'DELETED', 'OR', 'OR', 'HEADER', 'Message-ID', qs(value), 'HEADER', 'References', qs(value), 'HEADER', 'In-Reply-To', qs(value)]);
+  return client.search(['NOT', 'DELETED', 'SUBJECT', qs(value)]);
 }
 
-// one thread, from every folder: [{ msg, ref: { f, v, u } }]. Folders are read one after the other (one SELECT each).
+// A command the server answered NO or BAD: about this thread or message only, the connection still works. A dropped connection
+// or a timeout is not this, and stops the run.
+const refused = (e) => e?.code === 'imap';
+
+// fetchChunks, but a chunk the server refuses is fetched again one message at a time; uids that still fail go to onRefused
+async function fetchIsolated(client, uids, items, onRefused, chunk = 50) {
+  const out = [];
+  for (let i = 0; i < uids.length; i += chunk) {
+    const part = uids.slice(i, i + chunk);
+    try { out.push(...await client.fetch(uidSet(part), items)); continue; } catch (e) { if (!refused(e)) throw e; }
+    for (const u of part) {
+      if (part.length === 1) { onRefused(u); break; }
+      try { out.push(...await client.fetch(uidSet([u]), items)); } catch (e) { if (!refused(e)) throw e; onRefused(u); }
+    }
+  }
+  return out;
+}
+
+// threads, from every folder: { got: key -> [{ msg, ref: { f, v, u } }], failed: Set of keys }. Folders are read one after the
+// other (one SELECT each). A thread whose search or messages the server refuses is `failed`: it is incomplete, so it must be
+// neither stored nor tombstoned, and the other threads go on.
 async function gatherThreads(client, folders, keys, { metadataOnly, uvOf }) {
-  const out = new Map(keys.map((k) => [k, []]));
+  const out = new Map(keys.map((k) => [k, []])), failed = new Set();
   for (const f of folders) {
     const info = await client.select(f.name, { readOnly: true });
     uvOf?.(f, info);
     const found = new Map();                                    // uid -> keys it may belong to
-    for (const key of keys) for (const u of await memberUids(client, key)) (found.get(u) || found.set(u, new Set()).get(u)).add(key);
-    const msgs = await fetchChunks(client, [...found.keys()], metadataOnly ? FETCH_HEAD : FETCH_FULL);
+    for (const key of keys) {
+      if (failed.has(key)) continue;
+      let uids;
+      try { uids = await memberUids(client, key); } catch (e) { if (!refused(e)) throw e; failed.add(key); continue; }
+      for (const u of uids) (found.get(u) || found.set(u, new Set()).get(u)).add(key);
+    }
+    const lost = (u) => { for (const k of found.get(u) || []) failed.add(k); };
+    const msgs = await fetchIsolated(client, [...found.keys()], metadataOnly ? FETCH_HEAD : FETCH_FULL, lost);
     for (const m of msgs) {
       if (m.flags.some((x) => x.toLowerCase() === '\\deleted')) continue;
-      const r = toMessage(m, { metadataOnly, folder: f });
+      let r;
+      try { r = toMessage(m, { metadataOnly, folder: f }); } catch { lost(m.uid); continue; }
       if (found.get(m.uid)?.has(r.key)) out.get(r.key).push({ msg: r.msg, ref: { f: f.name, v: info.uidValidity, u: m.uid } });
     }
   }
-  return out;
+  return { got: out, failed };
 }
 
 const addressesOf = (ctx, account, cfg) => new Set([account.user, account.email, ...(Array.isArray(account.aliases) ? account.aliases : M.list(account.aliases)), ...cfg.aliases].filter((a) => a && String(a).includes('@')).map((a) => String(a).toLowerCase()));
@@ -223,17 +271,55 @@ async function sync({ source, items, budget = MAX_MESSAGES, ...ctx }) {
     const RESTART = Symbol('restart');
     const persist = () => { c.seen = c.resync ? [...seen].slice(0, MAX_SEEN) : []; items.updateSource(source.id, { cursor: writeCursor(c) }); };
 
+    // A thread the server refused (or whose mail our parser could not read) is remembered in c.retry and tried again on the next
+    // runs, then given up; it never stops the folder's state from moving on. Each failure counts in out.errors.
+    const retryLater = (key) => {
+      out.errors++;
+      seen.add(M.digest(`thread:${key}`));    // unread is not gone: a resync must not tombstone it
+      const tries = ((c.retry ||= {})[key] || 0) + 1;
+      delete c.retry[key];
+      if (tries < RETRY_TRIES) c.retry[key] = tries;
+      const keys = Object.keys(c.retry);
+      for (const k of keys.slice(0, Math.max(0, keys.length - MAX_RETRY))) delete c.retry[k];
+    };
+
     const run = async () => {
       let remaining = budget;
-      const touched = new Set();
-      const states = {};
-      // ---- 1. which threads changed? per folder: new mail, older mail (newest first), mail that went away
-      for (const f of folders) {
+      const done = new Set();                 // threads stored (or found gone) in this run: never read twice
+      const pending = new Set(Object.keys(c.retry || {}));
+      // ---- 2. read threads whole, from every folder; 3. store them
+      const storeThreads = async (keys) => {
+        keys = keys.filter((k) => !done.has(k));
+        if (!keys.length) return;
+        const { got, failed } = await gatherThreads(client, folders, keys, { metadataOnly });
+        for (const key of keys) {
+          if (failed.has(key)) { done.add(key); retryLater(key); continue; }
+          const members = got.get(key) || [];
+          const externalId = `thread:${key}`;
+          let item = null, keep = false;
+          if (members.length) {
+            try {
+              const msgs = members.map((m) => m.msg);
+              keep = !M.neverRead(msgs, never) && M.passesFilter(msgs, local);
+              if (keep) item = itemFor(key, members, me, metadataOnly);
+            } catch { done.add(key); retryLater(key); continue; }
+          }
+          done.add(key); if (c.retry) delete c.retry[key];
+          if (!item) { if (items.tombstone(source.id, externalId)) out.removed++; continue; }
+          const r = items.upsert(source.id, item);
+          out[r.action === 'revived' ? 'updated' : r.action]++;
+          seen.add(M.digest(externalId));
+        }
+      };
+      // ---- 1. which threads changed? per folder: new mail, older mail (newest first), mail that went away. Each folder's threads
+      // are stored, and its new state saved, before the next folder: a later failure keeps that progress.
+      const readFolder = async (f) => {
+        const touched = new Set(pending); pending.clear();
         const st = { ...(c.f[f.name] || {}) };
         const info = await client.select(f.name, { readOnly: true });
         if (st.uv != null && st.uv !== info.uidValidity) {
           // every UID we knew is meaningless now: start again from scratch; what is no longer there is tombstoned at the end
-          c = { k: sig, f: {}, resync: true, seen: [] }; seen.clear();
+          c = { k: sig, f: {}, resync: true, seen: [], retry: c.retry || {} }; seen.clear();
           throw RESTART;
         }
         st.uv = info.uidValidity;
@@ -243,17 +329,19 @@ async function sync({ source, items, budget = MAX_MESSAGES, ...ctx }) {
           Object.assign(st, { hi: info.uidNext - 1, lo: info.uidNext });
         }
         const keysOf = async (uids) => {
-          for (const m of await fetchChunks(client, uids, FETCH_HEAD, 100)) {
+          // a message whose headers the server will not give is skipped (there is no thread to retry without them)
+          for (const m of await fetchIsolated(client, uids, FETCH_HEAD, () => { out.errors++; }, 100)) {
             if (m.flags.some((x) => x.toLowerCase() === '\\deleted')) continue;
-            touched.add(toMessage(m, { metadataOnly: true, folder: f }).key);
+            try { touched.add(toMessage(m, { metadataOnly: true, folder: f }).key); } catch { out.errors++; }
           }
         };
-        // new mail: always read in full (a backlog of new mail is rare and matters most)
-        const arrivals = fresh ? [] : (await client.search(['UID', `${st.hi + 1}:*`])).filter((u) => u > st.hi);
-        if (arrivals.length) { await keysOf(arrivals); st.hi = Math.max(st.hi, ...arrivals); remaining -= arrivals.length; }
+        // new mail first, oldest first, within the budget (at least ARRIVALS_FLOOR per folder); the rest waits for the next run
+        const allNew = fresh ? [] : (await client.search(['UID', `${st.hi + 1}:*`])).filter((u) => u > st.hi);
+        const arrivals = allNew.slice(0, Math.max(remaining, Math.min(ARRIVALS_FLOOR, budget)));
+        if (arrivals.length) { await keysOf(arrivals); st.hi = arrivals[arrivals.length - 1]; remaining -= arrivals.length; }   // search answers are sorted
         // mail that went away or changed
         if (!fresh) {
-          let checkGone = info.exists !== (st.n ?? info.exists) + arrivals.length;
+          let checkGone = info.exists !== (st.n ?? info.exists) + allNew.length;
           const changed = [];
           if (info.highestModSeq != null && st.ms != null) {
             if (info.highestModSeq > st.ms) {
@@ -269,31 +357,24 @@ async function sync({ source, items, budget = MAX_MESSAGES, ...ctx }) {
         }
         // older mail, newest first, as much as the budget allows
         if (st.lo > 1 && remaining > 0) {
-          const pending = (await client.search(['UID', `1:${st.lo - 1}`, 'SINCE', since])).filter((u) => u < st.lo);
-          const take = pending.slice(-remaining);
+          const older = (await client.search(['UID', `1:${st.lo - 1}`, 'SINCE', since])).filter((u) => u < st.lo);
+          const take = older.slice(-remaining);
           if (take.length) { await keysOf(take); remaining -= take.length; }
-          st.lo = take.length === pending.length ? 0 : take[0];
+          st.lo = take.length === older.length ? 0 : take[0];
         } else if (st.lo > 1 && remaining <= 0) { /* later */ } else st.lo = 0;
-        st.n = info.exists; st.ms = info.highestModSeq;
-        states[f.name] = st;
+        // new mail left for the next run: the count compared next time must not include it
+        st.n = info.exists - (allNew.length - arrivals.length); st.ms = info.highestModSeq;
+        await storeThreads([...touched]);
+        // the stored thread refs changed with it; the new state of the folder is only kept now that its threads are stored
+        c.f[f.name] = st;
+        persist();
+      };
+      for (const f of folders) {
+        try { await readFolder(f); } catch (e) {
+          if (e === RESTART || !refused(e)) throw e;
+          out.errors++;                       // the server refused something about this whole folder: its state stays, the others go on
+        }
       }
-      // ---- 2. read those threads whole, from every folder; 3. store them
-      const keys = [...touched];
-      const got = keys.length ? await gatherThreads(client, folders, keys, { metadataOnly }) : new Map();
-      for (const key of keys) {
-        const members = got.get(key) || [];
-        const externalId = `thread:${key}`;
-        if (!members.length) { if (items.tombstone(source.id, externalId)) out.removed++; continue; }
-        const msgs = members.map((m) => m.msg);
-        if (M.neverRead(msgs, never) || !M.passesFilter(msgs, local)) { if (items.tombstone(source.id, externalId)) out.removed++; continue; }
-        const item = itemFor(key, members, me, metadataOnly);
-        if (!item) { if (items.tombstone(source.id, externalId)) out.removed++; continue; }
-        const r = items.upsert(source.id, item);
-        out[r.action === 'revived' ? 'updated' : r.action]++;
-        seen.add(M.digest(externalId));
-      }
-      // the stored thread refs changed with it; the new state of each folder is only kept now that its threads are stored
-      for (const [name, st] of Object.entries(states)) c.f[name] = st;
     };
     try {
       try { await run(); } catch (e) {
@@ -359,7 +440,9 @@ async function openLive({ ctx = {}, source, externalId } = {}) {
   const client = await connectFor(ctx, account);
   try {
     const folders = await resolveFolders(client, cfg.folders);
-    const members = (await gatherThreads(client, folders, [key], { metadataOnly })).get(key) || [];
+    const { got, failed } = await gatherThreads(client, folders, [key], { metadataOnly });
+    if (failed.has(key)) throw Object.assign(new Error('The mail server refused to read this thread.'), { code: 'imap' });
+    const members = got.get(key) || [];
     if (!members.length) return null;
     const msgs = members.map((m) => m.msg);
     if (M.neverRead(msgs, never) || !M.passesFilter(msgs, local)) return null;
