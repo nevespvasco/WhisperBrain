@@ -38,7 +38,7 @@
     "onnxruntime-node": "1.31.1",
     "opusscript": "^0.0.8",
     "sherpa-onnx-node": "2.0.3",
-    "unpdf": "2.1.0"
+    "unpdf": "2.2.2"
   },
   "devDependencies": {
     "electron": "45.5.0",
