@@ -104,6 +104,7 @@ const DEFAULTS = {
   redactRemote: true,           // to an AI server that is not on this computer, swap e-mail addresses, phone numbers, IBAN/card numbers, keys, codes and secret links for placeholders (src/access/redact.js)
   rerank: false,                 // let the AI server order the excerpts for a question by how well each answers it (one extra request per question)
   autoAssertions: true,          // after a meeting, look for decisions and commitments (each one a suggestion with its quote; nothing is accepted by itself)
+  autoRemote: false,             // what runs by itself after a meeting (enhanced notes when autoSummarize, topics/terms/action items, decisions and commitments) also goes to an AI server that is NOT on this computer; off = only to a server on this computer (what the person starts by hand is not affected; names have their own speakerNamesFromTranscript)
   embeddingModel: '',            // an embedding model on the AI server (e.g. embeddinggemma): search by meaning as well as by words; '' = words only (src/search)
   startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)

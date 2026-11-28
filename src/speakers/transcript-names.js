@@ -177,7 +177,7 @@ const LIVE_TIMEOUT_MS = 60000;
 const LIVE_MAX_FAILURES = 3;    // then this recording is left alone until Stop
 
 class LiveNames {
-  // deps: { notes, speakers, evidence, llm, bus, allowed (() -> whether the settings and the AI server permit it), userName (() -> the user's name), now }
+  // deps: { notes, speakers, evidence, llm, bus, allowed ((noteId) -> whether the settings, the AI server and the meeting's source permit it), userName (() -> the user's name), now }
   constructor({ notes, speakers, evidence = null, llm, bus, allowed = () => true, userName = () => '', now = Date.now }) {
     Object.assign(this, { notes, speakers, evidence, llm, bus, allowed, userName, now });
     this.run = null;   // the recording being followed: { noteId, fresh, last, busy, failures, abort }
@@ -205,7 +205,7 @@ class LiveNames {
     if (!r || r.noteId !== noteId || !segment?.text) return null;
     r.fresh++;
     if (r.busy || r.failures >= LIVE_MAX_FAILURES || r.fresh < LIVE_EVERY_LINES || this.now() - r.last < LIVE_MIN_GAP_MS) return null;
-    if (!this.allowed()) return null;
+    if (!this.allowed(noteId)) return null;
     return this.pass(r);
   }
 

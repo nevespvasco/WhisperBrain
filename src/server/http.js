@@ -249,9 +249,12 @@ function createRoutes(app) {
     });
   });
   // ask the AI who the unnamed voices are, from what people say; a name stands only with the line that shows it
-  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params }) => {
+  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params, body }) => {
     noteOr404(params.id);
     if (!app.ai.configured()) throw new HttpError(409, 'No AI server is set up. Add one in Settings → AI.');
+    app.ai.assertShareable(params.id);   // a meeting its source keeps on this computer is not read by a server elsewhere (409 local-only)
+    // a server elsewhere gets the transcript from a click only with a yes for it, unless names are set to "always"
+    if (app.settings.get('speakerNamesFromTranscript') !== 'on' && !require('../core/policy').isThisComputer(app.settings.get('llm').baseUrl) && body?.confirm !== true) throw new HttpError(409, 'Your AI server is not on this computer: guessing names sends this transcript to it.', 'confirm-remote');
     const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.scheduler.client('background'), userName: app.settings.get('userName') }, params.id);
     if (r.error) throw new HttpError(502, `The AI server did not answer: ${r.error}`);
     if (r.named.length) app.notes.reindex(params.id);

@@ -1,5 +1,12 @@
 // European Portuguese. Keys are the English strings used in the UI; values are their translations.
 export const PT = {
+  'After a meeting, by itself': 'Depois de uma reunião, sozinho',
+  'Your AI server is not on this computer, so nothing is sent to it by itself after a meeting. Enhance a meeting yourself, or allow it below.': 'O teu servidor de IA não está neste computador, por isso nada lhe é enviado sozinho depois de uma reunião. Melhora uma reunião tu mesmo, ou permite-o abaixo.',
+  'Look for decisions and commitments': 'Procurar decisões e compromissos',
+  'After each meeting the AI reads the whole transcript and suggests the decisions and promises in it, each with its quote. Nothing is accepted by itself.': 'Depois de cada reunião, a IA lê a transcrição inteira e sugere as decisões e promessas que nela há, cada uma com a sua citação. Nada é aceite sozinho.',
+  'Also send to an AI server that is not on this computer': 'Enviar também para um servidor de IA que não está neste computador',
+  'Off: what runs by itself after a meeting (enhanced notes, topics and action items, decisions and commitments) only uses an AI server on this computer. On: the whole transcript of every meeting is sent to your server by itself. What you start yourself is always sent.': 'Desligado: o que corre sozinho depois de uma reunião (notas melhoradas, temas e tarefas, decisões e compromissos) só usa um servidor de IA neste computador. Ligado: a transcrição inteira de cada reunião é enviada sozinha para o teu servidor. O que tu inicias é sempre enviado.',
+  'Your AI server is not on this computer: guessing names sends this meeting\'s transcript to it. Go ahead?': 'O teu servidor de IA não está neste computador: adivinhar nomes envia-lhe a transcrição desta reunião. Continuar?',
   'A quiet week': 'Uma semana tranquila',
   'AI': 'IA',
   'AI model': 'Modelo de IA',
