@@ -135,23 +135,23 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const runner = new JobRunner({ queue: jobs, paused: (lane) => lane === 'main' && scheduler.isHeld(), onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
   const NEXT = { 'note.names': 'note.summarize', 'note.summarize': 'note.insights' };
   const chain = (step, noteId, payload, enqueue) => { if (NEXT[step]) enqueue(NEXT[step], { noteId, ...payload }, { key: noteId }); };
-  runner.register('note.names', async ({ noteId }, { enqueue }) => {
+  runner.register('note.names', async ({ noteId }, { enqueue, signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
     if (namesFromTranscriptAllowed(noteId)) {
-      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
+      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(NAMES_TIMEOUT_MS)]) : AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
     chain('note.names', noteId, {}, enqueue);
     return null;
   });
-  runner.register('note.summarize', async ({ noteId }, { enqueue }) => {
+  runner.register('note.summarize', async ({ noteId }, { enqueue, signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     const auto = settings.get('autoSummarize') && autoSendAllowed();
     if (settings.get('autoSummarize') && !auto && ai.configured()) bus.publish('recording.warning', { message: 'Notes were not enhanced automatically: your AI server is not on this computer. Use Enhance on the meeting, or allow automatic sending in Settings → AI.' });
     if (auto) {
       try {
         bus.publish('note.summarizing', { id: noteId });
-        await ai.summarize(noteId);
+        await ai.summarize(noteId, { signal });
       } catch (err) {
         bus.publish('note.summarize-failed', { id: noteId, message: err.message });
       }
