@@ -1,9 +1,9 @@
 'use strict';
 // Names from what people say. Where nothing outside the audio says who a voice is (Zoom, Teams, a phone on speaker, an
 // imported recording) the conversation often does: "I'm Maria", "Thanks, George". After a recording (and every so often during
-// it: LiveNames) the AI reads the transcript, with the voices as tags, and says who is who; a name counts only when it quotes the line that shows it and the
-// voice it names talks right beside that line (two lines either side), so a name in an advert, a quote or a story about
-// somebody else is not given to the wrong voice. Ported from Cicada's SpeakerNameGuess (wquguru/cicada, SpeakerID.swift).
+// it: LiveNames) the AI reads the transcript, with the voices as tags, and says who is who; a name counts only when it quotes the line that shows it, the
+// name is really written on that line or right beside it, and the voice it names talks right beside that line (two lines either side), so a name the AI
+// made up (or copied from an example) is refused, and a name in an advert, a quote or a story about somebody else is not given to the wrong voice. Ported from Cicada's SpeakerNameGuess (wquguru/cicada, SpeakerID.swift).
 //
 // What this never does: replace a name somebody typed, overrule a voice already matched to a saved person (Speakers.nameFromMeeting
 // answers 'kept' / 'conflict'), or save a voice print. A name from here is a guess that says so ('transcript:llm') and can be
@@ -46,9 +46,34 @@ function cleanName(raw) {
   return NAME.test(n) && !GENERIC.test(n) && !/^[a-z]\d{1,3}$/i.test(n) ? n : '';
 }
 
+// Is the name written on the evidence line or within REACH of it? Speech recognition spells names by ear and the AI may write a
+// public figure as the news does, so a word one letter off (two in a long word) still counts: "Powel" is "Powell", "Jose" is
+// "José". Little words of a full name ("da", "de", "van") are not enough on their own: one word of the name that matters must be there.
+const words = (s) => nameKey(s).split(' ').filter(Boolean);
+function editDistance(a, b) {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[b.length];
+}
+function sameWord(a, b) {
+  if (a === b) return true;
+  const slack = a.length >= 8 ? 2 : a.length >= 5 ? 1 : 0;
+  return slack > 0 && Math.abs(a.length - b.length) <= slack && editDistance(a, b) <= slack;
+}
+function saidNear(name, built, line) {
+  const heard = new Set(built.lines.filter((l) => Math.abs(l.n - line.n) <= REACH).flatMap((l) => words(l.text)));
+  const all = words(name);
+  const key = all.filter((w) => w.length >= 3);
+  return (key.length ? key : all).some((w) => [...heard].some((h) => sameWord(w, h)));
+}
+
 // reply: what the AI said. built: buildTranscript's result. skip: [{ speakerId, name }] names somebody turned down for a voice.
 // -> { found: [{ speakerId, name, line, startMs, quote }], refuted: [{ speakerId, name, reason }] }
-// refuted: names given for a voice on a line it neither said nor spoke beside; found: the ones that stand.
+// refuted: names nobody said near the line given (reason 'not-said'), or given for a voice on a line it neither said nor spoke beside; found: the ones that stand.
 function parseNames(reply, built, { skip = [] } = {}) {
   const out = { found: [], refuted: [] };
   const list = extractJson(reply)?.speakers;
@@ -66,6 +91,7 @@ function parseNames(reply, built, { skip = [] } = {}) {
     const line = digits ? built.lines[Number(digits[0]) - 1] : null;
     const near = line ? built.lines.filter((l) => Math.abs(l.n - line.n) <= REACH && l.speakerId === speakerId) : [];
     if (!line || !near.length) { out.refuted.push({ speakerId, name, reason: line ? 'far' : 'no-line' }); continue; }
+    if (!saidNear(name, built, line)) { out.refuted.push({ speakerId, name, reason: 'not-said' }); continue; }
     byVoice.set(speakerId, { speakerId, name, line: line.n, startMs: line.startMs, quote: line.text.slice(0, 120) });
   }
   // two people rarely share a name in one meeting: a name given to two voices goes to the one with more lines

@@ -98,16 +98,18 @@ const CHAT_SYSTEM = `You are a research assistant over everything the user keeps
 
 // Who are the voices the recognizer could only number? Reads the transcript as built by speakers/transcript-names.js
 // ({ preface, text }); the reply is checked line by line afterwards (parseNames), so what is asked for is the evidence.
+// No real names in it: a small local model copies an example name when it finds none ("George" on S2 at L12 in meeting after
+// meeting), so the shape is shown with placeholders, which parseNames refuses if they come back as they are.
 const SPEAKER_NAMES_SYSTEM = `You work out who the people in a meeting transcript are.
 Each line is "[L<number> <time> <tag>] text". ME is the user. S1, S2... and R2... are other people, told apart by voice only. ? is somebody whose voice could not be told.
-Name a tag only when the transcript makes it clear:
-- they introduce themselves on a line that carries their own tag ("I'm Maria"), or
-- somebody addresses them by name right before or after they speak ("Thanks, George" straight after S1's answer: S1 is George), or
+Name a tag only when a name is written in the transcript and the transcript makes it clear whose it is:
+- they introduce themselves by name on a line that carries their own tag, or
+- somebody calls them by name right before or right after they speak (thanking them, or handing them the word), or
 - others name them as they speak.
 A name on a "?" line, or far from any line of that tag (an advert, a clip, people introducing themselves on another show, a person who is only talked about), is not theirs.
 Speech recognition writes names by ear and may misspell them: write a public figure (an official, an executive, a presenter) as the news spells it, anyone else as written.
-Leave out anyone you are unsure of. Never name ME.
-Reply with JSON only: {"speakers": [{"speaker": "S2", "name": "George", "evidence": "L12"}]}, evidence being the line that shows the name; {"speakers": []} if none.
+Only use names that are written in the transcript; never make one up. Leave out anyone you are unsure of. Never name ME.
+Reply with JSON only: {"speakers": [{"speaker": "<tag>", "name": "<the name as written>", "evidence": "<line number where the name is written>"}]}; {"speakers": []} if nobody is named, which is a normal answer.
 - ${UNTRUSTED}`;
 
 function speakerNamesMessages({ preface, text }) {

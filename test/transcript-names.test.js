@@ -11,13 +11,13 @@ const { speakerNamesMessages } = require('../src/llm/prompts');
 
 // A short call: the user (m1) and two other voices (s1, s2) on the system audio.
 const CALL = [
-  { speaker: 'me', speakerId: 'm1', text: 'Good morning everyone, shall we start with the budget' },   // L1
+  { speaker: 'me', speakerId: 'm1', text: 'Good morning everyone, Bruno, shall we start with the budget' },   // L1  (addresses s2 just before it speaks)
   { speaker: 'them', speakerId: 's1', text: 'Sure, I am Maria and I run the data team' },             // L2  (self-introduction)
   { speaker: 'them', speakerId: 's2', text: 'And I can cover the hiring plan today' },               // L3
   { speaker: 'me', speakerId: 'm1', text: 'Thanks Maria, go ahead with the numbers' },                // L4  (addresses s1 by name)
   { speaker: 'them', speakerId: 's1', text: 'Revenue is up about four percent this quarter' },       // L5
   { speaker: 'them', speakerId: 's2', text: 'Which fits with what we planned for hiring' },           // L6
-  { speaker: 'them', speakerId: null, text: 'noise from somebody else maybe' },                      // L7  (no voice id)
+  { speaker: 'them', speakerId: null, text: 'noise from somebody, Carla maybe' },                     // L7  (no voice id)
   { speaker: 'them', speakerId: 's1', text: 'Next quarter we should expect the same trend' },         // L8
 ];
 const withTimes = (rows) => rows.map((r, i) => ({ id: i + 1, startMs: i * 4000, endMs: i * 4000 + 3000, speakerName: '', ...r }));
@@ -71,6 +71,35 @@ test('parseNames: unknown line, a line with no voice, a missing line, the user, 
   assert.deepEqual(bad.found.map((f) => f.name), ['Carla'], 'only the one that stands: S2 speaks at L6, one line from L7');
   assert.equal(bad.found[0].line, 7);
   assert.ok(!bad.found.some((f) => ['Vasco', 'Speaker 3', 'S2', 'Admin', 'Zed', 'Nobody'].includes(f.name)));
+});
+
+test('parseNames refuses a name nobody said near the line: an example copied by the AI, a made-up name, a placeholder', () => {
+  const b = build();
+  const out = parseNames(reply([
+    { speaker: 'S2', name: 'George', evidence: 'L3' },               // S2 talks at L3, but nobody says George anywhere
+    { speaker: 'S1', name: '<the name as written>', evidence: 'L2' },  // the prompt's placeholder sent back as it is
+  ]), b);
+  assert.deepEqual(out.found, []);
+  assert.deepEqual(out.refuted, [{ speakerId: 's2', name: 'George', reason: 'not-said' }], 'refuted, so the voice keeps its number instead of a wrong name');
+  // a name said two lines away still counts (the AI points one line off); three lines away does not
+  assert.deepEqual(parseNames(reply([{ speaker: 'S1', name: 'Maria', evidence: 'L5' }]), b).found.map((f) => f.name), ['Maria'], 'Maria is said at L4');
+  assert.deepEqual(parseNames(reply([{ speaker: 'S1', name: 'Maria', evidence: 'L8' }]), b).refuted.map((r) => r.reason), ['not-said']);
+});
+
+test('parseNames: the name may be spelt a little differently from the transcript (accents, one letter by ear), not a different name', () => {
+  const rows = [
+    { speaker: 'me', speakerId: 'm1', text: 'Obrigado Jose, e agora a Ana' },                        // L1
+    { speaker: 'them', speakerId: 's1', text: 'Sim, o Jerome Powel disse isso ontem' },               // L2
+    { speaker: 'them', speakerId: 's2', text: 'Eu sou da equipa de vendas' },                        // L3
+  ];
+  const b = build(rows);
+  const take = (list) => parseNames(reply(list), b);
+  assert.deepEqual(take([{ speaker: 'S1', name: 'José', evidence: 'L1' }]).found.map((f) => f.name), ['José'], 'accents do not matter');
+  assert.deepEqual(take([{ speaker: 'S1', name: 'Jerome Powell', evidence: 'L2' }]).found.map((f) => f.name), ['Jerome Powell'], 'a public figure written as the news spells it');
+  assert.deepEqual(take([{ speaker: 'S2', name: 'Ana', evidence: 'L1' }]).found.map((f) => f.name), ['Ana']);
+  assert.deepEqual(take([{ speaker: 'S2', name: 'Ane', evidence: 'L1' }]).found, [], 'a short name has to be exact');
+  assert.deepEqual(take([{ speaker: 'S2', name: 'Rita da Costa', evidence: 'L3' }]).found, [], '"da" alone is not the name');
+  assert.deepEqual(take([{ speaker: 'S2', name: 'Joseph', evidence: 'L1' }]).found, [], 'Jose is not Joseph');
 });
 
 test('parseNames: one name for two voices goes to the one that spoke more; fences and noise around the JSON are fine; garbage names nobody', () => {
