@@ -106,6 +106,7 @@ Name a tag only when a name is written in the transcript and the transcript make
 - they introduce themselves by name on a line that carries their own tag, or
 - somebody calls them by name right before or right after they speak (thanking them, or handing them the word), or
 - others name them as they speak.
+A name a tag says to somebody else ("Nimu, is this ok?", "thanks, Sav", "can you explain, Sav?") is the name of the person spoken to, never of the tag saying it.
 A name on a "?" line, or far from any line of that tag (an advert, a clip, people introducing themselves on another show, a person who is only talked about), is not theirs.
 Speech recognition writes names by ear and may misspell them: write a public figure (an official, an executive, a presenter) as the news spells it, anyone else as written.
 Only use names that are written in the transcript; never make one up. Leave out anyone you are unsure of. Never name ME.

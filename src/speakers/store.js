@@ -32,6 +32,9 @@ function defaultLabel(speakerId, channelSpeaker, userName = '') {
   return `Speaker ${n}`;
 }
 
+// name sources that are only a guess from the conversation's words (transcript-names.js): a saved voice outranks them
+const GUESS = /^transcript/;
+
 class Speakers {
   constructor(db, bus) { this.db = db; this.bus = bus; this.mean = VOICE_MEAN; this.modelId = LEGACY.id; this.adapt = true; this.enabled = () => true; }   // enabled(): voice prints at all (an organisation can switch them off)   // mean: the average voice that prints are centred on, see cluster.js
   //   modelId: the voice model new prints come from (voice-models.js); every stored print is tagged with it
@@ -392,11 +395,15 @@ class Speakers {
   // older model is judged on the speaker's second print made by that model (when the recording made one). `threshold` overrides
   // the model's own (the evaluation harness does).
   // Speakers fairly like a saved voice nobody else here has, but short of the threshold, are only suggested ("Ana?").
+  // A name the AI read off the transcript ('transcript:llm') is a guess from words, often the person spoken TO ("Nimu, is this
+  // ok?"): a saved voice the user confirmed outranks it, so such a speaker is still compared with the saved voices, and a link
+  // replaces the guess. Without a link the guess stays (and no link the guess came with is withdrawn here).
   autoMatch(noteId, threshold = null, opts = {}) {
     if (!this.enabled()) return 0;   // no voice prints, no recognising them
     const all = this.forNote(noteId);
-    const used = new Set(all.filter((s) => s.name).map((s) => s.voiceId).filter(Boolean));
-    const free = all.filter((s) => !s.name && (s.centroid || s.altCentroid));
+    const guessed = (s) => !!s.name && GUESS.test(s.nameSource || '') && !s.voiceId;   // a guess that named a saved voice is that voice's
+    const used = new Set(all.filter((s) => s.name && !guessed(s)).map((s) => s.voiceId).filter(Boolean));
+    const free = all.filter((s) => (!s.name || guessed(s)) && (s.centroid || s.altCentroid));
     if (!free.length) return 0;
     const pitchOf = new Map(all.map((s) => [s.speakerId, s.pitch]));
     const voices = this.voices().filter((v) => !used.has(v.id));
@@ -429,6 +436,13 @@ class Speakers {
     let changed = 0;
     for (const s of free) {
       const next = matches.get(s.speakerId)?.voiceId || null;
+      if (guessed(s)) {
+        if (next) {
+          this.db.prepare("UPDATE note_speakers SET name = '', voice_id = ?, name_source = 'voice', name_confidence = ?, suggested_voice_id = NULL, suggested_score = NULL WHERE note_id = ? AND speaker_id = ?").run(next, matches.get(s.speakerId).score, noteId, s.speakerId);
+          changed++;
+        }
+        continue;
+      }
       if (next !== (s.voiceId || null)) {
         const score = next ? matches.get(s.speakerId).score : null;
         this.db.prepare("UPDATE note_speakers SET voice_id = ?, name_source = CASE WHEN ? IS NOT NULL THEN 'voice' WHEN name_source = 'voice' THEN '' ELSE name_source END, name_confidence = CASE WHEN ? IS NOT NULL THEN ? WHEN name_source = 'voice' THEN NULL ELSE name_confidence END WHERE note_id = ? AND speaker_id = ?").run(next, next, next, score, noteId, s.speakerId);

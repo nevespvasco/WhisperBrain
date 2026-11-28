@@ -95,7 +95,8 @@ test('parseNames: the name may be spelt a little differently from the transcript
   const b = build(rows);
   const take = (list) => parseNames(reply(list), b);
   assert.deepEqual(take([{ speaker: 'S1', name: 'José', evidence: 'L1' }]).found.map((f) => f.name), ['José'], 'accents do not matter');
-  assert.deepEqual(take([{ speaker: 'S1', name: 'Jerome Powell', evidence: 'L2' }]).found.map((f) => f.name), ['Jerome Powell'], 'a public figure written as the news spells it');
+  assert.deepEqual(take([{ speaker: 'S2', name: 'Jerome Powell', evidence: 'L2' }]).found.map((f) => f.name), ['Jerome Powell'], 'a public figure written as the news spells it');
+  assert.deepEqual(take([{ speaker: 'S1', name: 'Jerome Powell', evidence: 'L2' }]).refuted.map((r) => r.reason), ['addressed'], 'S1 talks about Powell: not its own name');
   assert.deepEqual(take([{ speaker: 'S2', name: 'Ana', evidence: 'L1' }]).found.map((f) => f.name), ['Ana']);
   assert.deepEqual(take([{ speaker: 'S2', name: 'Ane', evidence: 'L1' }]).found, [], 'a short name has to be exact');
   assert.deepEqual(take([{ speaker: 'S2', name: 'Rita da Costa', evidence: 'L3' }]).found, [], '"da" alone is not the name');
@@ -290,4 +291,30 @@ test('LiveNames.attach follows the recording through the bus: started, lines, st
   t.bus.publish('recording.stopped', { noteId: t.n.id });
   assert.equal(t.live.run, null);
   off();
+});
+
+test('parseNames: a name a voice says to somebody ("Nimu, is this ok?") is not that voice\'s name, unless it introduces itself', () => {
+  // a real Discord call: the professor (S2) asks Nimu a question, S8 answers; the AI gave S2 the name "Nimu"
+  const rows = [
+    { speaker: 'them', speakerId: 's2', text: 'that it is.' },
+    { speaker: 'them', speakerId: 's2', text: 'Nimu, is this appropriate for the class?' },
+    { speaker: 'them', speakerId: 's8', text: 'Yeah.' },
+    { speaker: 'them', speakerId: 's2', text: 'Is what you said appropriate for the class, or no?' },
+    { speaker: 'them', speakerId: 's3', text: 'Can you explain how to access the group chat again, uh, Sav.' },
+    { speaker: 'them', speakerId: 's9', text: "Hi, I'm Rita and I teach maths" },
+    { speaker: 'them', speakerId: 's7', text: 'Olá, eu sou a Inês' },
+    { speaker: 'them', speakerId: 's6', text: 'Tomás here, can you hear me' },
+  ];
+  const b = buildTranscript(withTimes(rows), [], {});
+  const out = parseNames(reply([
+    { speaker: 'S2', name: 'Nimu', evidence: 'L2' },
+    { speaker: 'S3', name: 'Sav', evidence: 'L5' },
+    { speaker: 'S9', name: 'Rita', evidence: 'L6' },
+    { speaker: 'S7', name: 'Inês', evidence: 'L7' },
+    { speaker: 'S6', name: 'Tomás', evidence: 'L8' },
+  ]), b);
+  assert.deepEqual(out.refuted, [{ speakerId: 's2', name: 'Nimu', reason: 'addressed' }, { speakerId: 's3', name: 'Sav', reason: 'addressed' }]);
+  assert.deepEqual(out.found.map((f) => [f.speakerId, f.name]), [['s9', 'Rita'], ['s7', 'Inês'], ['s6', 'Tomás']], 'self-introductions still count');
+  // the one spoken to, answering right after, may still get the name (somebody calls them by name right before they speak)
+  assert.deepEqual(parseNames(reply([{ speaker: 'S8', name: 'Nimu', evidence: 'L2' }]), b).found.map((f) => f.name), ['Nimu']);
 });

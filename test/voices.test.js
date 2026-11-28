@@ -265,3 +265,27 @@ test('matchVoices: speakers that want the same saved voice are settled by the be
   assert.equal(r1.bruno, 'bruno');
   assert.equal(r1.weaker, undefined, 'the voice went to the speaker who sounds most like it; the other stays unlinked');
 });
+
+test('autoMatch: a saved voice outranks a name the AI guessed from the transcript; a typed name or a guess without a match stays', () => {
+  const { speakers, meeting, linked } = rig();
+  const n0 = meeting([{ id: 's1', centroid: ANA }]);
+  speakers.rename(n0, 's1', 'Ana', { remember: true, consentSource: 'user' });
+  // during the call the AI read "Nimu, is this ok?" (Ana talking to Nimu) and named Ana's voice Nimu, before her print firmed up
+  const n = meeting([{ id: 's1', centroid: voice(7) }, { id: 's2', centroid: voice(8) }]);
+  assert.equal(speakers.nameFromMeeting(n, 's1', 'Nimu', { source: 'transcript:llm', confidence: 0.5 }), 'named');
+  assert.equal(speakers.nameFromMeeting(n, 's2', 'Zé', { source: 'transcript:llm', confidence: 0.5 }), 'named');
+  speakers.autoMatch(n);
+  assert.equal(speakers.forNote(n).find((s) => s.speakerId === 's1').name, 'Nimu', 'no match yet: the guess stays');
+  // after Stop the whole meeting's print is plainly Ana
+  speakers.save(n, { speakerId: 's1', channel: 'system', centroid: utter(ANA, 0.05, 9), count: 30 });
+  assert.equal(speakers.autoMatch(n), 1);
+  const s1 = speakers.forNote(n).find((s) => s.speakerId === 's1');
+  assert.deepEqual([s1.name, s1.voiceName, s1.nameSource], ['', 'Ana', 'voice'], 'the saved voice replaces the guess');
+  assert.deepEqual(linked(n), { s1: 'Ana', s2: null });
+  assert.equal(speakers.forNote(n).find((s) => s.speakerId === 's2').name, 'Zé', 'a guess with no matching voice is kept');
+  // a name the user typed is never overruled by a voice
+  const n2 = meeting([{ id: 's1', centroid: utter(ANA, 0.05, 10) }]);
+  speakers.rename(n2, 's1', 'Carla');
+  speakers.autoMatch(n2);
+  assert.deepEqual([speakers.forNote(n2)[0].name, speakers.forNote(n2)[0].voiceId], ['Carla', null]);
+});

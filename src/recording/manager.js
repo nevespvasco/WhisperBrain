@@ -22,6 +22,8 @@ const { pickTargetApp } = require('../platform/apps');
 
 const VOICE_MATCH = 0.65;     // similarity needed to recognise a saved voice
 const CARRY_MS = 3000;        // a short utterance without a usable embedding inherits the previous speaker within this gap
+const RECHECK_AT = [3, 8, 15];  // utterances of one speaker after which the saved voices are compared again while recording
+const RECHECK_EVERY = 25;      // ... and every this many after that
 const SYSTEM_HEARD = 0.0005;     // above this level (rms, 0..1) the computer's audio is known to reach us
 const SYSTEM_SILENT_MS = 30000;  // macOS: no sound at all this long on the system channel = probably a missing permission
 const DRAFT_ECHO_ACTIVE_DB = -50; // the system channel counts as speaking above this level (same as the echo check's)
@@ -227,8 +229,9 @@ class RecordingManager {
     if (!r.id) return null; // too short to say it is somebody new, and nobody it sounds like: unlabelled until the passes after Stop
     const sp = tr.speakers.find((x) => x.id === r.id);
     this.speakers.save(a.noteId, { speakerId: r.id, channel: ch, centroid: sp.centroid, count: sp.count });
-    // recognise saved voices as soon as a speaker appears, and again once we have heard them a bit more
-    if (r.isNew || sp.count === 3 || sp.count === 8) this.speakers.autoMatch(a.noteId);
+    // recognise saved voices as soon as a speaker appears, and again as their print firms up: a print of a few lines often scores
+    // below the threshold (a real call: 0.55 live, 0.88 on the whole meeting), so it is judged again every so often while they talk
+    if (r.isNew || RECHECK_AT.includes(sp.count) || sp.count % RECHECK_EVERY === 0) this.speakers.autoMatch(a.noteId);
     if (r.isNew) this.bus.publish('speakers.updated', { noteId: a.noteId });
     return r.id;
   }

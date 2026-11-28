@@ -71,9 +71,35 @@ function saidNear(name, built, line) {
   return (key.length ? key : all).some((w) => [...heard].some((h) => sameWord(w, h)));
 }
 
+// "Nimu, is this appropriate?", "thanks, Sav", "Powell said so": a name a voice says itself is the person it talks to or about. So when every line near the
+// evidence that says the name is the named voice's own line, the name counts only if one of them introduces it ("I'm Nimu",
+// "my name is Nimu", "eu sou a Inês", "Nimu here"). Matched on nameKey words, so "I'm" is "i m".
+const INTRO_BEFORE = /(?:^| )(?:i m|i am|im|my name is|my name s|name s|this is|it s|call me|eu sou|eu sou o|eu sou a|sou o|sou a|chamo me|o meu nome e|meu nome e|aqui e|aqui fala|fala o|fala a)$/;
+const INTRO_AFTER = /^(?:here|speaking|aqui|a falar)(?: |$)/;
+function introduces(text, name) {
+  const toks = words(text);
+  const key = words(name).filter((w) => w.length >= 3);
+  const want = key.length ? key : words(name);
+  for (let i = 0; i < toks.length; i++) {
+    if (!want.some((w) => sameWord(w, toks[i]))) continue;
+    if (INTRO_BEFORE.test(toks.slice(Math.max(0, i - 4), i).join(' '))) return true;
+    let j = i + 1;
+    while (j < toks.length && want.some((w) => sameWord(w, toks[j]))) j++;   // past the rest of a full name
+    if (INTRO_AFTER.test(toks.slice(j, j + 2).join(' '))) return true;
+  }
+  return false;
+}
+function onlyAddressed(name, built, line, speakerId) {
+  const key = words(name).filter((w) => w.length >= 3);
+  const want = key.length ? key : words(name);
+  const says = built.lines.filter((l) => Math.abs(l.n - line.n) <= REACH && words(l.text).some((h) => want.some((w) => sameWord(w, h))));
+  return says.length > 0 && says.every((l) => l.speakerId === speakerId && !introduces(l.text, name));
+}
+
 // reply: what the AI said. built: buildTranscript's result. skip: [{ speakerId, name }] names somebody turned down for a voice.
 // -> { found: [{ speakerId, name, line, startMs, quote }], refuted: [{ speakerId, name, reason }] }
-// refuted: names nobody said near the line given (reason 'not-said'), or given for a voice on a line it neither said nor spoke beside; found: the ones that stand.
+// refuted: names nobody said near the line given (reason 'not-said'), names the voice only says itself without introducing itself ('addressed': it
+// is talking to that person), or given for a voice on a line it neither said nor spoke beside; found: the ones that stand.
 function parseNames(reply, built, { skip = [] } = {}) {
   const out = { found: [], refuted: [] };
   const list = extractJson(reply)?.speakers;
@@ -92,6 +118,7 @@ function parseNames(reply, built, { skip = [] } = {}) {
     const near = line ? built.lines.filter((l) => Math.abs(l.n - line.n) <= REACH && l.speakerId === speakerId) : [];
     if (!line || !near.length) { out.refuted.push({ speakerId, name, reason: line ? 'far' : 'no-line' }); continue; }
     if (!saidNear(name, built, line)) { out.refuted.push({ speakerId, name, reason: 'not-said' }); continue; }
+    if (onlyAddressed(name, built, line, speakerId)) { out.refuted.push({ speakerId, name, reason: 'addressed' }); continue; }
     byVoice.set(speakerId, { speakerId, name, line: line.n, startMs: line.startMs, quote: line.text.slice(0, 120) });
   }
   // two people rarely share a name in one meeting: a name given to two voices goes to the one with more lines
