@@ -176,7 +176,7 @@ export function promptDialog(title, value = '', { ok = t('Save'), placeholder = 
 }
 
 // ---------- popover menu ----------
-let openMenu = null, openAnchor = null;
+let openMenu = null, openAnchor = null, openedAt = 0;
 // Where a popover goes: a showModal() dialog sits in the top layer and makes the rest of the page inert, so a list opened from
 // a field inside it must live inside it too or it can be seen but not clicked. position: fixed still places it on the viewport.
 const layerOf = (anchor) => anchor?.closest?.('dialog[open]') || document.body;
@@ -193,7 +193,7 @@ function claim(anchor, m, kind, label) {
   m.id ||= `wb-pop-${++popupN}`;
   if (label && !m.hasAttribute('aria-label')) m.setAttribute('aria-label', label);
   anchor.setAttribute('aria-haspopup', kind); anchor.setAttribute('aria-controls', m.id); anchor.setAttribute('aria-expanded', 'true');
-  openMenu = m; openAnchor = anchor;
+  openMenu = m; openAnchor = anchor; openedAt = performance.now();
 }
 // a field's name as a screen reader would say it: its <label> (without the field's own text when the label wraps it), else aria-label or title
 const labelOf = (el) => {
@@ -256,7 +256,8 @@ document.addEventListener('mousedown', (e) => {
   closeMenu();
 });
 window.addEventListener('resize', closeMenu);
-document.addEventListener('scroll', (e) => { if (!openMenu?.contains(e.target)) closeMenu(); }, true);
+// a scroll closes the list, except the one the opening itself caused (focusing a field that was partly out of view scrolls it into view, a moment late)
+document.addEventListener('scroll', (e) => { if (!openMenu?.contains(e.target) && performance.now() - openedAt > 300) closeMenu(); }, true);
 
 // A list to pick one value from: people, languages, any <select>. A search box appears once the list is long (20 people
 // on a call), the current value is ticked, and with `custom` whatever is typed can be used as is.

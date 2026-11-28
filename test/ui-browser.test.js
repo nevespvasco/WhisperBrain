@@ -61,6 +61,7 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   await b.clickOn('#d1');
   await b.waitFor(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 10`);
   const day = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[9].dataset.v`);
+  await settled(b, `.menu.datepick [data-v="${day}"]`);   // the list fades in: a click while it still moves lands beside the day
   await b.clickOn(`.menu.datepick [data-v="${day}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d1').value`), day);
   // inside a dialog
@@ -69,6 +70,7 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   await b.clickOn('#d2');
   await b.waitFor(`!!document.querySelector('dialog .menu.datepick') && document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 4`);
   const day2 = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[3].dataset.v`);
+  await settled(b, `.menu.datepick [data-v="${day2}"]`);
   await b.clickOn(`.menu.datepick [data-v="${day2}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d2').value`), day2);
   assert.deepEqual(b.errors, []);
