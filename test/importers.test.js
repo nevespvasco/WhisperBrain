@@ -394,6 +394,37 @@ test('docx: hostile XML is read in linear time (unclosed <w:p>, <w:t, <w:pPr, <w
   assert.throws(() => parseFile(makeZip({ 'word/document.xml': '<w:p/>' }, { lie: { 'word/document.xml': 25 * 1048576 } }), 'huge.docx'), /too large to import/);
 });
 
+test('zip lazy budget: big entries that are never read do not refuse the archive; what is read still has every cap', () => {
+  const files = { 'activity/analytics/events-2026.json': 'x'.repeat(1000), 'messages/c1/messages.json': '[]' };
+  const lying = makeZip(files, { lie: { 'activity/analytics/events-2026.json': 150 * 1048576 } });
+  assert.throws(() => readZip(lying), /too large when uncompressed/, 'the default still adds up every declared size');
+  const z = readZip(lying, { lazy: true });
+  assert.equal(z.read('messages/c1/messages.json').toString(), '[]');
+  assert.throws(() => z.read('activity/analytics/events-2026.json'), /too large when uncompressed/, 'reading the big one is refused before inflating');
+  const two = readZip(makeZip({ 'a.bin': Buffer.alloc(600_000), 'b.bin': Buffer.alloc(600_000) }), { lazy: true, maxTotal: 1_000_000 });
+  assert.equal(two.read('a.bin').length, 600_000);
+  assert.throws(() => two.read('b.bin'), /too large/, 'the budget counts what was really read');
+  const bomb = makeZip({ 'messages/c1/messages.json': Buffer.alloc(5 * 1048576, 0x20) }, { lie: { 'messages/c1/messages.json': 1000 } });
+  assert.throws(() => readZip(bomb, { lazy: true }).read('messages/c1/messages.json'), /zip bomb/);
+});
+
+test('Discord data package: the analytics files (often over 100 MB) are never read, only messages/*', () => {
+  const { importPackage } = require('../src/connectors/discord-export');
+  const { open } = require('../src/core/db');
+  const { ItemStore } = require('../src/items/store');
+  const store = new ItemStore(open(':memory:'));
+  const src = store.addSource({ kind: 'discord', name: 'Discord data package', mode: 'copy', config: { export: true } });
+  const pkg = makeZip({
+    'activity/analytics/events-2026-00000-of-00001.json': 'x'.repeat(2000),
+    'account/user.json': '{}',
+    'messages/index.json': JSON.stringify({ 111: 'general' }),
+    'messages/c111/channel.json': '{}',
+    'messages/c111/messages.json': JSON.stringify([{ ID: '9', Timestamp: '2026-11-25T10:00:00+00:00', Contents: 'hello', Attachments: '' }]),
+  }, { lie: { 'activity/analytics/events-2026-00000-of-00001.json': 400 * 1048576 } });
+  const r = importPackage(pkg, { items: store, source: src });
+  assert.deepEqual([r.channels, r.created], [1, 1]);
+});
+
 test('docx errors: not a zip, missing document.xml, zip bomb caps', () => {
   assert.throws(() => parseFile(Buffer.from('this is not a zip at all'), 'fake.docx'), /not supported|can't be opened/);
   assert.throws(() => parseFile(makeZip({ 'hello.txt': 'hi' }), 'odd.docx'), /word\/document\.xml is missing/);
