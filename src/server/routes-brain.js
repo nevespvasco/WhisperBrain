@@ -146,6 +146,7 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   });
   r('POST', '/api/outbound/:id/approve', async ({ params, body }) => app.actions.approve(params.id, { confirmRisky: body?.confirmRisky === true }));
   r('POST', '/api/outbound/:id/reject', async ({ params }) => app.actions.reject(params.id));
+  r('POST', '/api/outbound/:id/resolve', async ({ params, body }) => app.actions.resolveInterrupted(params.id, { done: body?.done === true }));   // an interrupted one, after the person checked
   r('POST', '/api/inbox/supersede/:old/:new/:decision', async ({ params }) => (params.decision === 'confirm' ? app.supersession.confirm(params.old, params.new) : params.decision === 'reject' ? app.supersession.reject(params.old, params.new) : (() => { throw new HttpError(400, 'decision must be confirm or reject'); })()));
   r('POST', '/api/inbox/noreply/:id/dismiss', async ({ params }) => { app.inbox.dismissNoReply(params.id); return { ok: true }; });
   r('GET', '/api/assertions', async ({ query }) => app.assertions.list({ state: query.state ? String(query.state).split(',') : undefined, kind: query.kind || undefined, noteId: query.noteId || undefined, limit: Math.min(500, Number(query.limit) || 200) }));

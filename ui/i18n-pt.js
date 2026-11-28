@@ -1923,4 +1923,8 @@ export const PT = {
   'Also Shift + mouse wheel over the teleprompter. The text stays fully visible.': 'Também com Shift + roda do rato sobre o teleprompter. O texto fica sempre bem visível.',
   'Mirror the text': 'Espelhar o texto',
   'For a teleprompter glass that reflects the screen.': 'Para um vidro de teleprompter que reflete o ecrã.',
+  'Outcome unknown — check before retrying': 'Resultado desconhecido — verifique antes de tentar de novo',
+  'The app closed while this was being done, so it may or may not have happened. It will not be tried again by itself.': 'A aplicação fechou enquanto isto estava a ser feito, por isso pode ou não ter acontecido. Não será tentado de novo automaticamente.',
+  'It was done': 'Foi feito',
+  'It was not done': 'Não foi feito',
 };

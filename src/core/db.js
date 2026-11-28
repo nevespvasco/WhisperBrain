@@ -708,6 +708,33 @@ const MIGRATIONS = [
   ALTER TABLE actions ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]';
   ALTER TABLE actions ADD COLUMN args_hash TEXT NOT NULL DEFAULT '';
   `,
+  // v29: an approved action the app was running when it quit or crashed: whether it reached the service is unknown, so it is neither
+  // retried nor shown as failed. 'interrupted' waits in the Inbox for the person to check (src/brain/actions.js recoverInterrupted).
+  // Rebuilt to change the CHECK (safe since migrations run with foreign keys off, see migrate()); same rows, same columns.
+  `
+  CREATE TABLE actions_v3 (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    args TEXT NOT NULL DEFAULT '{}',
+    state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending', 'running', 'interrupted', 'rejected', 'done', 'failed', 'expired')),
+    origin TEXT NOT NULL DEFAULT 'user',
+    assertion_id TEXT REFERENCES assertions(id) ON DELETE SET NULL,
+    result TEXT,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER,
+    expires_at INTEGER,
+    flags TEXT NOT NULL DEFAULT '[]',
+    provenance TEXT NOT NULL DEFAULT '[]',
+    args_hash TEXT NOT NULL DEFAULT ''
+  );
+  INSERT INTO actions_v3 (id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at, expires_at, flags, provenance, args_hash)
+    SELECT id, kind, title, args, state, origin, assertion_id, result, error, created_at, decided_at, expires_at, flags, provenance, args_hash FROM actions;
+  DROP TABLE actions;
+  ALTER TABLE actions_v3 RENAME TO actions;
+  CREATE INDEX actions_state ON actions(state);
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

@@ -254,6 +254,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   };
   const actions = new Actions({ db: conn, bus, handlers: ALL_HANDLERS, allowed: actionAllowed, onRun: ({ kind, args, ok, error }) => accessLog.add({ sourceId: args?.sourceId || null, op: 'action.run', detail: `${kind} ${ok ? 'done' : `failed: ${String(error).slice(0, 100)}`}` }),
     deps: { settings, items, get googleAccounts() { return googleAccounts; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, get integrations() { return integrations; } } });
+  actions.recoverInterrupted();   // nothing runs yet: what is still 'running' was cut off by a quit or a crash
   const timeline = new Timeline({ db: conn, notes, entities: knowledge.entities, items, projects, index: chunkIndex, allow: () => true });
   const rules = new Rules({ db: conn, assertions, actions, reminders, notes, bus });
   rules.attach();
