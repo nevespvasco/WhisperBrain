@@ -111,3 +111,35 @@ test('script: an abort stops it, and a server that says nothing in time fails wi
   await assert.rejects(p, { name: 'AbortError' });
   await assert.rejects(produceScript({ llm: llmHang, messages: [], firstTokenMs: 30 }), { code: 'slow' });
 });
+
+test('script: the first-token timer starts when the AI slot is granted, not while the request waits behind other work', async () => {
+  let grant;
+  const granted = new Promise((r) => { grant = r; });
+  // waits 80 ms for its slot (longer than firstTokenMs), then answers at once
+  const llm = { stream: async function* (_m, { onStart, signal }) {
+    await Promise.race([granted, new Promise((_, rej) => signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })), { once: true }))]);
+    onStart?.();
+    yield 'Fine. ';
+  } };
+  const p = produceScript({ llm, messages: [], firstTokenMs: 40 });
+  setTimeout(grant, 80);
+  assert.equal((await p).text, 'Fine.');
+});
+
+test('script: a slot that never comes still fails as "slow" after waitMs', async () => {
+  const llm = { stream: async function* (_m, { signal }) { await new Promise((_, rej) => signal.addEventListener('abort', () => rej(Object.assign(new Error('aborted'), { name: 'AbortError' })))); yield 'never'; } };
+  await assert.rejects(produceScript({ llm, messages: [], firstTokenMs: 10_000, waitMs: 40 }), { code: 'slow' });
+});
+
+test("script: asks for no thinking, and a model's thinking counts as having started", async () => {
+  let opts;
+  const llm = { stream: async function* (_m, o) {
+    opts = o;
+    o.onStart?.();
+    for (let i = 0; i < 4; i++) { await new Promise((r) => setTimeout(r, 20)); o.onProgress?.(); }   // 80 ms of thinking
+    yield 'Done. ';
+  } };
+  const r = await produceScript({ llm, messages: [], firstTokenMs: 50 });
+  assert.equal(r.text, 'Done.');
+  assert.equal(opts.reasoning, 'off');
+});

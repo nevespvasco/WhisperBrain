@@ -100,7 +100,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const scheduler = new LlmScheduler(llm, { onRun: (r) => aiRuns.record(r) });   // every AI call is noted (never its text): the egress log
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const briefings = new Briefings({ db: conn, bus });
-  const ai = new AiService({ notes, templates, settings, llm: scheduler.client('chat'), bus, knowledge });
+  const ai = new AiService({ notes, templates, settings, llm: scheduler, bus, knowledge });   // its own lanes: summary, background, chat
   const translator = new Translator({ notes, settings, llm: scheduler.client('translation'), bus });
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
@@ -128,7 +128,8 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // and action items. Each step is its own job and queues the next one; each is safe to run twice. Failures are reported as
   // before (a warning or a "failed" event) and the chain goes on, exactly like the in-memory version it replaces.
   const jobs = new JobQueue(conn, { bus });
-  const runner = new JobRunner({ queue: jobs, onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
+  // the AI jobs (the 'main' lane) wait while the live assistant holds the AI queue, and their deadline with them (src/jobs/runner.js)
+  const runner = new JobRunner({ queue: jobs, paused: (lane) => lane === 'main' && scheduler.isHeld(), onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
   const NEXT = { 'note.names': 'note.summarize', 'note.summarize': 'note.insights' };
   const chain = (step, noteId, payload, enqueue) => { if (NEXT[step]) enqueue(NEXT[step], { noteId, ...payload }, { key: noteId }); };
   runner.register('note.names', async ({ noteId }, { enqueue }) => {
@@ -169,11 +170,11 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // carries the exact words it rests on, checked in code against the transcript, and waits for a person.
   const reminders = new Reminders({ db: conn, bus });
   const assertions = new Assertions({ db: conn, notes, entities: knowledge.entities, settings, reminders, bus });
-  runner.register('note.assertions', async ({ noteId }) => {
+  runner.register('note.assertions', async ({ noteId }, { signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     if (!ai.configured()) return { skipped: 'no AI server' };
     if (!mayShare('note', noteId)) return { added: 0, dropped: 0, windows: 0, skipped: 'local-only' };   // kept on this computer
-    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId);
+    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId, { signal });   // the job's deadline reaches the AI calls
   });
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
@@ -186,7 +187,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
-  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel') });
+  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel'), onRun: (r) => aiRuns.record(r) });   // in the egress ledger too
   const chunkIndex = new ChunkIndex({ db: conn, notes, items, embedder });
   account.chunkIndex = chunkIndex; account.dbFile = path.join(dataDir, 'whisperbrain.sqlite');
   // What may be shown to the AI server in use (src/access/grants.js): an item by its own and its source's grant, a meeting by the

@@ -66,6 +66,14 @@ The two styles (*Settings → Assistant → Style*):
 - **Bullet points** (the default): 2 to 4 short points to glance at while you talk.
 - **Spoken reply**: a first-person reply you can say aloud, for example when you present a project or answer a client's question on the call.
 
+## Sharing one AI server
+
+A local server usually answers one request at a time, and the summary of the previous meeting, names read off the meeting window, translations and term cards all want it too. So, while the assistant helps a recording:
+- **Background work waits.** Work for other meetings (their notes, topics, decisions and commitments, the search index) starts nothing new until you press Stop or switch the assistant off. The live summary, term cards, live translation and names from the meeting window still run: they are about this call. A summary you asked for on screen still runs too.
+- **A question comes first.** When a suggestion is needed and the server is busy with a summary, a translation or background work, that request is stopped and asked again right after. An answer you are reading in Ask is never stopped.
+- **No thinking first.** Suggestions, the live summary, term cards and other short structured requests ask the server not to "think" before answering (Ollama: `reasoning_effort: none`), so a reasoning model such as qwen3 does not miss the first-words limit.
+- **Time limits.** A suggestion that has not started 15 s after the server took it (or 60 s waiting for the server) fails with *did not start answering in time*. Any request whose server sends nothing for a minute once it has started (five minutes for the first byte) is stopped with a clear error.
+
 ## Privacy
 
 - **Only a local AI server is used, unless you allow another.** Help runs automatically only when your AI server is on this computer. *Allow an AI server that is not on this computer* must be switched on before what is said on a call is sent anywhere. An organisation's `requireLocalLlm` policy still applies.

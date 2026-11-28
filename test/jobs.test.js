@@ -273,3 +273,61 @@ test('a backup is a consistent copy of the database in the chosen folder; only t
   assert.ok(!kept.some((b) => b.name.includes('2026-11-01')));
   assert.equal(fs.statSync(kept[0].file).mode & 0o077, 0, 'readable by the owner only');
 });
+
+test('a job gets an abort signal and a deadline: a stuck handler is aborted, the attempt fails, and the lane moves on', async () => {
+  const { DEADLINE_MS } = require('../src/jobs/runner');
+  assert.equal(DEADLINE_MS, 15 * 60_000, 'generous by default');
+  const q = new JobQueue(open(':memory:'));
+  const errors = [];
+  const r = new JobRunner({ queue: q, onError: (job, err) => errors.push([job?.kind, err.code]) });
+  let seen;
+  // honours the signal
+  r.register('stuck', (p, { signal }) => { seen = signal; return new Promise((_, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true })); }, { deadlineMs: 40 });
+  // ignores it: the runner still stops waiting for it
+  r.register('deaf', () => new Promise(() => {}), { deadlineMs: 40 });
+  r.register('next', async (p, { signal }) => { assert.equal(signal.aborted, false); return 'ran'; });
+  const a = r.enqueue('stuck', {}, { maxAttempts: 1 });
+  const b = r.enqueue('deaf', {}, { maxAttempts: 1 });
+  const c = r.enqueue('next', {});
+  r.start();
+  await r.idle();
+  assert.equal(seen.aborted, true);
+  assert.equal(q.get(a.id).state, 'failed');
+  assert.match(q.get(a.id).error, /longer than/);
+  assert.equal(q.get(b.id).state, 'failed');
+  assert.equal(q.get(c.id).state, 'done');
+  assert.deepEqual(errors, [['stuck', 'deadline'], ['deaf', 'deadline']]);
+  await r.stop();
+});
+
+test('a paused lane claims nothing new, and a deadline that falls while paused waits for the pause to end', async () => {
+  const q = new JobQueue(open(':memory:'));
+  let paused = true;
+  const r = new JobRunner({ queue: q, paused: (lane) => paused && lane === 'main', pausePollMs: 20 });
+  const ran = [];
+  r.register('ai', async () => { ran.push('ai'); });
+  r.register('files', async () => { ran.push('files'); }, { lane: 'sources' });
+  r.enqueue('ai', {});
+  r.enqueue('files', {});
+  r.start();
+  await new Promise((res) => setTimeout(res, 60));
+  assert.deepEqual(ran, ['files'], 'only the lane that is not paused ran');
+  paused = false;
+  await new Promise((res) => setTimeout(res, 60));
+  assert.deepEqual(ran, ['files', 'ai'], 'picked up again once the pause ends, with nothing else to wake it');
+  // already running when the pause starts: its deadline waits
+  let signal;
+  const g = { open: null };
+  r.register('long', (p, ctx) => { signal = ctx.signal; return new Promise((res) => { g.open = res; }); }, { deadlineMs: 30 });
+  const job = r.enqueue('long', {});
+  await new Promise((res) => setTimeout(res, 10));
+  paused = true;
+  await new Promise((res) => setTimeout(res, 90));
+  assert.equal(signal.aborted, false, 'not stopped while paused');
+  paused = false;
+  await new Promise((res) => setTimeout(res, 60));
+  assert.equal(signal.aborted, true, 'stopped once the pause is over and it is still stuck');
+  assert.equal(q.get(job.id).error, 'long took longer than 30 ms and was stopped.');
+  g.open();
+  await r.stop();
+});

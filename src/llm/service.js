@@ -12,6 +12,7 @@ const { Redactor } = require('../access/redact');
 const { isLocalUrl } = require('../core/policy');
 const { queryWords } = require('../search/index');
 const { workspaceRecords, sourceCoverage, LABEL } = require('./workspace');
+const { fitBudget } = require('./budget');
 
 const HISTORY_TURNS = 10;
 // Across all meetings each question brings its own meetings: older turns are kept only so a follow-up makes sense, and fewer of
@@ -20,6 +21,8 @@ const GLOBAL_HISTORY_TURNS = 3;
 // Output caps for the enhanced notes: the condensed notes of one part, and the final notes
 const PARTIAL_MAX_TOKENS = 1024;
 const SUMMARY_MAX_TOKENS = 4096;
+// The instructions and the meeting header of a prompt, in tokens, kept free of material when the server's context is known (budget())
+const INSTRUCTION_TOKENS = 1000;
 
 // A glossary "definition" that only says a term was used, or guesses ("A term used by Speaker 1, possibly referring to a specific
 // item or concept"): the model did not know what it means, so it is not kept. English and Portuguese.
@@ -61,7 +64,14 @@ function restoring(red, onDelta) {
 }
 
 class AiService {
-  constructor({ notes, templates, settings, llm, bus, knowledge }) { Object.assign(this, { notes, templates, settings, llm, bus, knowledge }); }
+  // llm: an LlmScheduler (the notes and titles on its 'summary' lane, the meeting analysis on 'background', Ask, topic briefs, reply
+  // drafts and the reranking of Ask's excerpts on 'chat': somebody is waiting for those), or one plain client for everything.
+  constructor({ notes, templates, settings, llm, bus, knowledge }) {
+    Object.assign(this, { notes, templates, settings, bus, knowledge });
+    const lane = (p) => (typeof llm?.client === 'function' ? llm.client(p) : llm);
+    this.llm = lane('chat');
+    this.lanes = { summary: lane('summary'), background: lane('background') };
+  }
 
   configured() { return !!this.settings.get('llm').baseUrl; }
 
@@ -82,6 +92,7 @@ class AiService {
     let data = null, mode = 'local', error = null;
     if (!local && this.configured() && this.mayShareNote(noteId)) {   // a local-only meeting gets the offline extraction instead
       try {
+        await this.refreshContext(signal);
         const budget = this.budget();
         let transcript = prompts.formatTranscript(this.notes.segments(noteId));
         if (transcript.length > budget) {
@@ -89,7 +100,7 @@ class AiService {
           transcript = retrieve.pick(note.title + ' ' + note.body + ' ' + note.summary, lines, Math.floor(budget * 0.7)).map((w) => w.text).join('\n…\n');
         }
         const messages = ins.insightsMessages({ note, transcript, existingTopics: k.topics({ limit: 120 }).map((t) => t.name), existingTerms: k.glossary().map((g) => g.term), userName: this.settings.get('userName') });
-        data = ins.parseInsights(await this.llm.complete(messages, { signal, temperature: 0.1, reasoning: 'off' }));
+        data = ins.parseInsights(await this.lanes.background.complete(messages, { signal, temperature: 0.1, reasoning: 'off' }));
         if (data) mode = 'llm';
         else error = 'The model did not return valid JSON; used offline extraction instead.';
       } catch (e) {
@@ -113,6 +124,7 @@ class AiService {
   async topicBrief(topicId, { onDelta, signal } = {}) {
     const t = this.knowledge.topic(topicId);
     if (!t) throw new Error('Topic not found');
+    await this.refreshContext(signal);
     const budget = this.budget();
     const parts = [];
     for (const n of [...t.notes].reverse()) {
@@ -130,7 +142,16 @@ class AiService {
     return { text: out };
   }
 
-  budget() { return Math.max(2000, this.settings.get('llm').contextChars); }
+  // Characters of material a prompt may carry: the setting, and within the server's context when it says what that is (src/llm/budget.js).
+  // replyTokens: the reply's cap (the client's default 4096 for most calls).
+  budget(replyTokens = SUMMARY_MAX_TOKENS) {
+    return fitBudget({ setting: Math.max(2000, this.settings.get('llm').contextChars), contextTokens: this.contextTokens, systemTokens: INSTRUCTION_TOKENS, replyTokens });
+  }
+
+  // What context the server runs the model with (Ollama only; null otherwise or when unknown, which keeps the setting). Cached by the client.
+  async refreshContext(signal) {
+    try { this.contextTokens = (await this.llm.contextLength?.({ signal })) || null; } catch { this.contextTokens = null; }
+  }
 
   // Generates (and stores) the enhanced notes. Long transcripts are reduced chunk by chunk first.
   // language: write the notes in it (an ISO code); left out, the language chosen in Settings → Translation (when translation is on),
@@ -142,7 +163,9 @@ class AiService {
     const template = this.templates.get(templateId || note.templateId || this.settings.get('defaultTemplate')) || this.templates.get('general');
     const segments = this.notes.segments(noteId);
     if (!note.body.trim() && !segments.length) throw new Error('Nothing to summarize yet: add notes or record a transcript first.');
+    await this.refreshContext(signal);
     const budget = this.budget();
+    const live = !!onDelta;   // somebody is watching it being written: it runs even while the live assistant holds background work
     let transcript = prompts.formatTranscript(segments);
     if (transcript.length > budget) {
       const chunks = prompts.chunkText(transcript, Math.floor(budget * 0.8));
@@ -150,7 +173,7 @@ class AiService {
       for (let i = 0; i < chunks.length; i++) {
         onStage?.({ stage: 'reduce', index: i + 1, total: chunks.length });
         // Capped: a small local model can fall into a repetition loop and, with context shifting on, never stop by itself
-        const part = await this.llm.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1, maxTokens: PARTIAL_MAX_TOKENS, frequencyPenalty: 0.3 });
+        const part = await this.lanes.summary.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1, maxTokens: PARTIAL_MAX_TOKENS, frequencyPenalty: 0.3, live });
         partials.push(dropRepeatedLines(part));
       }
       transcript = `(The transcript was long; these are condensed notes of each part, in order.)\n\n${partials.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n')}`;
@@ -160,17 +183,17 @@ class AiService {
     const wanted = language ?? (tr.enabled ? tr.notesLanguage : '');
     const messages = prompts.summaryMessages({ note, transcript, template, userName: this.settings.get('userName'), language: isLanguage(wanted) ? wanted : '' });
     let summary = '';
-    for await (const d of this.llm.stream(messages, { signal, maxTokens: SUMMARY_MAX_TOKENS })) { summary += d; onDelta?.(d); }
+    for await (const d of this.lanes.summary.stream(messages, { signal, maxTokens: SUMMARY_MAX_TOKENS, live })) { summary += d; onDelta?.(d); }
     summary = summary.trim();
     if (!summary) throw new Error('The model returned an empty summary.');
     this.notes.update(noteId, { summary, templateId: template.id });
-    if (!note.title.trim()) await this.autoTitle(noteId, { summary, transcript, signal }).catch(() => {});
+    if (!note.title.trim()) await this.autoTitle(noteId, { summary, transcript, signal, live }).catch(() => {});
     return this.notes.get(noteId);
   }
 
   // A title from the summary, else the user's notes, else the transcript. Throws (status 422/502) rather than returning
   // the note untouched, so "Generate a title" can say why nothing changed.
-  async autoTitle(noteId, { summary, transcript, signal } = {}) {
+  async autoTitle(noteId, { summary, transcript, signal, live = true } = {}) {
     const note = this.notes.get(noteId);
     if (!note) return null;
     this.assertShareable(noteId);
@@ -178,7 +201,7 @@ class AiService {
     if (!(summary ?? note.summary ?? '').trim() && !(note.body || '').trim() && !transcript.trim()) {
       throw Object.assign(new Error('Nothing to make a title from yet: this meeting has no summary, notes or transcript.'), { status: 422 });
     }
-    let title = await this.llm.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript }), { signal, temperature: 0.2, maxTokens: 40, reasoning: 'off' });
+    let title = await this.lanes.summary.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript }), { signal, temperature: 0.2, maxTokens: 40, reasoning: 'off', live });
     title = title.split('\n')[0].replace(/^["'#*\s]+|["'.\s]+$/g, '')
       .replace(/^(?:meeting\s+)?title\s*:\s*|^(?:t[íi]tulo(?:\s+da\s+reuni[ãa]o)?)\s*:\s*/i, '').replace(/^["'*\s]+|["'*\s]+$/g, '').slice(0, 100);   // "Meeting Title: …"
     if (!title) throw Object.assign(new Error('The AI did not return a title. Try again, or pick another model in Settings → AI.'), { status: 502 });
@@ -239,6 +262,13 @@ class AiService {
     return { text: out.trim() };
   }
 
+  // An item record (from the index or the workspace records): is it a mail from somebody the user does not know?
+  itemUntrusted(e) {
+    if (e?.kind !== 'item') return false;
+    const it = this.items?.item?.(e.id);
+    return this.isUntrusted(this.items?.source?.(e.sourceId ?? it?.sourceId)?.kind, it?.meta);
+  }
+
   // Is the sender of an item somebody the user knows (met, or merged by address, or at their own domain)? `senderKnown(email)` is set by the app.
   isUntrusted(sourceKind, meta) {
     if (!this.senderKnown || !['gmail', 'outlook', 'imap', 'mbox'].includes(sourceKind)) return false;
@@ -287,6 +317,7 @@ class AiService {
   async chat(noteId, question, { onDelta, signal } = {}) {
     const q = String(question || '').trim();
     if (!q) throw new Error('Empty question');
+    await this.refreshContext(signal);
     if (noteId) this.assertShareable(noteId);
     let context, sources, ex = [], searched = [];
     if (noteId) ({ context, sources } = this.noteContext(noteId, q));
@@ -300,7 +331,7 @@ class AiService {
       const found = await this.excerpts(q, { skip: new Set(sources.map((s) => s.id)), limit: 8 });
       const live = await this.liveExcerpts(q, { have: found.length, signal });
       searched = live.searched;
-      ex = [...found, ...records, ...live.excerpts].map((e, i) => ({ ...e, n: i + 1 }));
+      ex = [...found, ...records, ...live.excerpts].map((e, i) => ({ ...e, n: i + 1, untrusted: e.untrusted ?? this.itemUntrusted(e) }));   // workspace records too
       const extra = this.excerptContext(ex);
       if (extra) context += `\n\n${extra}`;
       const cover = (() => { try { return sourceCoverage(q, { items: this.workspace?.items }); } catch { return ''; } })();

@@ -14,7 +14,7 @@ const KIND = {
   'source.sync': 'Reading a folder of notes',
 };
 // which part of the app asked the AI
-const LANE = { assistant: 'Live assistant', chat: 'Questions and notes', summary: 'Summaries', translation: 'Translation', background: 'Topics, names and more' };
+const LANE = { assistant: 'Live assistant', chat: 'Questions and notes', summary: 'Summaries', translation: 'Translation', background: 'Topics, names and more', embedding: 'Search by meaning' };
 const STATE = {
   queued: ['', 'Waiting'], running: ['accent', 'Running'], done: ['ok', 'Done'], failed: ['danger', 'Failed'], cancelled: ['', 'Cancelled'],
 };

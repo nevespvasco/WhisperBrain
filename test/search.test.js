@@ -105,6 +105,9 @@ test('with an embedding model, a question finds what it means, not only what it 
   const r = await app.chunkIndex.embedPending({ batch: 16 });
   assert.equal(r.embedded, 2);
   assert.equal(app.chunkIndex.stats().vectors, true);
+  const run = app.aiRuns.list().find((x) => x.lane === 'embedding');
+  assert.ok(run, 'what went to the embedding server is in the egress ledger');
+  assert.deepEqual([run.model, run.ok, run.charsIn > 0], ['fake-embed', true, true]);
   const hits = await app.chunkIndex.search('what is the price');
   assert.equal(hits[0].title, 'Costs');
   assert.deepEqual(hits[0].via, ['meaning']);
