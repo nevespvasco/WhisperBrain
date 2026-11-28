@@ -145,7 +145,11 @@ export function modal({ title = '', body = '', foot = '', wide = false, cls = ''
     let value;
     const close = (v) => { value = v; d.close(); };
     d.addEventListener('close', () => { d.remove(); resolve(value); });
-    d.addEventListener('click', (e) => { if (e.target === d || e.target.closest('[data-close]')) close(undefined); });
+    // A click on the backdrop closes the dialog, but only when the press began there too: a list that opens under the pointer (a date or
+    // select list that drops over the field) takes the release, and the browser then reports the click on the dialog itself.
+    let pressedBackdrop = false;
+    d.addEventListener('mousedown', (e) => { pressedBackdrop = e.target === d; });
+    d.addEventListener('click', (e) => { const backdrop = e.target === d && pressedBackdrop; pressedBackdrop = false; if (backdrop || e.target.closest('[data-close]')) close(undefined); });
     d.showModal();
     onMount?.(d, close);
   });

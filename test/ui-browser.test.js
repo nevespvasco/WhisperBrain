@@ -67,14 +67,10 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   // inside a dialog
   await openModal(b, '<input type="date" id="d2">');
   await settled(b, '#d2');
-  // remembers who removes the list, so a failure says what closed it
-  await b.evaluate(`(() => { window.__log = []; for (const t of ['mousedown', 'click', 'cancel', 'close', 'keydown', 'resize', 'focusout']) window.addEventListener(t, (e) => window.__log.push(t + ':' + ((e.target && (e.target.tagName || e.target.nodeName)) || '') + '.' + ((e.target && e.target.className) || '')), true); })()`);
-  await b.evaluate(`(() => { window.__closed = []; const rm = Element.prototype.remove; Element.prototype.remove = function () { if (this.classList && this.classList.contains('datepick')) window.__closed.push(new Error().stack.split('\\n').slice(1, 6).join(' <- ')); return rm.call(this); }; })()`);
   await b.clickOn('#d2');
   await b.waitFor(`!!document.querySelector('dialog .menu.datepick') && document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 4`);
   const day2 = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[3].dataset.v`);
   await settled(b, `.menu.datepick [data-v="${day2}"]`);
-  if (!(await b.evaluate(`!!document.querySelector('.menu.datepick')`))) assert.fail('the calendar closed by itself: ' + (await b.evaluate('JSON.stringify({ closed: window.__closed, events: window.__log, dialogOpen: !!document.querySelector("dialog[open]"), anyDialog: document.querySelectorAll("dialog").length, d2: !!document.querySelector("#d2"), w: innerWidth, h: innerHeight })')));
   await b.clickOn(`.menu.datepick [data-v="${day2}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d2').value`), day2);
   assert.deepEqual(b.errors, []);
@@ -213,4 +209,26 @@ test('long lists: a page list shows a page and "Show more" adds the next; a list
   const panel = await b.evaluate(`(() => { const l = document.querySelector('#long-panel .list'); return [l.classList.contains('scroll-list'), l.clientHeight <= 441, l.scrollHeight > l.clientHeight]; })()`);
   assert.deepEqual(panel, [true, true, true], 'the panel list scrolls inside a fixed height');
   assert.deepEqual(b.errors, []);
+});
+
+test('pickers: a list that opens under the pointer takes the release without closing the dialog it is in', { skip, timeout: 60000 }, async (t) => {
+  const { b } = await boot(t);
+  await openModal(b, '<input type="date" id="d3">');
+  await settled(b, '#d3');
+  // press on the field, release over the list that opened there: the browser reports the click on the dialog itself
+  const [x, y] = await b.centre('#d3');
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+  await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1 });
+  await b.waitFor(`!!document.querySelector('dialog .menu.datepick')`);
+  await settled(b, '.menu.datepick');
+  const [mx, my] = await b.centre('.menu.datepick');
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: mx, y: my, button: 'left', clickCount: 1 });
+  await sleep(150);
+  assert.equal(await b.evaluate(`!!document.querySelector('dialog[open]')`), true, 'the dialog is still open');
+  // and a real click on the backdrop still closes it
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 3, y: 3 });
+  await b.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 3, y: 3, button: 'left', clickCount: 1 });
+  await b.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 3, y: 3, button: 'left', clickCount: 1 });
+  await sleep(200);
+  assert.equal(await b.evaluate(`!!document.querySelector('dialog[open]')`), false, 'a click on the backdrop closes the dialog');
 });
