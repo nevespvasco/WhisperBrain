@@ -12,6 +12,9 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   };
   const r = (method, pattern, fn) => add(method, pattern, wrap(fn));
   const source = (id) => { const s = app.items.source(id); if (!s) throw new HttpError(404, 'source not found'); return s; };
+  // Aborts when the page that asked goes away before the answer is sent, so its AI request stops holding the queue. The response's
+  // 'close' (not the request's: that one fires once the body has been read) tells a dropped connection from a finished reply.
+  const gone = (res) => { const ac = new AbortController(); res?.on?.('close', () => { if (!res.writableFinished) ac.abort(); }); return ac.signal; };
 
   // ---- sources ----
   r('GET', '/api/sources', async () => app.sources.view());
@@ -170,19 +173,19 @@ module.exports = function brainRoutes(add, app, { HttpError, readBody }) {
   r('POST', '/api/reminders', async ({ body }) => { const b = object(body); if (!b.text || !Number(b.dueAt)) throw new HttpError(400, 'text and dueAt are required'); return app.reminders.create({ text: b.text, dueAt: Number(b.dueAt) }); });
   r('POST', '/api/reminders/:id/snooze', async ({ params, body }) => app.reminders.snooze(params.id, Number(body?.ms) || 3600_000));
   r('POST', '/api/reminders/:id/:state', async ({ params }) => app.reminders.setState(params.id, params.state === 'dismiss' ? 'dismissed' : params.state));
-  r('POST', '/api/brief', async ({ body }) => {
+  r('POST', '/api/brief', async ({ body, res }) => {
     const b = object(body);
     const brief = await app.briefs.build({ title: b.title || '', start: b.start || null, attendees: Array.isArray(b.attendees) ? b.attendees : [] }, { live: b.live === true });
     // optional: a model phrases the facts (only the facts, each cited); without a server, or when it cites nothing, the facts stand alone
-    if (b.narrate && !brief.empty && app.ai.configured()) { try { brief.narrative = await require('../brain/brief').narrate(app.scheduler.client('chat'), brief, { mayShare: app.mayShare }); } catch { brief.narrative = null; } }
+    if (b.narrate && !brief.empty && app.ai.configured()) { try { brief.narrative = await require('../brain/brief').narrate(app.scheduler.client('chat'), brief, { mayShare: app.mayShare, signal: gone(res) }); } catch { brief.narrative = null; } }
     return brief;
   });
 
   // ---- rules in plain words: parsed by the AI into a fixed structure, previewed, saved; they can only propose ----
   r('GET', '/api/rules', async () => app.rules.list());
-  r('POST', '/api/rules/parse', async ({ body }) => {
+  r('POST', '/api/rules/parse', async ({ body, res }) => {
     if (!app.ai.configured()) throw new HttpError(412, 'Connect an AI model first (Settings → AI).');
-    const out = await app.rules.parse(app.scheduler.client('chat'), object(body).text);
+    const out = await app.rules.parse(app.scheduler.client('chat'), object(body).text, { signal: gone(res) });
     return { ...out, preview: app.rules.preview(out.spec) };
   });
   r('POST', '/api/rules/preview', async ({ body }) => { const { validateSpec, explain } = require('../brain/rules'); const spec = validateSpec(object(body).spec); return { spec, explain: explain(spec), preview: app.rules.preview(spec) }; });

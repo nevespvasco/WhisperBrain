@@ -475,3 +475,32 @@ test('rules in plain words: only a fixed structure is accepted, a rule can only 
   app.assertions.decide(dated.id, 'accept');
   assert.ok(app.reminders.upcoming(7).some((r) => r.text === 'Tomorrow: Dated thing'));
 });
+
+test('the brief narration and rule parsing stop their AI request when the page that asked goes away', async (t) => {
+  const http = require('node:http');
+  const app = await boot(t);
+  const seen = { asked: 0, closed: 0 };
+  const llmSrv = http.createServer((req, res) => {
+    if (req.url.endsWith('/models')) { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ data: [{ id: 'm' }] })); }
+    seen.asked++;
+    res.on('close', () => { seen.closed++; });   // never answers: only the app giving up closes it
+  });
+  await new Promise((r) => llmSrv.listen(0, '127.0.0.1', r));
+  t.after(() => { llmSrv.closeAllConnections(); llmSrv.close(); });
+  app.settings.update({ llm: { ...app.settings.get('llm'), baseUrl: `http://127.0.0.1:${llmSrv.address().port}/v1`, model: 'm' } });
+  meeting(app, 'Pricing notes', LINES);
+  app.chunkIndex.syncBatch(50);   // so the brief finds it as related
+  const srv = createServer(app, { uiDir: path.join(ROOT, 'ui') });
+  const { port, token } = await srv.listen(0);
+  t.after(() => srv.close());
+  const until = async (fn) => { const t0 = Date.now(); while (!fn()) { if (Date.now() - t0 > 2000) throw new Error('timed out'); await new Promise((r) => setTimeout(r, 10)); } };
+  for (const [p, body] of [['/api/rules/parse', { text: 'when a meeting mentions pricing, remind me' }], ['/api/brief', { title: 'Pricing', attendees: [], narrate: true }]]) {
+    const before = { ...seen };
+    const ac = new AbortController();
+    const req = fetch(`http://127.0.0.1:${port}${p}`, { method: 'POST', signal: ac.signal, headers: { Cookie: `wb_token=${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).catch(() => null);
+    await until(() => seen.asked > before.asked);
+    ac.abort();
+    await req;
+    await until(() => seen.closed > before.closed);
+  }
+});
