@@ -19,6 +19,17 @@ asarUnpack:
   - "**/node_modules/sqlite-vec-*/**"   # the native extension must be a real file on disk to be loaded
   # the owned speaker pipeline runs the segmentation model with onnxruntime-node (a .node binding that loads libonnxruntime beside it)
   - "**/node_modules/onnxruntime-node/**"
+# Electron fuses, flipped in the packaged binary right before signing (they cannot be changed by a flag or an environment variable
+# later). runAsNode stays on: the speech and speaker workers are fork()ed with ELECTRON_RUN_AS_NODE=1 (src/asr/engine.js,
+# src/speakers/diarizer.js, src/speakers/owned/index.js). The asar integrity check applies on macOS and Windows; files in
+# app.asar.unpacked (the native modules above) are allowed by onlyLoadAppFromAsar, which only decides where the app's code comes from.
+electronFuses:
+  runAsNode: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+  resetAdHocDarwinSignature: true   # unsigned macOS builds: re-sign ad hoc after the flip, or Apple silicon refuses to start the app
 extraResources:
   - from: resources
     to: resources

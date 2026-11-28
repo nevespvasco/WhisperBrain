@@ -51,8 +51,14 @@ validation off for the native speech engine, microphone, audio input, Apple even
 - Gatekeeper and notarization: `spctl --assess --type execute -vv WhisperBrain.app` and `xcrun stapler validate WhisperBrain.dmg`.
 - The system-audio permission is attributed to the *responsible process*. The tap helper runs as a child of the app, so the grant
   should be the app's; this needs trying on a Mac with a signed build, since an unsigned or ad-hoc build can behave differently.
-- `com.apple.security.cs.disable-library-validation` is needed while the speech engine ships third-party dylibs; it weakens the
-  hardened runtime and should be dropped if they are ever re-signed with the project's team ID.
+- `com.apple.security.cs.disable-library-validation` is kept while the speech engine ships third-party dylibs (sherpa-onnx,
+  onnxruntime, sqlite-vec, unsigned as published); it weakens the hardened runtime. When a Developer ID is set up, electron-builder
+  (osx-sign) signs every Mach-O file in the bundle, `app.asar.unpacked` included, with the team ID, so try a signed build without
+  it (`codesign -d --entitlements - WhisperBrain.app`, then record a meeting and run the owned speaker pipeline) and drop it if
+  everything still loads.
+- Electron fuses (`electronFuses` in `electron-builder.yml`) are flipped before signing: no `NODE_OPTIONS`, no `--inspect`, the
+  app only from `app.asar`, asar integrity checked (macOS and Windows). `runAsNode` stays on because the speech and speaker
+  workers run as `ELECTRON_RUN_AS_NODE=1` children; moving them to `utilityProcess` would let it be turned off.
 
 ## 3. The Linux sandbox and `--no-sandbox`
 
