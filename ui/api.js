@@ -54,5 +54,7 @@ export function events(handlers) {
   const names = new Set([...types, ...Object.keys(handlers).filter((k) => k !== '*' && k !== 'open')]);
   for (const t of names) es.addEventListener(t, (e) => { try { handlers[t]?.(JSON.parse(e.data)); handlers['*']?.(t, JSON.parse(e.data)); } catch (err) { console.error(err); } });
   es.addEventListener('open', () => handlers.open?.());
+  // the app locked (idle, or from another window): the lock screen takes over at once; the server closes this stream
+  es.addEventListener('lock.changed', (e) => { try { if (JSON.parse(e.data).locked) window.dispatchEvent(new Event('wb:locked')); } catch { /* not JSON */ } });
   return es;
 }

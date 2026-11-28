@@ -8,6 +8,7 @@ const { Notes } = require('../core/notes');
 const { ItemStore } = require('../items/store');
 const { ChunkIndex } = require('../search/index');
 const { can } = require('../access/grants');
+const { MCP_FRESH_MS } = require('../core/lock');
 
 const PROTOCOL = '2025-06-18';
 const NEEDS_SCHEMA = 19;
@@ -35,10 +36,12 @@ class BrainReader {
   }
 
   // While WhisperBrain is locked (src/core/lock.js), nothing is served: the lock screen must not be walked around through MCP.
-  // A passphrase is set and the app has not said it is unlocked (it writes lock:state; it starts locked).
+  // A passphrase is set and the app has not said it is unlocked (it writes lock:state; it starts locked), or has not said so lately:
+  // the app writes lock:seen every 30 s, so a crashed app (that never wrote 'locked' on its way out) reads as locked.
   locked() {
     const meta = (k) => { try { return this.db.prepare('SELECT value FROM index_meta WHERE key = ?').get(`lock:${k}`)?.value ?? null; } catch { return null; } };
-    return !!meta('hash') && meta('state') !== 'unlocked';
+    if (!meta('hash')) return false;
+    return meta('state') !== 'unlocked' || !(Date.now() - Number(meta('seen')) < MCP_FRESH_MS);
   }
 
   static open(file) {
