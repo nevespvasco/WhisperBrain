@@ -210,6 +210,31 @@ test('Gmail: a thread is one item with its plain text; quoted history is cut; a 
   assert.equal(bodyOf({ mimeType: 'multipart/alternative', parts: [{ mimeType: 'text/html', body: { data: b64('<p>Hello <b>Ana</b></p><style>x{}</style>') } }] }).replace(/\s+/g, ' ').trim(), 'Hello Ana');
 });
 
+test('Gmail: a run that fails half way keeps its place and the threads it had not read yet; the failing one goes last', async (t) => {
+  const w = await fakeWorld(); t.after(() => w.close());
+  const app = await boot(t, w);
+  app.settings.update({ google: { ...app.settings.get('google'), clientId: 'c', clientSecret: 's', refreshToken: 'r', accessToken: 'a', expiresAt: Date.now() + 3600_000, gmail: true, email: 'ana@x.pt' } });
+  const threads = {};
+  for (const id of ['t1', 't2', 't3']) threads[id] = { id, historyId: '10', messages: [mail(`m${id}`, 'Rui <rui@x.pt>', 'ana@x.pt', 'Tue, 24 Nov 2026 10:00:00 +0000', `text of ${id}`)] };
+  let broken = 't2', lists = 0;
+  w.on(/^\/gmail\/v1\/users\/me\/profile$/, () => [200, { emailAddress: 'ana@x.pt', historyId: '20', messagesTotal: 3 }]);
+  w.on(/^\/gmail\/v1\/users\/me\/threads$/, () => { lists++; return [200, { threads: Object.keys(threads).map((id) => ({ id })) }]; });
+  w.on(/^\/gmail\/v1\/users\/me\/threads\/(\w+)$/, (u, req, m) => (m[1] === broken ? [500, { error: { message: 'Backend Error' } }] : [200, threads[m[1]]]));
+  w.on(/^\/gmail\/v1\/users\/me\/history$/, () => [200, { historyId: '25', history: [] }]);
+  const src = app.sources.addRemote({ kind: 'gmail', name: 'Mail', config: {} });
+  const gmail = app.sources.services.gmail;
+  const sync = () => gmail.sync({ ...app.sources.ctx, source: app.items.source(src.id), items: app.items });
+  await assert.rejects(sync());
+  assert.ok(app.items.byExternal(src.id, 'thread:t1'), 'what was read before the failure is stored');
+  const cur = gmail.readCursor(app.items.source(src.id).cursor);
+  assert.deepEqual([cur.h, cur.ids], ['20', ['t3', 't2']], 'the listing is done; t3 and the failing t2 (last) wait');
+  broken = null;
+  const r = await sync();
+  assert.equal(r.created, 2);
+  assert.equal(lists, 1, 'not listed again');
+  assert.equal(app.items.source(src.id).cursor, '25');
+});
+
 test('Gmail: first run lists the window, later runs read only the history; a stale history starts again from scratch', async (t) => {
   const w = await fakeWorld(); t.after(() => w.close());
   const app = await boot(t, w);
