@@ -286,3 +286,20 @@ test('an existing search table gets its rowid map on upgrade: duplicates and row
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('"Delete everything" leaves no forgotten addresses, bookkeeping or queue behind (the lock stays), and truncates the WAL', async (t) => {
+  const { app, dataDir } = await boot(t);
+  const n = app.notes.create({ title: 'Secret plans' });
+  app.notes.addSegments(n.id, [{ speaker: 'me', startMs: 0, endMs: 900, text: 'hello' }]);
+  app.db.prepare("INSERT INTO blocked_addresses (address, created_at) VALUES ('ex@x.pt', 1)").run();
+  app.db.prepare("INSERT INTO index_meta (key, value) VALUES ('mentions:after', '5:1'), ('dismiss:idle:p1:1', '1'), ('lock:salt', 'keep')").run();
+  app.account.deleteEverything({ removeCopies: false });
+  const count = (tbl) => app.db.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).get().n;
+  assert.equal(count('blocked_addresses'), 0);
+  assert.deepEqual(app.db.prepare('SELECT key FROM index_meta').all().map((r) => r.key).filter((k) => !k.startsWith('lock:')), [], 'only the app lock is kept');
+  assert.equal(app.db.prepare("SELECT value FROM index_meta WHERE key = 'lock:salt'").get()?.value, 'keep');
+  assert.equal(count('dirty_owners'), 0);
+  assert.equal(count('search_rowid'), 0);
+  const wal = `${require('node:path').join(dataDir, 'whisperbrain.sqlite')}-wal`;
+  assert.ok(!fs.existsSync(wal) || fs.statSync(wal).size === 0, 'the old pages do not linger in the WAL file');
+});

@@ -90,7 +90,7 @@ class Account {
   // Everything the user created. Downloaded models are kept unless removeModels is set (they are re-downloadable but large).
   // Everything read from sources (mail, chat, files), what was worked out from it (people, promises, the search index), and the
   // records of AI calls, actions and access go too: "everything" that left the brain's own meetings behind would only look deleted.
-  // The app lock's passphrase stays (index_meta), so the emptied app is still locked. The copies the app made of the database
+  // The app lock's passphrase stays (its index_meta keys; every other key goes), so the emptied app is still locked. The copies the app made of the database
   // before each update (whisperbrain.sqlite.before-vN, next to it) are deleted too; backups in a folder you chose are yours and
   // are listed, not deleted (Settings > Backups).
   deleteEverything({ removeModels = false, removeCopies = true } = {}) {
@@ -100,7 +100,11 @@ class Account {
         'assistant_events', 'search', 'notes', 'folders', 'evidence', 'semantic_chunks', 'templates', 'voice_exemplars', 'voices', 'tags', 'topics', 'glossary', 'event_prefs', 'settings',
         // the brain: sources and what came from them, what was worked out, and the records
         'rule_runs', 'rules', 'reminders', 'actions', 'assertions', 'projects', 'mentions', 'entity_proposals', 'entity_merges', 'entity_identities', 'entities',
-        'index_owner', 'chunks', 'items', 'sources', 'ai_runs', 'access_log', 'jobs']) if (has.has(t)) this.db.exec(`DELETE FROM ${t}`);
+        'index_owner', 'chunks', 'items', 'sources', 'ai_runs', 'access_log', 'jobs', 'live_cache', 'blocked_addresses',
+        // bookkeeping last: deleting the rows above queued them for the search index (dirty_owners, migration 30)
+        'search_rowid', 'dirty_owners']) if (has.has(t)) this.db.exec(`DELETE FROM ${t}`);
+      // cursors, dismissals and review dates; the app lock's own keys stay
+      if (has.has('index_meta')) this.db.exec("DELETE FROM index_meta WHERE key NOT LIKE 'lock:%'");
       for (const f of ['items_fts', 'chunks_fts']) if (has.has(f)) this.db.exec(`INSERT INTO ${f}(${f}) VALUES ('delete-all')`);
       this.db.exec("INSERT INTO seg_fts(seg_fts) VALUES ('rebuild')");
     });
@@ -108,6 +112,7 @@ class Account {
     this.settings.reset();
     this.semantic?.prune();
     this.db.exec('VACUUM');
+    try { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } catch { /* a reader holds it: the WAL is reset at the next checkpoint */ }   // the old pages otherwise stay in the -wal file
     if (removeCopies) this.removeCopies();
     if (removeModels) for (const m of this.models.catalog) this.models.remove(m.id);
     this.bus?.publish('account.changed', { what: 'all' });
