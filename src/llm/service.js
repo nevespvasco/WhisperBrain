@@ -247,6 +247,13 @@ class AiService {
     return { text: out.trim() };
   }
 
+  // An item record (from the index or the workspace records): is it a mail from somebody the user does not know?
+  itemUntrusted(e) {
+    if (e?.kind !== 'item') return false;
+    const it = this.items?.item?.(e.id);
+    return this.isUntrusted(this.items?.source?.(e.sourceId ?? it?.sourceId)?.kind, it?.meta);
+  }
+
   // Is the sender of an item somebody the user knows (met, or merged by address, or at their own domain)? `senderKnown(email)` is set by the app.
   isUntrusted(sourceKind, meta) {
     if (!this.senderKnown || !['gmail', 'outlook', 'imap', 'mbox'].includes(sourceKind)) return false;
@@ -308,7 +315,7 @@ class AiService {
       const found = await this.excerpts(q, { skip: new Set(sources.map((s) => s.id)), limit: 8 });
       const live = await this.liveExcerpts(q, { have: found.length, signal });
       searched = live.searched;
-      ex = [...found, ...records, ...live.excerpts].map((e, i) => ({ ...e, n: i + 1 }));
+      ex = [...found, ...records, ...live.excerpts].map((e, i) => ({ ...e, n: i + 1, untrusted: e.untrusted ?? this.itemUntrusted(e) }));   // workspace records too
       const extra = this.excerptContext(ex);
       if (extra) context += `\n\n${extra}`;
       const cover = (() => { try { return sourceCoverage(q, { items: this.workspace?.items }); } catch { return ''; } })();

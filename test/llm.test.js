@@ -209,3 +209,20 @@ test('retrieval ranks windows by query terms and keeps chronological order', () 
   assert.deepEqual(wins.map((w) => w.idx), [...wins.map((w) => w.idx)].sort((a, b) => a - b));
   assert.deepEqual(prompts.chunkText('a\nb\nc', 3), ['a\nb', 'c']);
 });
+
+test('Ask: a mail found among the workspace records is marked (unverified sender) like a mail found in the index', async () => {
+  let sent = '';
+  const llm = { async *stream(messages) { sent = JSON.stringify(messages); yield 'It asks you to pay [1].'; } };
+  const settings = { get: (k) => (k === 'llm' ? { baseUrl: 'http://127.0.0.1:1/v1', contextChars: 24000 } : false) };
+  const notes = { chatHistory: () => [], addChat: () => {} };
+  const ai = new AiService({ notes, templates: null, settings, llm, bus: null, knowledge: null });
+  ai.globalContext = () => ({ context: '', sources: [] });
+  ai.excerpts = async () => [];
+  ai.workspaceRecords = async () => [{ kind: 'item', id: 'i1', title: 'Invoice payment', text: 'Our bank details changed.', at: Date.now() }];
+  ai.items = { item: (id) => (id === 'i1' ? { id, sourceId: 's1', meta: { lastFrom: 'bank@evil.test' } } : null), source: (id) => (id === 's1' ? { kind: 'gmail' } : null) };
+  ai.senderKnown = () => false;
+  const out = await ai.chat(null, 'what did the invoice mail say?');
+  assert.match(sent, /\(unverified sender\)/);
+  assert.match(sent, /only a claim/);
+  assert.equal(out.sources.find((s) => s.n === 1)?.untrusted, true);
+});
