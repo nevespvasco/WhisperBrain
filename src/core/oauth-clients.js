@@ -27,7 +27,10 @@ function fromFile(file) {
 
 // The client for a provider: { clientId, clientSecret } (both '' when WhisperBrain ships none). Read when the app starts, so a
 // file or variable added while developing needs only a restart, not a rebuild. `file` and `env` are for tests.
+// Under `node --test` (which sets NODE_TEST_CONTEXT) the defaults give none, so a developer's local file or variables never change
+// what a test sees; a test that needs a shipped client passes `builtIn`, or `file`/`env` here.
 function builtInClient(provider, { file = FILE, env = process.env } = {}) {
+  if (file === FILE && env === process.env && process.env.NODE_TEST_CONTEXT) return { clientId: '', clientSecret: '' };
   const fileClient = fromFile(file)[provider] || {};
   const prefix = `WB_${provider.toUpperCase()}_CLIENT_`;
   return {
