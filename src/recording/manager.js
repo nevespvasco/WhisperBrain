@@ -43,6 +43,7 @@ const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and r
 const RESTART_BACKOFF_MS = [500, 2000, 5000];
 const MAX_RESTARTS = 5;
 const QUIT_FLUSH_MS = 5000;
+const CAPTURE_BACKOFF_MS = [1000, 2000, 5000, 5000, 5000]; // a capture process that exits by itself is started again after these waits
 const ECHO_WINDOW_MS = 5 * 60 * 1000; // the echo check compares a line with the other side's lines this close to it (kept in memory)      // quitting: the flush may take this long; what it did not finish is transcribed at the next start
 
 class RecordingError extends Error {
@@ -64,6 +65,7 @@ class RecordingManager {
     if (spoolDir) Spool.sweep(spoolDir, { keep: (m) => !!m?.noteId && !!this.notes.get(m.noteId) });
     this.active = null;
     this.restartBackoff = RESTART_BACKOFF_MS;
+    this.captureBackoff = CAPTURE_BACKOFF_MS;
     this.engine.on('segment', (s) => this.onSegment(s));
     this.engine.on('partial', (p) => this.onPartial(p));
     this.engine.on('draft-off', (e) => { if (this.active) { this.active.draft = { requested: false, on: false, reason: e.reason }; this.bus.publish('recording.warning', { message: `Live draft captions were switched off for this recording: ${e.reason}` }); } });
@@ -327,8 +329,38 @@ class RecordingManager {
         this.bus.publish('capture.request', { noteId: a.noteId, channels: [ch] });
         return;
       }
-      this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly` });
+      this.reopenCapture(a, ch);
     });
+  }
+
+  // A native capture that ended by itself where no window can take over (Linux: PipeWire restarted, the device changed or went):
+  // opened again the way start() opened it, a few times with back-off, so the channel does not stay silent for the rest of the
+  // meeting. The new stream is a new stretch: the recognizer's channel is closed first and the epoch comes from the clock again.
+  async reopenCapture(a, ch) {
+    const open = a.reopen[ch];
+    this.bus.publish('recording.warning', { message: `${ch} capture ended unexpectedly${open ? '; starting it again' : ''}` });
+    if (!open) return;
+    let last = null;
+    for (const ms of this.captureBackoff) {
+      if (ms) await new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });
+      if (this.active !== a || a.finalizing) return;
+      let src = null;
+      try { src = await open(); } catch (e) { last = e; continue; }
+      if (!src) continue;
+      if (this.active !== a || a.finalizing) { try { src.stop(); } catch { /* gone */ } return; }
+      try { await this.engine.flush(ch); } catch { /* the stretch is over either way */ }
+      this.engine.reset(ch);
+      a.fed[ch] = 0;
+      if (ch === 'mic' && src.aec) a.aec = src.aec;
+      this.attach(a, ch, src);
+      src.start();
+      return;
+    }
+    if (this.active === a && !a.finalizing) {
+      const message = `${ch} capture could not be started again${last ? ` (${last.message})` : ''}: nothing more is recorded on it`;
+      a.warnings.push(message);
+      this.bus.publish('recording.warning', { message });
+    }
   }
 
   // What a capture source hands over. While the call's browser tab is streaming (see acceptTabAudio) the system source is NOT the

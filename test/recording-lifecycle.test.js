@@ -345,3 +345,54 @@ test('quitting: Stop does not run the long speaker pass; the note is finished at
   assert.equal(res.diarized, 1);
   assert.deepEqual(Spool.leftovers(r.spoolDir), []);
 });
+
+// ---- a capture process that exits by itself (Linux: PipeWire restarted, the device changed) ----
+class Emitting extends Native { emitPcm(buf) { this.emit('pcm', buf); } }
+function captureRig({ fail = 0 } = {}) {
+  const opened = [];
+  let failures = fail;
+  const r = rig({ capture: { mic: 'renderer', system: 'native' }, platform: { createSystemSource: async (o) => { if (opened.length && failures-- > 0) throw new Error('no such node'); const s = new Emitting(); s.opts = o; opened.push(s); return s; } } });
+  r.mgr.captureBackoff = [0, 0, 0];
+  return { ...r, opened };
+}
+
+test('a capture process that exits by itself is started again with the same options; the channel starts a new stretch; one warning', async () => {
+  const r = captureRig();
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false, wholeOutput: true });
+  r.opened[0].emitPcm(pcm(100));
+  r.opened[0].emit('end');
+  await tick(10);
+  assert.equal(r.opened.length, 2, 'opened again');
+  assert.deepEqual(r.opened[1].opts, r.opened[0].opts);
+  assert.equal(r.opened[1].started, true);
+  r.opened[1].emitPcm(pcm(100));
+  const log = r.engine.log;
+  assert.ok(log.indexOf('reset:system') > 0 && log.indexOf('reset:system') < log.lastIndexOf('feed:system:3200'), `the recognizer's channel starts over first: ${log}`);
+  assert.equal(r.mgr.active.stretches.system.length, 2);
+  assert.equal(r.events.filter((e) => e.type === 'recording.warning').length, 1);
+  await r.mgr.stop();
+});
+
+test('a capture that cannot be started again is retried a few times, then the person is told', async () => {
+  const r = captureRig({ fail: 99 });
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false });
+  r.opened[0].emit('end');
+  await tick(20);
+  const w = r.events.filter((e) => e.type === 'recording.warning').map((e) => e.data.message);
+  assert.equal(w.length, 2);
+  assert.match(w[1], /could not be started again/);
+  await r.mgr.stop();
+});
+
+test('stop while a capture waits to be started again: nothing new is opened', async () => {
+  const r = captureRig();
+  r.mgr.captureBackoff = [30];
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { mic: false });
+  r.opened[0].emit('end');
+  await r.mgr.stop();
+  await tick(50);
+  assert.equal(r.opened.length, 1);
+});
