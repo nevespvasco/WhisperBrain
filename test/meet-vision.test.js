@@ -90,3 +90,33 @@ test('vision: stopping says nobody is speaking, and a system that cannot capture
   assert.equal(none.start(), false);
   assert.equal(none.hub.status().sources[0].state, 'off');
 });
+
+// ---- audit 2026-11-28 (D1-4): pictures of the call go to an AI server elsewhere only when allowed ----
+test('vision: with an AI server that is not on this computer it does not look unless that is allowed, and a mid-call switch stops it', async (t) => {
+  const { MeetService } = require('../src/meet/service');
+  const { Settings } = require('../src/core/settings');
+  const { Bus } = require('../src/core/events');
+  const { open } = require('../src/core/db');
+  const fake = await startFakeLlm(() => JSON.stringify({ participants: ['Ana Silva'], speaking: ['Ana Silva'], confidence: 'high' }));
+  t.after(() => fake.close());
+  const bus = new Bus();
+  const settings = new Settings(open(':memory:'), bus);
+  settings.update({ llm: { baseUrl: fake.url.replace('127.0.0.1', '[::ffff:127.0.0.1]'), model: 'vision' }, meet: { vision: true } });
+  const client = new LlmClient(() => settings.get('llm'));
+  let shots = 0;
+  const svc = new MeetService({ settings, bus, llm: client, captureWindow: async () => { shots++; return frame(String(shots)); } });
+  svc.watch();
+  t.after(() => svc.close());
+  bus.publish('recording.started', { noteId: 'n1' });
+  assert.equal(svc.vision.on, false, 'not started');
+  assert.match(svc.hub.status().sources.find((s) => s.id === 'vision')?.detail || '', /not on this computer/);
+  bus.publish('recording.stopped', { noteId: 'n1' });
+
+  settings.update({ meet: { visionRemote: true } });
+  bus.publish('recording.started', { noteId: 'n2' });
+  assert.equal(svc.vision.on, true, 'allowed: it looks');
+  settings.update({ meet: { visionRemote: false } });
+  await svc.vision.tick();
+  assert.equal(fake.requests.length, 0, 'switched off during the call: no picture is sent');
+  bus.publish('recording.stopped', { noteId: 'n2' });
+});

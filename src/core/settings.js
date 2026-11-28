@@ -137,6 +137,7 @@ const DEFAULTS = {
     learnVoices: false,         // opt-in (a voice print is biometric data): remember a voice the call named clearly (many seconds, no doubt) so the next meetings recognise it
     captions: true,             // use the meeting's live captions (name and words) when the extension sends them
     vision: false,              // last resort: look at the meeting window and ask your local vision model who is speaking
+    visionRemote: false,        // ...also when the AI server is not on this computer: pictures of the call are then sent to it (like assistant.allowRemote)
   },
   // Discord without a bot: the local RPC of the Discord desktop app (src/discord/rpc.js), through the person's own Discord application
   // (developer portal; redirect http://localhost). Says which call the person is in, who is in it and who speaks; gives no audio.

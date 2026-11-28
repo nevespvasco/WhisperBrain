@@ -1,5 +1,7 @@
 // European Portuguese. Keys are the English strings used in the UI; values are their translations.
 export const PT = {
+  'Also with an AI server that is not on this computer': 'Também com um servidor de IA que não está neste computador',
+  'Off: pictures of the call only go to an AI server on this computer. On: a picture of the meeting window is sent to your server every few seconds while nothing else is connected.': 'Desligado: as imagens da chamada só vão para um servidor de IA neste computador. Ligado: uma imagem da janela da reunião é enviada para o teu servidor de poucos em poucos segundos enquanto nada mais estiver ligado.',
   'After a meeting, by itself': 'Depois de uma reunião, sozinho',
   'Your AI server is not on this computer, so nothing is sent to it by itself after a meeting. Enhance a meeting yourself, or allow it below.': 'O teu servidor de IA não está neste computador, por isso nada lhe é enviado sozinho depois de uma reunião. Melhora uma reunião tu mesmo, ou permite-o abaixo.',
   'Look for decisions and commitments': 'Procurar decisões e compromissos',
