@@ -59,8 +59,7 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   // on the page: the calendar used to close on the same mousedown that opened it
   await b.evaluate(`(() => { const i = document.createElement('input'); i.type = 'date'; i.id = 'd1'; document.querySelector('#main').prepend(i); })()`);
   await b.clickOn('#d1');
-  await b.waitFor(`!!document.querySelector('.menu.datepick')`);
-  await sleep(50);
+  await b.waitFor(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 10`);
   const day = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[9].dataset.v`);
   await b.clickOn(`.menu.datepick [data-v="${day}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d1').value`), day);
@@ -68,8 +67,7 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   await openModal(b, '<input type="date" id="d2">');
   await settled(b, '#d2');
   await b.clickOn('#d2');
-  await b.waitFor(`!!document.querySelector('dialog .menu.datepick')`);
-  await sleep(50);
+  await b.waitFor(`!!document.querySelector('dialog .menu.datepick') && document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)').length > 4`);
   const day2 = await b.evaluate(`document.querySelectorAll('.menu.datepick .dp-day:not(:disabled)')[3].dataset.v`);
   await b.clickOn(`.menu.datepick [data-v="${day2}"]`);
   assert.equal(await b.evaluate(`document.querySelector('#d2').value`), day2);
