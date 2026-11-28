@@ -102,7 +102,8 @@ class RecordingManager {
     return a.accMs + (a.paused || a.finalizing ? 0 : Date.now() - a.resumedAt);
   }
 
-  async ensureEngine(role = 'live') {
+  // allowRestart: false when a recording other than the caller is running (its worker must not be replaced; see engine.startLive).
+  async ensureEngine(role = 'live', { allowRestart = true } = {}) {
     const s = this.settings.all();
     const model = this.models.resolve(s.asrModel);
     if (!model) throw new RecordingError('no-model', 'No speech model is installed. Download one in Settings → Transcription.');
@@ -111,7 +112,7 @@ class RecordingManager {
     // only decides whether embeddings are computed. Nothing is flowing yet, so it may replace a worker with other options.
     const speakerModel = this.models.speakerInstalled?.() ? this.models.speakerPath() : null;
     this.engine.configure?.({ embeddings: !!(s.speakerDetection && this.speakers) });
-    await this.engine.start(model, { vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage, speakerModel, allowRestart: true, role });
+    await this.engine.start(model, { vadPath: this.models.vadPath(), threads: s.asrThreads, language: s.asrLanguage, speakerModel, allowRestart, role });
     return model;
   }
 
@@ -1050,8 +1051,8 @@ class RecordingManager {
       for (const g of gaps) {
         if (!ok) { remaining.push(g); continue; }
         try {
-          await this.ensureEngine('batch');
-          const segs = await transcribePcm(this.engine, sp.read(g.from, g.to), { channel: `recover:${ch}` });
+          await this.ensureEngine('batch', { allowRestart: !this.active }); // never replaces the worker of a recording in progress
+          const segs = await transcribePcm(this.engine, sp.read(g.from, g.to), { channel: `recover:${noteId}:${ch}` });
           const rows = segs.map((x) => placeOnTimeline(ch, g.from, x, stretches)).filter(Boolean).map((r) => ({ ...r, speaker }));
           if (rows.length) this.notes.addSegments(noteId, rows);
           out.transcribed += rows.length;

@@ -396,3 +396,42 @@ test('stop while a capture waits to be started again: nothing new is opened', as
   await tick(50);
   assert.equal(r.opened.length, 1);
 });
+
+// ---- the same with the real speech engine: its worker is killed in the middle of the meeting ----
+const { AsrEngine } = require('../src/asr/engine');
+const { wavToPcm16 } = require('../src/audio/pcm');
+const { testModels, fixture } = require('./helpers');
+const realModels = testModels();
+test('real engine: a worker killed mid-meeting is restarted, and the words spoken while it was down are in the transcript after Stop', { skip: realModels ? false : 'no ASR model installed', timeout: 180000 }, async (t) => {
+  const db = open(':memory:');
+  const bus = new Bus();
+  const events = [];
+  bus.subscribe((e) => events.push(e));
+  const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
+  settings.update({ echoDedupe: false, speakerDiarize: true, speakerRefine: false, asrThreads: 2 });
+  const engine = new AsrEngine({ pools: 'shared' });
+  const spoolDir = tmpDir('wb-rec-real-');
+  t.after(() => { engine.stop(); fs.rmSync(spoolDir, { recursive: true, force: true }); });
+  const models = Object.assign(Object.create(realModels), { segmentationInstalled: () => false, resolve: (id) => realModels.resolve(id) });
+  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir });
+  const n = notes.create({});
+  await mgr.start(n.id, { system: false });
+  const feed = (buf) => { for (let i = 0; i < buf.length; i += 3200) mgr.pushPcm(n.id, 'mic', buf.subarray(i, i + 3200)); };
+  const until = async (cond, ms = 30000) => { const t0 = Date.now(); while (!cond()) { if (Date.now() - t0 > ms) throw new Error('timed out'); await tick(50); } };
+  feed(wavToPcm16(fs.readFileSync(fixture('speech-0.wav'))));
+  feed(Buffer.alloc(32000));
+  await until(() => notes.segments(n.id).length > 0);
+  const before = notes.segments(n.id).length;
+  const pid = engine.live.child.pid;
+  engine.live.child.kill('SIGKILL');
+  feed(wavToPcm16(fs.readFileSync(fixture('hello.wav')))); // nobody is listening
+  feed(Buffer.alloc(32000));
+  await until(() => engine.live.running && engine.live.child.pid !== pid);
+  feed(Buffer.alloc(16000));
+  await mgr.stop();
+  const text = notes.segments(n.id).map((x) => x.text).join(' ').toLowerCase();
+  assert.ok(notes.segments(n.id).length > before);
+  assert.match(text, /love/, `the words said while the worker was down: ${text}`);
+  assert.ok(events.some((e) => e.type === 'recording.warning' && /restart/i.test(e.data.message)));
+  assert.deepEqual(fs.readdirSync(spoolDir), []);
+});
