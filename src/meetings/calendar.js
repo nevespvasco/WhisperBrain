@@ -1,6 +1,6 @@
 'use strict';
 const fs = require('node:fs');
-const { parseIcs, expand } = require('./ics');
+const { parseIcs, expandCached } = require('./ics');
 const { busyEvent } = require('./google');
 const { newId } = require('../core/ids');
 
@@ -87,7 +87,8 @@ class Calendar {
     for (const src of this.sources()) {
       const e = await this.load(src, { force });
       if (e.error) errors.push({ source: src.name, error: e.error });
-      for (const o of expand(e.events, from, to)) out.push({ ...o, id: `${src.id}:${o.uid}:${o.start}`, source: src.name, provider: 'ics' });
+      // cached per feed load and day window: the detector asks every 4 s with a window that moved by 4 s
+      for (const o of expandCached(e.events, from, to)) out.push({ ...o, id: `${src.id}:${o.uid}:${o.start}`, source: src.name, provider: 'ics' });
     }
     if (this.google?.connected()) {
       const g = await this.loadGoogle(from, to, { force });
