@@ -3,6 +3,7 @@ import { S, $, $$, api, t, esc, icon, fail, go, meetingCard, meetingRow, dateGro
 import { openImport, openExport } from './transfer.js';
 
 let viewMode = localStorage.getItem('wb.meetings.view') || 'grid';
+const PAGE = 30;   // meetings drawn at first, and added by each "Show more" (the groups by day count as one list)
 
 export async function render(main, { params }) {
   const f = { q: params.get('q') || '', source: params.get('source') || '', tag: params.get('tag') || '', space: params.get('space') || '', external: params.get('external') || '', sort: params.get('sort') || 'newest' };
@@ -27,12 +28,14 @@ export async function render(main, { params }) {
 
   const setParam = (k, v) => { const p = new URLSearchParams(params); if (v) p.set(k, v); else p.delete(k); go(`#/meetings${p.toString() ? '?' + p : ''}`); };
   let rows = [];
+  let shown = PAGE;
   const selected = new Set();
   let selecting = false;
   const load = async () => {
     const q = new URLSearchParams();
     for (const k of ['q', 'source', 'tag', 'space', 'external', 'sort']) if (f[k]) q.set(k, f[k]);
     rows = await api('GET', `/api/meetings?${q}`);
+    shown = PAGE;   // a new search or filter starts at the top again
     draw();
   };
   const draw = () => {
@@ -45,7 +48,12 @@ export async function render(main, { params }) {
     const pinned = f.sort === 'newest' ? rows.filter((r) => r.pinned) : [];
     if (pinned.length) groups.unshift({ key: t('Pinned'), items: pinned });
     const card = (n) => (selecting ? `<div class="sel-wrap" style="position:relative"><input type="checkbox" class="cbx" data-sel="${n.id}" ${selected.has(n.id) ? 'checked' : ''} style="position:absolute;top:12px;left:12px;z-index:2" aria-label="${t('Select')}">${(viewMode === 'grid' ? meetingCard(n) : meetingRow(n, { snippet: n.snippet })).replace('<a ', '<a style="padding-left:40px" ')}</div>` : viewMode === 'grid' ? meetingCard(n) : meetingRow(n, { snippet: n.snippet }));
-    box.innerHTML = groups.map((g) => `<div class="datagroup">${g.key ? `<h4>${esc(g.key)} <span class="faint">· ${g.items.length}</span></h4>` : ''}${viewMode === 'grid' ? `<div class="cards">${g.items.map(card).join('')}</div>` : `<div class="list">${g.items.map(card).join('')}</div>`}</div>`).join('');
+    // one page of meetings across the day groups: the rest comes with "Show more"
+    let room = shown;
+    const paged = groups.map((g) => { const items = g.items.slice(0, Math.max(0, room)); room -= items.length; return { ...g, items, total: g.items.length }; }).filter((g) => g.items.length);
+    const total = groups.reduce((n, g) => n + g.items.length, 0), more = total - shown;
+    box.innerHTML = paged.map((g) => `<div class="datagroup">${g.key ? `<h4>${esc(g.key)} <span class="faint">· ${g.total}</span></h4>` : ''}${viewMode === 'grid' ? `<div class="cards" data-nocap>${g.items.map(card).join('')}</div>` : `<div class="list" data-nocap>${g.items.map(card).join('')}</div>`}</div>`).join('')
+      + (more > 0 ? `<div class="cap-more"><button type="button" class="btn ghost sm" data-act="m-more" title="${t('{shown} of {total} shown', { shown, total })}">${t('Show {n} more', { n: Math.min(PAGE, more) })}</button></div>` : '');
   };
   const bulkBar = () => {
     const b = $('#bulk', main);
@@ -73,6 +81,7 @@ export async function render(main, { params }) {
     try {
       if (a === 'import') openImport({ space: f.space });
       else if (a === 'export-all') openExport(rows.map((r) => r.id));
+      else if (a === 'm-more') { shown += PAGE; draw(); }
       else if (a === 'select') { selecting = !selecting; selected.clear(); bulkBar(); draw(); }
       else if (a === 'sel-all') { rows.forEach((r) => selected.add(r.id)); bulkBar(); draw(); }
       else if (a === 'sort') menu(btn, [['newest', t('Newest first')], ['oldest', t('Oldest first')], ['title', t('Title A–Z')]].map(([v, l]) => ({ label: l, selected: f.sort === v, run: () => setParam('sort', v === 'newest' ? '' : v) })));

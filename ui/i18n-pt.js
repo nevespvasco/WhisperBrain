@@ -1443,6 +1443,8 @@ export const PT = {
   'No matches': 'Sem resultados',
   'Show less': 'Mostrar menos',
   'Show all {n}': 'Mostrar todos ({n})',
+  'Show {n} more': 'Mostrar mais {n}',
+  '{shown} of {total} shown': '{shown} de {total} visíveis',
   'Needs a definition': 'Sem definição',
   'Jump to letter': 'Ir para a letra',
   'Add a definition': 'Adicionar definição',

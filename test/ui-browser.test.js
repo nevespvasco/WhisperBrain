@@ -176,3 +176,28 @@ test('transcript: a voice renamed while somebody types in the search box keeps t
   assert.equal(await b.evaluate(`[...document.querySelectorAll('#segs .seg')].filter((x) => !x.hidden).map((x) => x.dataset.id).length`), 1);
   assert.deepEqual(b.errors, []);
 });
+
+test('long lists: a page list shows a page and "Show more" adds the next; a list in a panel gets a fixed height with its own scroll', { skip, timeout: 60000 }, async (t) => {
+  const { b } = await boot(t);
+  await b.evaluate(`(() => {
+    const page = document.querySelector('#main .page');
+    const cards = document.createElement('section'); cards.id = 'long-page';
+    cards.innerHTML = '<div class="cards">' + Array.from({ length: 60 }, (_, i) => '<div class="card">Card ' + (i + 1) + '</div>').join('') + '</div>';
+    const panel = document.createElement('section'); panel.className = 'panel'; panel.id = 'long-panel';
+    panel.innerHTML = '<div class="list">' + Array.from({ length: 30 }, (_, i) => '<div class="li" style="padding:12px">Row ' + (i + 1) + '</div>').join('') + '</div>';
+    page.append(cards, panel);
+  })()`);
+  await b.waitFor(`!!document.querySelector('#long-page .cap-more button')`);
+  const shown = () => b.evaluate(`[...document.querySelectorAll('#long-page .card')].filter((c) => !c.classList.contains('cap-hidden')).length`);
+  assert.equal(await shown(), 24, 'one page of the page list');
+  await b.clickOn('#long-page .cap-more button');
+  await sleep(100);
+  assert.equal(await shown(), 48, 'the next page');
+  await b.clickOn('#long-page .cap-more button');
+  await sleep(100);
+  assert.equal(await shown(), 60, 'the last rows');
+  assert.equal(await b.evaluate(`document.querySelector('#long-page .cap-more').hidden`), true, 'and no button left');
+  const panel = await b.evaluate(`(() => { const l = document.querySelector('#long-panel .list'); return [l.classList.contains('scroll-list'), l.clientHeight <= 441, l.scrollHeight > l.clientHeight]; })()`);
+  assert.deepEqual(panel, [true, true, true], 'the panel list scrolls inside a fixed height');
+  assert.deepEqual(b.errors, []);
+});

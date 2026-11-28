@@ -5,6 +5,7 @@ import { translateChip, translateMenu } from './translate-chip.js';
 import { startRecording, stopRecording, renderRecbar, syncRec, handleCaptureRequest, takeNotesFor, recordDetected, recEvents, setRecConsent } from './recording.js';
 import { copyNotice, setConsent } from './consent.js';
 import { openPalette } from './palette.js';
+import { watchLists } from './lists.js';
 import { openImport, openExport } from './views/transfer.js';
 import * as home from './views/home.js';
 import * as meetings from './views/meetings.js';
@@ -230,6 +231,7 @@ skip.className = 'skip'; skip.type = 'button'; skip.textContent = t('Skip to con
 skip.addEventListener('click', () => main.focus());
 document.body.prepend(skip);
 main.addEventListener('scroll', () => topbar.classList.toggle('scrolled', main.scrollTop > 4), { passive: true });
+watchLists(main);   // long lists: a page of rows and "Show more", or a fixed height with its own scroll (lists.js)
 
 // ---------- keyboard ----------
 document.addEventListener('keydown', (e) => {

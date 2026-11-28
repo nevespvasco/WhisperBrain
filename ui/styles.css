@@ -118,6 +118,8 @@ a:hover { text-decoration: underline; }
 .topbar { height: var(--top-h); display: flex; align-items: center; gap: 10px; padding: 0 22px; border-bottom: 1px solid transparent; flex: none; position: relative; z-index: 20; }
 .topbar.scrolled { border-bottom-color: var(--line); background: var(--surface); backdrop-filter: blur(14px); }
 .searchpill { flex: 1; max-width: 520px; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px 0 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--muted); cursor: text; box-shadow: var(--shadow-sm); text-align: left; min-width: 0; }
+.searchpill { container: sp / inline-size; }
+@container sp (max-width: 190px) { .searchpill kbd { display: none; } }   /* too narrow for the shortcut hint: the placeholder keeps the room */
 .searchpill:hover { border-color: var(--line-2); }
 .searchpill span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 kbd { font: 500 11.5px var(--font); color: var(--muted); background: var(--sunken); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; white-space: nowrap; }
@@ -226,9 +228,9 @@ button.badge:hover { filter: brightness(.96); }
 .page-head .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .grid { display: grid; gap: 18px; }
 .cols-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 22px; align-items: start; }
-.cols-2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-.cols-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.cols-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 16px; }   /* by the room the grid has, not by the window: a narrow column wraps on its own */
+.cols-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr)); gap: 16px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 16px; }
 .panel { background: var(--surface); backdrop-filter: blur(16px) saturate(1.2); border: 1px solid var(--line); border-radius: var(--r-xl); padding: 18px; box-shadow: var(--shadow); min-width: 0; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
 .panel-head h2, .panel-head h3 { font-size: 16px; font-weight: 650; display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -238,7 +240,7 @@ button.badge:hover { filter: brightness(.96); }
 .card.hover:hover { border-color: var(--accent-line); box-shadow: var(--shadow); transform: translateY(-1px); text-decoration: none; }
 .card.dashed { border-style: dashed; box-shadow: none; background: transparent; }
 .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.row.wrap { flex-wrap: wrap; }
+.row.wrap, .row:has(> .btn) { flex-wrap: wrap; }   /* a row with buttons wraps instead of running out of its card */
 .row.top { align-items: flex-start; }
 .row.between { justify-content: space-between; }
 .stack { display: grid; gap: 10px; min-width: 0; }
@@ -273,8 +275,14 @@ button.badge:hover { filter: brightness(.96); }
 .hello h1 { font-size: 28px; font-weight: 700; }
 .newmeeting .seg-ctl { margin-bottom: 14px; }
 .newmeeting .body { display: grid; gap: 14px; }
-.inline-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
-.formgrid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.inline-form { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }   /* a field and its button: side by side while they fit, stacked when not */
+.inline-form > :first-child { flex: 1 1 240px; min-width: 0; }
+.inline-form > .btn { flex: 0 0 auto; }
+.newmeeting { container: nm / inline-size; }
+@container nm (max-width: 460px) { .inline-form > .btn { flex: 1 1 100%; } }   /* too narrow to sit beside the field: the button takes the full row, easy to hit */
+.formgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 170px), 1fr)); gap: 12px; }
+/* fields of one row share their label row and control row, so a label that wraps ("Name your meeting (optional)") never pushes its own control lower than its neighbours' */
+.formgrid > .field:has(> :nth-child(2):last-child) { grid-row: span 2; grid-template-rows: subgrid; row-gap: 6px; }
 .dropzone { border: 1.5px dashed var(--accent-line); border-radius: var(--r-lg); padding: 26px; text-align: center; background: var(--accent-softer); cursor: pointer; display: grid; justify-items: center; gap: 8px; color: var(--muted); transition: background .12s, border-color .12s; }
 .dropzone:hover, .dropzone.over { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
 .dropzone > .ic { width: 28px; height: 28px; color: var(--accent); }
@@ -301,7 +309,7 @@ button.badge:hover { filter: brightness(.96); }
 .stat { display: grid; gap: 2px; padding: 12px 14px; }
 .stat b { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
 .stat span { font-size: 12.5px; color: var(--muted); }
-.stats-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 130px), 1fr)); gap: 12px; }
 
 /* ---------- list views ---------- */
 .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
@@ -352,7 +360,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .section-card[open] > summary .chev { transform: rotate(180deg); }
 .section-card > summary > .ic:first-child { color: var(--accent); }
 .section-card > .sb { padding: 0 16px 16px; }
-.kp-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.kp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); gap: 12px; }
 .kp { border: 1px solid var(--line); border-radius: var(--r); padding: 12px 14px; background: var(--sunken); min-width: 0; }
 .kp h4 { font-size: 14px; margin-bottom: 6px; }
 .kp ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 13.5px; }
@@ -577,7 +585,8 @@ a.quote:hover { border-color: var(--accent-line); background: var(--accent-softe
 .gl-src .ic, .gl-src > span { flex: none; }
 .gl-src a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.int-card { display: grid; gap: 12px; align-content: start; }
+.int-card { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; }   /* one column that may shrink: a long path or token no longer pushes the card wider than its column */
+.int-card .head .grow, .int-card .head h3, .int-card .head .small { overflow-wrap: anywhere; }
 .int-card .head { display: flex; align-items: center; gap: 12px; }
 .int-logo { width: 42px; height: 42px; border-radius: 12px; display: grid; place-items: center; flex: none; color: #fff; font-weight: 800; font-size: 18px; }
 .int-logo .ic { width: 22px; height: 22px; stroke: #fff; }
@@ -709,6 +718,14 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 .pal-item .right { margin-left: auto; display: flex; align-items: center; gap: 6px; flex: none; color: var(--muted); font-size: 12.5px; }
 .pal-foot { display: flex; gap: 14px; padding: 10px 18px; border-top: 1px solid var(--line); color: var(--faint); font-size: 12px; flex-wrap: wrap; }
 
+/* ---------- long lists (ui/lists.js) ---------- */
+.cap-hidden { display: none !important; }
+.cap-more { display: flex; justify-content: center; padding: 14px 0 4px; }
+.cap-more[hidden] { display: none; }
+/* a list inside a panel or a side column: a fixed height, its own scroll; the edge fade tells there is more */
+.scroll-list { max-height: min(56vh, 440px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; padding: 2px 6px 2px 2px; margin: -2px -6px -2px -2px; }
+.scroll-list:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 10px; }
+
 /* ---------- responsive ---------- */
 @media (max-width: 1280px) {
   .note-grid { grid-template-columns: minmax(0, 1fr) 320px; }
@@ -717,7 +734,6 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
 @media (max-width: 1100px) {
   .note-grid, .cols-main { grid-template-columns: minmax(0, 1fr); }
   .note-aside { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .stats-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .tp-map { grid-template-columns: minmax(0, 1fr); }
   .tp-aside { max-height: none; }
   .trend-cards { grid-template-columns: minmax(0, 1fr); }
@@ -736,8 +752,6 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   .settings-layout { grid-template-columns: minmax(0, 1fr); }
   .settings-nav { position: static; display: flex; overflow-x: auto; gap: 4px; scrollbar-width: none; }
   .settings-nav .navlink { width: auto; flex: none; }
-  .cols-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .formgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (min-width: 901px) { .menu-btn { display: none !important; } }
 @media (pointer: coarse), (max-width: 680px) {
@@ -785,7 +799,7 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   .topbar .btn .lbl-sm { display: none; }
   .topbar .btn:not(.icon) { width: 40px; padding: 0; }
   .page-head h1, .hello h1 { font-size: 22px; }
-  .cols-2, .cols-3, .kp-grid, .formgrid, .note-aside { grid-template-columns: minmax(0, 1fr); }
+  .note-aside { grid-template-columns: minmax(0, 1fr); }
   .cards { grid-template-columns: minmax(0, 1fr); }
   .note-top { flex-wrap: wrap; }
   .note-actions { width: 100%; justify-content: flex-start; }
@@ -813,6 +827,9 @@ dialog.palette { width: min(760px, calc(100vw - 24px)); margin-top: 8vh; }
   .btn .lbl-sm { display: none; }
 }
 @media print {
+  .cap-hidden { display: revert !important; }
+  .cap-more { display: none; }
+  .scroll-list { max-height: none; overflow: visible; }
   .sidebar, .topbar, .recbar, .toasts, .note-actions, .tabs, .tb, .note-aside { display: none !important; }
   body { overflow: visible; background: #fff; }
   .app { display: block; height: auto; }

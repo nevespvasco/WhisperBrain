@@ -29,7 +29,7 @@ export async function render(main, { alive = () => true } = {}) {
       <div class="page-head"><div><h1>${t('Activity')}</h1><div class="sub">${t('What WhisperBrain does in the background after a meeting. If the app closes in the middle, it carries on the next time it opens.')}</div></div></div>
       <div class="stats-row">${[['running', counts.running], ['queued', counts.queued], ['failed', counts.failed], ['done', counts.done]].map(([k, n]) => `<div class="card stat"><b>${n}</b><span>${t(STATE[k][1])}</span></div>`).join('')}</div>
       ${counts.failed ? `<div class="banner warn mt">${icon('alert')}<div class="grow">${t('Some steps failed. Open the meeting to see what is missing, or run the step again.')}</div></div>` : ''}
-      <section class="panel mt">${jobs.length ? `<div class="stack tight">${jobs.map(row).join('')}</div>`
+      <section class="panel mt">${jobs.length ? `<div class="stack tight" data-cap data-page="30">${jobs.map(row).join('')}</div>`
         : empty('refresh', t('Nothing yet'), t('When a recording ends, its summary, topics and action items are prepared here.'))}</section>
       ${busy ? '' : '<div class="xsmall muted mt-s">' + esc(t('Finished steps are kept for two weeks.')) + '</div>'}
       ${ledger ? aiCalls(ledger) : ''}</div>`;
