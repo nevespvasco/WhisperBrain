@@ -344,6 +344,9 @@ test('calendar capture: a starting meeting set to "capture all" creates a note a
 
 test('HTTP: Google sign-in starts a loopback PKCE flow and needs a client ID', async (t) => {
   const app = boot(t);
+  // no client at all: neither the person's own nor one shipped with the build (a developer's git-ignored oauth-clients.local.json
+  // or WB_GOOGLE_CLIENT_ID would otherwise supply one and this would get 200)
+  app.google.builtIn = { clientId: '', clientSecret: '' };
   const s = await serve(t, app);
   assert.equal((await s.call('POST', '/api/google/connect', {})).status, 400);
   const r = await s.json('POST', '/api/google/connect', { clientId: 'abc.apps.googleusercontent.com', clientSecret: 'shh' });
