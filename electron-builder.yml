@@ -48,6 +48,8 @@ linux:
     - "!**/*.md"
     - "!**/test/**"
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,win32}/**"
+    # the Linux packages are built for x64 only (25 MB less); remove this line if an arm64 Linux target is ever added
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/linux/arm64/**"
   target: [AppImage, deb]
   category: Office
   icon: build/icon.png
@@ -106,6 +108,8 @@ win:
     - "!**/*.md"
     - "!**/test/**"
     - "!**/node_modules/onnxruntime-node/bin/napi-v6/{darwin,linux}/**"
+    # the Windows installers are built for x64 only (71 MB less); remove this line if an arm64 Windows target is ever added
+    - "!**/node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**"
   target: [nsis, portable]
   icon: build/icon.png
   extraResources:
