@@ -83,6 +83,32 @@ test('install refuses an archive whose checksum does not match, and leaves nothi
   await assert.rejects(b.models.install('fake'), /checksum mismatch|tar failed|bzip2|Unexpected/i);
 });
 
+test('install: an archive with no pinned checksum is still installed, with a warning that names it and the digest it got', async (t) => {
+  const srv = await modelServer(t);
+  const { models } = make(srv, tmpDir('wb-models-', t));
+  models.catalog[0].sha256 = null; // as the Whisper entries are until their digest is pinned
+  const warn = t.mock.method(console, 'warn', () => {});
+  await models.install('fake');
+  assert.equal(models.isInstalled('fake'), true);
+  const said = warn.mock.calls.map((c) => c.arguments.join(' ')).join('\n');
+  assert.match(said, /fake/);
+  assert.match(said, /not pinned|unpinned|no pinned/i);
+  assert.ok(said.includes(srv.tarSha), 'the digest it got, so it can be pinned');
+});
+
+test('install: a pinned archive installs without that warning', async (t) => {
+  const srv = await modelServer(t);
+  const { models } = make(srv, tmpDir('wb-models-', t));
+  const warn = t.mock.method(console, 'warn', () => {});
+  await models.install('fake');
+  assert.equal(warn.mock.callCount(), 0);
+});
+
+test('catalog: the file header does not claim every archive is pinned while some are not', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'asr', 'models.js'), 'utf8');
+  if (CATALOG.some((m) => !m.sha256)) assert.doesNotMatch(src.split('\n').slice(0, 6).join('\n'), /Each archive is\s+(?:\/\/\s*)?verified/);
+});
+
 test('install: unknown model, concurrent duplicate download, and an archive without model files', async (t) => {
   const srv = await modelServer(t);
   const { models } = make(srv, tmpDir());
