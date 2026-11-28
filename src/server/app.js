@@ -232,8 +232,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     const mine = String(settings.get('google').email || '').toLowerCase().split('@')[1];
     return !!mine && mail.endsWith(`@${mine}`);
   };
-  // Access was narrowed or revoked: what was read is forgotten from the search index now, not at the next scheduled pass.
-  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
+  // Access was narrowed or revoked: the triggers queued what was read (search leaves queued items out at once) and it is forgotten from
+  // the search index by a pass of its own, enqueued now rather than run for seconds inside this bus event.
+  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { runner.enqueue('index.sync', {}, { key: 'purge', maxAttempts: 2 }); } catch { /* closing */ } });
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare, items, live: liveSearch, visible: (sid) => { const s = items.source(sid); return !!s && s.enabled && s.readLevel !== 'none' && (s.expiresAt == null || s.expiresAt > Date.now()); } });
   const projects = new Projects({ db: conn, notes, items, assertions });
   // Ask AI reaches the whole workspace, not only meetings (src/llm/workspace.js)

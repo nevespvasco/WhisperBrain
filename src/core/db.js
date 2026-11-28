@@ -735,6 +735,43 @@ const MIGRATIONS = [
   ALTER TABLE actions_v3 RENAME TO actions;
   CREATE INDEX actions_state ON actions(state);
   `,
+  // v30: the search index's change queue (src/search/index.js). Triggers put every meeting or item whose pieces may have changed in
+  // dirty_owners, and an index pass takes a few of them instead of comparing every note and item with what was indexed (which cost
+  // ~55-230 ms per pass on a 2k-note/20k-item database, on the main thread, after every autosave). A transcript's pieces carry the
+  // speakers' names, so renaming, merging or moving a voice, or renaming a saved voice, queues the meeting too (they changed no hash).
+  // Upgrade: every meeting is queued once (a pass that finds the same pieces keeps them and their vectors), plus the items whose hash
+  // differs from what was indexed and whatever was indexed and is gone. The triggers insert WHERE NOT EXISTS rather than OR IGNORE: the
+  // conflict policy of the statement that fires a trigger overrides the trigger's own (an upsert into note_speakers would fail).
+  `
+  CREATE TABLE dirty_owners (
+    owner_kind TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    PRIMARY KEY (owner_kind, owner_id)
+  );
+  CREATE TRIGGER dirty_note_ins AFTER INSERT ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_note_upd AFTER UPDATE ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_note_del AFTER DELETE ON notes BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.id); END;
+  CREATE TRIGGER dirty_seg_ins AFTER INSERT ON segments BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_seg_upd AFTER UPDATE OF note_id, speaker, speaker_id, start_ms, end_ms, text ON segments BEGIN
+    INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id);
+    INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_seg_del AFTER DELETE ON segments BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_ns_ins AFTER INSERT ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_ns_upd AFTER UPDATE OF name, voice_id, speaker_id ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', NEW.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = NEW.note_id); END;
+  CREATE TRIGGER dirty_ns_del AFTER DELETE ON note_speakers BEGIN INSERT INTO dirty_owners SELECT 'note', OLD.note_id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = OLD.note_id); END;
+  CREATE TRIGGER dirty_voice_name AFTER UPDATE OF name ON voices BEGIN
+    INSERT INTO dirty_owners SELECT DISTINCT 'note', ns.note_id FROM note_speakers ns WHERE ns.voice_id = NEW.id
+      AND NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'note' AND owner_id = ns.note_id); END;
+  CREATE TRIGGER dirty_item_ins AFTER INSERT ON items WHEN NEW.kind <> 'meeting' BEGIN INSERT INTO dirty_owners SELECT 'item', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_item_upd AFTER UPDATE OF title, text, hash, kind, deleted_at ON items BEGIN INSERT INTO dirty_owners SELECT 'item', NEW.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = NEW.id); END;
+  CREATE TRIGGER dirty_item_del AFTER DELETE ON items BEGIN INSERT INTO dirty_owners SELECT 'item', OLD.id WHERE NOT EXISTS (SELECT 1 FROM dirty_owners WHERE owner_kind = 'item' AND owner_id = OLD.id); END;
+  INSERT OR IGNORE INTO dirty_owners SELECT 'note', id FROM notes;
+  INSERT OR IGNORE INTO dirty_owners SELECT 'item', i.id FROM items i LEFT JOIN index_owner o ON o.owner_kind = 'item' AND o.owner_id = i.id
+    WHERE i.deleted_at IS NULL AND i.kind <> 'meeting' AND (o.hash IS NULL OR o.hash <> i.hash);
+  INSERT OR IGNORE INTO dirty_owners SELECT owner_kind, owner_id FROM index_owner o
+    WHERE (owner_kind = 'note' AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = o.owner_id))
+       OR (owner_kind = 'item' AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id = o.owner_id AND i.deleted_at IS NULL AND i.kind <> 'meeting'));
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
