@@ -34,8 +34,16 @@ function parseLine(line) {
   return { name, params, value };
 }
 
+// One formatter per time zone: building an Intl.DateTimeFormat costs far more than using one, and an occurrence needs two.
+const FORMATTERS = new Map();
+function formatter(tz) {
+  let f = FORMATTERS.get(tz);
+  if (!f) FORMATTERS.set(tz, f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' }));
+  return f;
+}
+
 function tzOffsetMs(utcMs, tz) {
-  const f = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+  const f = formatter(tz);
   const p = Object.fromEntries(f.formatToParts(new Date(utcMs)).map((x) => [x.type, Number(x.value)]));
   return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(utcMs / 1000) * 1000;
 }
@@ -51,8 +59,13 @@ function wallToUtc(y, mo, d, h, mi, s, tz) {
 function resolveTz(tzid) {
   if (!tzid) return null;
   const name = WIN_TZ[tzid] || tzid.replace(/^\/?(mozilla\.org|freeassociation\.sourceforge\.net)\/[^/]*\//, '');
-  try { new Intl.DateTimeFormat('en-US', { timeZone: name }); return name; } catch { return null; }
+  try { formatter(name); return name; } catch { return null; }
 }
+
+// A DATE (all-day) value is a floating local date: local midnight, the same as Google all-day events (google.js dateMs) and
+// what the UI groups by. DTSTART, EXDATE, RECURRENCE-ID and every occurrence use this one rule (occurrences used UTC
+// midnight while DTSTART/EXDATE used local, so outside UTC the first day was skipped and EXDATE never matched).
+const localDate = (y, mo, d) => new Date(y, mo - 1, d).getTime();
 
 // -> { ms, allDay, tz, wall:{y,mo,d,h,mi,s} }
 function parseDate(value, params = {}) {
@@ -61,6 +74,7 @@ function parseDate(value, params = {}) {
   const [, y, mo, d, h = '0', mi = '0', s = '0', z] = m;
   const wall = { y: +y, mo: +mo, d: +d, h: +h, mi: +mi, s: +s };
   const allDay = params.VALUE === 'DATE' || m[4] === undefined;
+  if (allDay) return { ms: localDate(wall.y, wall.mo, wall.d), allDay: true, tz: null, wall };
   if (z) return { ms: Date.UTC(wall.y, wall.mo - 1, wall.d, wall.h, wall.mi, wall.s), allDay: false, tz: 'UTC', wall };
   const tz = resolveTz(params.TZID);
   return { ms: wallToUtc(wall.y, wall.mo, wall.d, wall.h, wall.mi, wall.s, tz), allDay, tz, wall };
@@ -136,7 +150,9 @@ function parseRrule(v) {
     const [k, val] = part.split('=');
     r[k.toUpperCase()] = val;
   }
-  const out = { freq: r.FREQ, interval: Number(r.INTERVAL || 1), count: r.COUNT ? Number(r.COUNT) : null, until: r.UNTIL ? parseDate(r.UNTIL, {})?.ms : null };
+  // INTERVAL below 1 (0, negative, junk) would never move forward: the walk spun 20,000 times on the same day
+  const interval = Math.floor(Number(r.INTERVAL || 1)), count = Math.floor(Number(r.COUNT));
+  const out = { freq: String(r.FREQ || '').toUpperCase(), interval: interval >= 1 ? interval : 1, count: count >= 1 ? count : null, until: r.UNTIL ? parseDate(r.UNTIL, {})?.ms : null };
   out.byday = (r.BYDAY || '').split(',').filter(Boolean).map((d) => { const m = /^([+-]?\d+)?(SU|MO|TU|WE|TH|FR|SA)$/.exec(d); return m ? { n: m[1] ? Number(m[1]) : 0, day: DAYS.indexOf(m[2]) } : null; }).filter(Boolean);
   out.bymonthday = (r.BYMONTHDAY || '').split(',').filter(Boolean).map(Number);
   out.bymonth = (r.BYMONTH || '').split(',').filter(Boolean).map(Number);
@@ -154,7 +170,11 @@ function periodDates(rule, start, k) {
   const out = [];
   const push = (yy, mm, dd) => out.push({ y: yy, mo: mm, d: dd });
   switch (rule.freq) {
-    case 'DAILY': { const t = new Date(baseUtc + k * rule.interval * 86400000); push(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate()); break; }
+    case 'DAILY': {   // BYDAY on a daily rule filters the days ("every weekday"); it used to be ignored
+      const t = new Date(baseUtc + k * rule.interval * 86400000);
+      if (!rule.byday.length || rule.byday.some((x) => x.day === t.getUTCDay())) push(t.getUTCFullYear(), t.getUTCMonth() + 1, t.getUTCDate());
+      break;
+    }
     case 'WEEKLY': {
       const days = rule.byday.length ? rule.byday.map((x) => x.day) : [dow];
       const weekStart = baseUtc - ((dow - rule.wkst + 7) % 7) * 86400000 + k * rule.interval * 7 * 86400000;
@@ -184,6 +204,40 @@ function periodDates(rule, start, k) {
   return out.sort((a, b) => Date.UTC(a.y, a.mo - 1, a.d) - Date.UTC(b.y, b.mo - 1, b.d));
 }
 
+const FREQS = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY']);
+const DAY = 86400000;
+
+// The first period worth looking at for a window that starts at `fromMs`, and how many occurrences the skipped periods hold
+// (needed for COUNT). Walking from DTSTART cost one wall-clock conversion per occurrence since the series began (a 2018 daily
+// stand-up: thousands per expand, every 4 s). Periods are counted on the UTC calendar like periodDates; the margin of two
+// days plus the duration covers time zones and an occurrence that started before the window but still runs.
+function skipTo(ev, fromMs) {
+  const r = ev.rrule, w = ev.dtstart.wall, dur = Math.max(ev.durationMs || 0, 0);
+  const baseUtc = Date.UTC(w.y, w.mo - 1, w.d), target = fromMs - dur - 2 * DAY;
+  if (!(target > baseUtc)) return { k: 0, produced: 0 };
+  const t = new Date(target);
+  let k;
+  switch (r.freq) {
+    case 'DAILY': k = Math.floor((target - baseUtc) / DAY / r.interval); break;
+    case 'WEEKLY': k = Math.floor((target - baseUtc) / (7 * DAY) / r.interval); break;
+    // MONTHLY/YEARLY periods count from the written year, as periodDates does
+    case 'MONTHLY': k = Math.floor(((t.getUTCFullYear() - w.y) * 12 + t.getUTCMonth() - (w.mo - 1)) / r.interval); break;
+    case 'YEARLY': k = Math.floor((t.getUTCFullYear() - w.y) / r.interval); break;
+    default: return { k: 0, produced: 0 };
+  }
+  k = Math.max(0, k - 1);
+  if (k === 0 || !r.count) return { k, produced: 0 };
+  // With COUNT the skipped occurrences must be counted. That is arithmetic only when every period holds the same number of
+  // dates: DAILY without BYDAY, and WEEKLY (its first week may start before DTSTART). Other rules walk from DTSTART;
+  // COUNT bounds that walk anyway.
+  if (r.bymonth.length || !(r.freq === 'WEEKLY' || (r.freq === 'DAILY' && !r.byday.length))) return { k: 0, produced: 0 };
+  const perPeriod = periodDates(r, ev.dtstart, 1).length;
+  const first = periodDates(r, ev.dtstart, 0).filter((dt) => startOf(ev, dt) >= ev.dtstart.ms).length;
+  return { k, produced: first + (k - 1) * perPeriod };
+}
+
+const startOf = (ev, dt) => (ev.dtstart.allDay ? localDate(dt.y, dt.mo, dt.d) : wallToUtc(dt.y, dt.mo, dt.d, ev.dtstart.wall.h, ev.dtstart.wall.mi, ev.dtstart.wall.s, ev.dtstart.tz));
+
 // All occurrences of one parsed event that intersect [fromMs, toMs).
 function occurrences(ev, fromMs, toMs, { max = 2000 } = {}) {
   const dur = ev.durationMs || 0;
@@ -193,21 +247,23 @@ function occurrences(ev, fromMs, toMs, { max = 2000 } = {}) {
     return s < toMs && s + Math.max(dur, 1) > fromMs ? [make(s)] : [];
   }
   const r = ev.rrule;
+  if (!FREQS.has(r.freq)) return [];              // HOURLY/MINUTELY/SECONDLY are not supported: nothing, at once
+  if (r.until != null && r.until < fromMs - Math.max(dur, 1)) return [];
   const out = [];
-  let produced = 0;
-  const w = ev.dtstart.wall;
-  for (let k = 0; k < 20000 && out.length < max; k++) {
+  const excluded = new Set(ev.exdates);
+  let { k, produced } = skipTo(ev, fromMs);
+  for (const end = k + 20000; k < end && out.length < max; k++) {
     const dates = periodDates(r, ev.dtstart, k);
     let pastEnd = false;
     for (const dt of dates) {
       if (r.bymonth.length && r.freq !== 'YEARLY' && !r.bymonth.includes(dt.mo)) continue;
-      const ms = ev.dtstart.allDay ? Date.UTC(dt.y, dt.mo - 1, dt.d) : wallToUtc(dt.y, dt.mo, dt.d, w.h, w.mi, w.s, ev.dtstart.tz);
+      const ms = startOf(ev, dt);
       if (ms < ev.dtstart.ms) continue;
       if (r.until && ms > r.until) { pastEnd = true; break; }
       produced++;
       if (r.count && produced > r.count) { pastEnd = true; break; }
       if (ms >= toMs) { pastEnd = true; break; }
-      if (ms + Math.max(dur, 1) > fromMs && !ev.exdates.includes(ms)) out.push(make(ms));
+      if (ms + Math.max(dur, 1) > fromMs && !excluded.has(ms)) out.push(make(ms));
     }
     if (pastEnd) break;
   }
@@ -237,4 +293,22 @@ function expand(events, fromMs, toMs) {
   return out.filter((o) => o.end > fromMs && o.start < toMs).sort((a, b) => a.start - b.start || a.summary.localeCompare(b.summary));
 }
 
-module.exports = { parseIcs, expand, occurrences, parseDate, parseRrule, meetingUrl, wallToUtc, tzOffsetMs };
+// expand() for the calendar views and the meeting detector, which ask every few seconds for a window that moves by seconds.
+// The answer is computed once per feed load (a reload parses a new events array, so a WeakMap entry dies with the old one)
+// and per window widened to whole days, then cut to the exact window.
+const EXPANDED = new WeakMap();
+function expandCached(events, fromMs, toMs) {
+  if (!Array.isArray(events) || !Number.isFinite(fromMs) || !Number.isFinite(toMs)) return expand(events, fromMs, toMs);
+  const lo = Math.floor(fromMs / DAY) * DAY - DAY, hi = Math.ceil(toMs / DAY) * DAY + DAY, key = `${lo}|${hi}`;
+  let per = EXPANDED.get(events);
+  if (!per) EXPANDED.set(events, per = new Map());
+  let all = per.get(key);
+  if (!all) {
+    all = expand(events, lo, hi);
+    if (per.size >= 8) per.delete(per.keys().next().value);
+    per.set(key, all);
+  }
+  return all.filter((o) => o.end > fromMs && o.start < toMs);
+}
+
+module.exports = { parseIcs, expand, expandCached, occurrences, parseDate, parseRrule, meetingUrl, wallToUtc, tzOffsetMs };

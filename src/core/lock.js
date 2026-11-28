@@ -12,22 +12,33 @@ const crypto = require('node:crypto');
 
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
 const MAX_FAILS = 5, PENALTY_MS = 30_000;
+const TICK_MS = 30_000, MCP_FRESH_MS = 2 * 60_000;   // the heartbeat, and how old it may be before MCP treats the app as gone (locked)
 const err = (message, status = 400, code) => Object.assign(new Error(message), { status, code });
 
 class AppLock {
-  constructor({ db, bus = null, now = () => Date.now() }) {
-    Object.assign(this, { db, bus, now });
+  // tickMs: how often the idle time is checked without waiting for a request, and the heartbeat for MCP written (0 = never)
+  // busy(): something is running for the person (a recording): the app does not lock while it is, however long they are away from the
+  // keyboard. Its audio is not 'use' (see isUse), so without this a long meeting would lock the app and cover the live transcript.
+  constructor({ db, bus = null, now = () => Date.now(), tickMs = TICK_MS, busy = () => false }) {
+    Object.assign(this, { db, bus, now, busy });
     this.isLocked = this.enabled();      // starts locked when a passphrase is set
     this.persist();
     this.lastUse = now();
     this.fails = 0; this.blockedUntil = 0;
+    this.timer = tickMs > 0 ? setInterval(() => this.tick(), tickMs) : null;
+    this.timer?.unref?.();
   }
+
+  // The idle lock closes on time even with nobody calling the API (the window left open on a lock-free page), and the app says it is
+  // alive: MCP serves only while 'unlocked' was confirmed within MCP_FRESH_MS, so after a crash it reads the app as locked.
+  tick() { try { this.locked(); this.heartbeat(); } catch { /* closing */ } }
+  heartbeat() { if (this.enabled()) this.setMeta('seen', this.now()); }
 
   meta(k) { return this.db.prepare('SELECT value FROM index_meta WHERE key = ?').get(`lock:${k}`)?.value ?? null; }
   setMeta(k, v) { this.db.prepare('INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(`lock:${k}`, String(v)); }
   enabled() { return !!this.meta('hash'); }
   // The state, written where the MCP server (another process, src/mcp/server.js) can read it, so it refuses while the app is locked.
-  persist() { try { this.setMeta('state', this.isLocked ? 'locked' : 'unlocked'); } catch { /* read-only or closing */ } }
+  persist() { try { this.setMeta('state', this.isLocked ? 'locked' : 'unlocked'); this.heartbeat(); } catch { /* read-only or closing */ } }
   minutes() { return Number(this.meta('minutes')) || 0; }
 
   status() { return { enabled: this.enabled(), locked: this.locked(), minutes: this.minutes() }; }
@@ -36,7 +47,10 @@ class AppLock {
   locked() {
     if (!this.enabled()) return false;
     const m = this.minutes();
-    if (!this.isLocked && m > 0 && this.now() - this.lastUse > m * 60_000) this.lock();
+    if (!this.isLocked && m > 0 && this.now() - this.lastUse > m * 60_000) {
+      if (this.busy()) this.lastUse = this.now();   // a recording is running: idle time starts when it ends
+      else this.lock();
+    }
     return this.isLocked;
   }
   touch() { if (!this.isLocked) this.lastUse = this.now(); }
@@ -72,7 +86,7 @@ class AppLock {
   }
 
   // The app is closing: whoever reads the database next (the MCP server) sees it locked until the app is opened and unlocked again.
-  close() { if (this.enabled()) { this.isLocked = true; this.persist(); } }
+  close() { clearInterval(this.timer); this.timer = null; if (this.enabled()) { this.isLocked = true; this.persist(); } }
 
   setMinutes(minutes, { passphrase }) { this.guess(passphrase); this.setMeta('minutes', Math.max(0, Math.min(1440, Math.round(Number(minutes) || 0)))); return this.status(); }
 
@@ -87,5 +101,8 @@ class AppLock {
 // what a locked app still answers: the lock itself, and the audio of a recording that is already running
 const OPEN = [/^\/api\/lock(\/|$)/, /^\/api\/recording\/(pcm|stop)$/];
 const mayPass = (method, pathname) => OPEN.some((re) => re.test(pathname));
+// what is not somebody using the app: the lock screen, the live events, and audio streamed by a recording or dictation by itself
+const NOT_USE = /^\/api\/(events|lock|recording\/pcm$|dictation\/pcm$)/;
+const isUse = (pathname) => !NOT_USE.test(pathname);
 
-module.exports = { AppLock, mayPass };
+module.exports = { AppLock, mayPass, isUse, MCP_FRESH_MS };

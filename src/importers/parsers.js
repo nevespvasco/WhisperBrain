@@ -7,7 +7,8 @@ const blank = () => ({ title: '', date: null, attendees: [], body: '', summary: 
 
 // ---------- text helpers ----------
 const clean = (s) => String(s ?? '').replace(/[\u200b-\u200f\u202a-\u202e\u2060\ufeff]/g, '').replace(/\s+/g, ' ').trim();
-const tidy = (s) => String(s ?? '').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+// trailing blanks cut per line without `[ \t]+$`/gm, which is quadratic on a long run of spaces
+const tidy = (s) => trimLines(String(s ?? ''), { start: false }).replace(/\n{3,}/g, '\n\n').trim();
 const mdInline = (s) => clean(String(s).replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/(\*\*|__|`)/g, ''));
 const userError = (msg) => Object.assign(new Error(msg), { code: 'EIMPORT' });
 
@@ -27,16 +28,8 @@ function decodeText(buf) {
   return s.replace(/\r\n?/g, '\n');
 }
 
-const ENT = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', ensp: ' ', emsp: ' ', thinsp: ' ', lrm: '', rlm: '', zwj: '', zwnj: '', shy: '',
-  ndash: '–', mdash: '—', hellip: '…', lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', laquo: '«', raquo: '»', bull: '•', middot: '·',
-  copy: '©', reg: '®', trade: '™', euro: '€', pound: '£', deg: '°', times: '×', szlig: 'ß', aelig: 'æ', oslash: 'ø', Oslash: 'Ø' };
-for (const [acc, mark] of Object.entries({ acute: '\u0301', grave: '\u0300', circ: '\u0302', tilde: '\u0303', uml: '\u0308', cedil: '\u0327', ring: '\u030a' })) {
-  for (const l of 'aeiouyncAEIOUYNC') { const ch = (l + mark).normalize('NFC'); if (ch.length === 1) ENT[l + acc] = ch; }
-}
-const fromCp = (n) => (n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : '');
-const decodeEntities = (s) => String(s).replace(/&(#x[\da-f]+|#\d+|[a-z]+\d*);/gi, (m, e) =>
-  e[0] === '#' ? fromCp(e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : +e.slice(1)) : ENT[e] ?? ENT[e.toLowerCase()] ?? m);
-const stripTags = (s) => decodeEntities(String(s).replace(/<[^>]*>/g, ''));
+// entities, tags and the HTML pass are shared with the mail readers (linear: the old regexes here backtracked on hostile input)
+const { decodeEntities, stripTags, walk, titleOf, trimLines } = require('../core/html-text');
 
 // ---------- timestamps & dates ----------
 const TS = String.raw`(?:\d{1,3}:)?\d{1,2}:\d{1,2}(?:[.,]\d{1,3})?`;
@@ -492,14 +485,21 @@ function parseCsv(text) {
 }
 
 // ---------- HTML ----------
+const BLOCK = /^(?:p|div|tr|ul|ol|table|section|article|blockquote|pre|header|footer|main|nav|aside|dl|dt|dd|figure|hr)$/;
 function htmlToText(html) {
-  const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1];
-  let s = html.replace(/<!--[\s\S]*?-->/g, ' ').replace(/<(script|style|head|noscript|template|svg|iframe)\b[\s\S]*?<\/\1\s*>/gi, ' ');
-  s = s.replace(/\s+/g, ' ');
-  s = s.replace(/<h([1-6])\b[^>]*>/gi, (_, n) => `\n\n${'#'.repeat(+n)} `).replace(/<\/h[1-6]\s*>/gi, '\n\n')
-    .replace(/<br\s*\/?>/gi, '\n').replace(/<li\b[^>]*>/gi, '\n- ').replace(/<\/t[dh]\s*>/gi, ' ')
-    .replace(/<\/?(p|div|tr|ul|ol|table|section|article|blockquote|pre|header|footer|main|nav|aside|dl|dt|dd|figure|hr)\b[^>]*>/gi, '\n');
-  s = decodeEntities(s.replace(/<[^>]*>/g, ''));
+  const title = titleOf(html);
+  // whitespace collapsed in the text runs first, so the breaks the tags add below are kept
+  const s = walk(html, {
+    onText: (t) => decodeEntities(t.replace(/\s+/g, ' ')),
+    onTag: (name, closing) => {
+      const h = /^h([1-6])$/.exec(name);
+      if (h) return closing ? '\n\n' : `\n\n${'#'.repeat(+h[1])} `;
+      if (name === 'br') return '\n';
+      if (name === 'li') return closing ? '' : '\n- ';
+      if (name === 'td' || name === 'th') return closing ? ' ' : '';
+      return BLOCK.test(name) ? '\n' : '';
+    },
+  });
   const text = tidy(s.split('\n').map((l) => l.replace(/[ \t\u00a0]+/g, ' ').trim()).join('\n'));
   return { text, title: title ? clean(stripTags(title)) : '' };
 }
@@ -509,16 +509,74 @@ function parseHtml(text) {
 }
 
 // ---------- DOCX ----------
+// Read with indexOf, not `<w:p\b…>([\s\S]*?)<\/w:p>`: that regex rescans to the end of the file for every unclosed <w:p>, so a
+// 447-byte .docx of 40,000 of them took 0.9 s and grew quadratically. document.xml is capped at 20 MB inflated.
+const DOCX_XML_MAX = 20 * 1024 * 1024;
+const WORD = /[\w.-]/;
+// the next <name …> or <name/> at or after `from` (not <namePr>): { at, gt, empty } or null
+function openTag(s, name, from) {
+  for (let i = s.indexOf(`<${name}`, from); i >= 0; i = s.indexOf(`<${name}`, i + 1)) {
+    const c = s[i + name.length + 1];
+    if (c !== undefined && WORD.test(c)) continue;
+    const gt = s.indexOf('>', i);
+    return gt < 0 ? null : { at: i, gt, empty: s[gt - 1] === '/' };
+  }
+  return null;
+}
+// each <name>…</name> of `s` in order (inner text, '' for <name/>); an unclosed one ends the list
+function* elements(s, name) {
+  const close = `</${name}>`;
+  for (let t = openTag(s, name, 0); t; ) {
+    if (t.empty) { yield { inner: '', tag: s.slice(t.at, t.gt + 1) }; t = openTag(s, name, t.gt + 1); continue; }
+    const end = s.indexOf(close, t.gt + 1);
+    if (end < 0) return;
+    yield { inner: s.slice(t.gt + 1, end), tag: s.slice(t.at, t.gt + 1) };
+    t = openTag(s, name, end + close.length);
+  }
+}
+const firstInner = (s, name) => { for (const e of elements(s, name)) return e.inner; return undefined; };
+// `s` without its <name>…</name> blocks (an unclosed one is left as it is)
+function dropElements(s, name) {
+  const close = `</${name}>`, out = [];
+  let i = 0;
+  for (let t = openTag(s, name, 0); t; t = openTag(s, name, i)) {
+    if (t.empty) { out.push(s.slice(i, t.gt + 1)); i = t.gt + 1; continue; }
+    const end = s.indexOf(close, t.gt + 1);
+    if (end < 0) break;
+    out.push(s.slice(i, t.at)); i = end + close.length;
+  }
+  out.push(s.slice(i));
+  return out.join('');
+}
+const RUN_MARK = { 'w:tab': '\t', 'w:br': '\n', 'w:cr': '\n', 'w:noBreakHyphen': '-' };
+// the text of a paragraph's runs: <w:t>text</w:t>, and <w:tab/>, <w:br/>, <w:cr/>, <w:noBreakHyphen/>
+function runText(s) {
+  let line = '', i = 0;
+  for (;;) {
+    const lt = s.indexOf('<', i); if (lt < 0) break;
+    const gt = s.indexOf('>', lt); if (gt < 0) break;
+    const tag = s.slice(lt + 1, gt), name = /^[\w:]+/.exec(tag)?.[0] || '';
+    i = gt + 1;
+    if (name === 'w:t' && (tag.length === 3 || /\s/.test(tag[3])) && !tag.endsWith('/')) {
+      const next = s.indexOf('<', i);
+      if (next >= 0 && s.startsWith('</w:t>', next)) { line += decodeEntities(s.slice(i, next)); i = next + 6; }
+    } else if (RUN_MARK[name] !== undefined && tag.endsWith('/')) line += RUN_MARK[name];
+  }
+  return line;
+}
+
 function docxToText(buf) {
   let zip;
   try { zip = readZip(buf); } catch (e) { throw userError(`This .docx file can't be opened: ${e.message}.`); }
   if (!zip.has('word/document.xml')) throw userError('This file is not a Word document (word/document.xml is missing).');
+  if (zip.entries.find((e) => e.name === 'word/document.xml').usize > DOCX_XML_MAX) throw userError(`This .docx file is too large to import (its text is over ${DOCX_XML_MAX / 1048576} MB).`);
   const get = (n) => { try { return zip.has(n) ? zip.read(n).toString('utf8') : ''; } catch (e) { throw userError(`This .docx file can't be opened: ${e.message}.`); } };
   const xml = get('word/document.xml');
   // styleId → built-in style name (names are English even in localised Word: "heading 1", "Title")
   const styles = {};
-  for (const m of get('word/styles.xml').matchAll(/<w:style\b[^>]*w:styleId="([^"]+)"[^>]*>([\s\S]*?)<\/w:style>/g)) {
-    const n = /<w:name\s+w:val="([^"]+)"/.exec(m[2]); if (n) styles[m[1]] = n[1];
+  for (const { inner, tag } of elements(get('word/styles.xml'), 'w:style')) {
+    const id = /w:styleId="([^"]{1,200})"/.exec(tag)?.[1], n = /<w:name\s+w:val="([^"]{1,200})"/.exec(inner);
+    if (id && n) styles[id] = n[1];
   }
   const level = (id) => {
     const n = (styles[id] || id).toLowerCase().replace(/\s+/g, '');
@@ -527,25 +585,20 @@ function docxToText(buf) {
     return h ? Math.min(6, +h[1]) : 0;
   };
   const out = [];
-  for (const m of xml.matchAll(/<w:p\b[^>]*?(?:\/>|>([\s\S]*?)<\/w:p>)/g)) {
-    const inner = m[1] || '';
-    const style = /<w:pStyle\s+w:val="([^"]+)"/.exec(inner)?.[1] || '';
-    const list = /<w:numPr>/.test(inner);
-    const runs = inner.replace(/<w:pPr\b[\s\S]*?<\/w:pPr>/g, '').replace(/<w:del\b[\s\S]*?<\/w:del>/g, '');
-    let line = '';
-    for (const t of runs.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:(tab|br|cr|noBreakHyphen)\b[^>]*\/>/g)) {
-      line += t[2] ? { tab: '\t', br: '\n', cr: '\n', noBreakHyphen: '-' }[t[2]] : decodeEntities(t[1]);
-    }
+  for (const { inner } of elements(xml, 'w:p')) {
+    const style = /<w:pStyle\s+w:val="([^"]{1,200})"/.exec(inner)?.[1] || '';
+    const list = inner.includes('<w:numPr>');
+    const line = runText(dropElements(dropElements(inner, 'w:pPr'), 'w:del'));
     if (!line.trim()) { out.push(''); continue; }
     const lv = level(style);
-    out.push(lv ? `${'#'.repeat(lv)} ${clean(line)}` : list ? `- ${line.trim()}` : line.replace(/[ \t]+$/gm, ''));
+    out.push(lv ? `${'#'.repeat(lv)} ${clean(line)}` : list ? `- ${line.trim()}` : trimLines(line, { start: false, edges: true }));
   }
   // paragraphs become blank-line separated (Markdown paragraphs), list items stay together
   const text = out.filter(Boolean).reduce((acc, l, i, a) => acc + (i ? (l.startsWith('- ') && a[i - 1].startsWith('- ') ? '\n' : '\n\n') : '') + l, '');
   const core = get('docProps/core.xml');
-  const title = clean(decodeEntities(/<dc:title>([\s\S]*?)<\/dc:title>/.exec(core)?.[1] || ''));
-  const created = /<dcterms:created\b[^>]*>([^<]+)<\/dcterms:created>/.exec(core)?.[1];
-  return { text, title, date: created ? toMs(created) : null };
+  const title = clean(decodeEntities(firstInner(core, 'dc:title') || ''));
+  const created = firstInner(core, 'dcterms:created')?.trim();
+  return { text, title, date: created && !created.includes('<') ? toMs(created) : null };
 }
 function parseDocx(buf) {
   const { text, title, date } = docxToText(buf);

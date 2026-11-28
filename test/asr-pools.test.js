@@ -43,10 +43,11 @@ test('plan: machines with fewer than four cores, or pools switched off, keep one
   assert.deepEqual(off, { mode: 'shared', cores: 16, live: { threads: 8 }, batch: null, dictation: null });
 });
 
-test('memory: a second recognizer is started only when it fits beside what the machine needs', () => {
-  const dir = tmpDir('wb-pool-');
+test('memory: a second recognizer is started only when it fits beside what the machine needs', (t) => {
+  const dir = tmpDir('wb-pool-', t);
   const file = path.join(dir, 'model.onnx');
-  fs.writeFileSync(file, Buffer.alloc(100 * 1048576)); // a 100 MB "model"
+  fs.writeFileSync(file, '');
+  fs.truncateSync(file, 100 * 1048576); // a 100 MB "model": only its size is read, so a sparse file that takes no disk space
   const model = { id: 'tiny-test', kind: 'transducer', files: { encoder: file } };
   const need = workerMB(model);
   assert.ok(need >= 100 + 200, `worker estimate counts the files plus overhead (${need} MB)`);

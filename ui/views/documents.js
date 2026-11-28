@@ -3,10 +3,11 @@
 import { S, $, api, t, esc, icon, fail, debounce, empty, fmtDate, safeSnippet, go } from '../lib.js';
 import { renderMarkdown } from '../md.js';
 
-export async function render(main, { parts, params }) {
+export async function render(main, { parts, params, alive = () => true }) {
   if (parts[1]) return detail(main, parts[1]);
   let q = params.get('q') || '', source = params.get('source') || '';
   const sources = (await api('GET', '/api/sources')).filter((s) => !s.config?.imported && s.items);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   main.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>${t('Notes & files')}</h1><div class="sub">${t('Notes and files read from your folders and vaults. They stay where they are; open one to go to its own app.')}</div></div><a class="btn" href="#/sources">${icon('plug', 'sm')} ${t('Folders & vaults')}</a></div>
     <div class="toolbar"><div class="search-in">${icon('search', 'sm')}<input id="d-q" type="search" value="${esc(q)}" placeholder="${t('Search your notes…')}" aria-label="${t('Search your notes…')}"></div>

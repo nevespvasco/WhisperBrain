@@ -30,8 +30,8 @@ const card = (c) => {
   if (c.type === 'action') {
     const a = c.args || {};
     // what exactly will happen: a message (to, subject, text), a change to many threads, or the plain text the other services take
-    const shown = a.body !== undefined && a.to ? `To: ${(a.to || []).join(', ')}${a.cc?.length ? `\nCc: ${a.cc.join(', ')}` : ''}\nSubject: ${a.subject || ''}\n\n${a.body}`
-      : a.threads ? `${a.add?.length ? `Add: ${a.add.join(', ')}${a.create ? ' (creates the label if it is missing)' : ''}\n` : ''}${a.remove?.length ? `Remove: ${a.remove.join(', ')}\n` : ''}\n${a.threads.slice(0, 30).map((x) => `• ${x.title}`).join('\n')}${a.threads.length > 30 ? `\n… ${a.threads.length - 30} more` : ''}`
+    const shown = a.body !== undefined && a.to ? `${t('To')}: ${(a.to || []).join(', ')}${a.cc?.length ? `\n${t('Cc')}: ${a.cc.join(', ')}` : ''}\n${t('Subject')}: ${a.subject || ''}\n\n${a.body}`
+      : a.threads ? `${a.add?.length ? `${t('Add')}: ${a.add.join(', ')}${a.create ? ` ${t('(creates the label if it is missing)')}` : ''}\n` : ''}${a.remove?.length ? `${t('Remove')}: ${a.remove.join(', ')}\n` : ''}\n${a.threads.slice(0, 30).map((x) => `• ${x.title}`).join('\n')}${a.threads.length > 30 ? `\n${t('… {n} more', { n: a.threads.length - 30 })}` : ''}`
       : `${a.title || ''}${a.description ? `\n\n${a.description}` : a.text ? `\n\n${a.text}` : a.payload ? `\n\n${JSON.stringify(a.payload, null, 2)}` : ''}`;
     const verbOk = c.kind === 'gmail.send' ? t('Approve and send') : c.kind === 'gmail.draft' ? t('Approve and save the draft') : t('Approve and do it');
     return `<div class="card inbox-card" data-id="${c.id}" data-type="action"><div class="xsmall muted">${icon('external', 'sm')} ${t('Waiting for your approval')} · ${t('nothing has been sent')}${c.expiresAt ? ` · ${t('expires {d}', { d: day(c.expiresAt) })}` : ''}</div>
@@ -41,6 +41,12 @@ const card = (c) => {
       <div class="xsmall muted">${t('This is exactly what will be done.')}</div>
       ${c.needsSecondYes ? `<label class="row small" style="gap:8px;margin-top:8px"><input type="checkbox" data-second> ${t('I have read the warnings and still want this.')}</label>` : ''}
       <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm primary" data-do="approve" ${c.needsSecondYes ? 'disabled' : ''}>${verbOk}</button><button class="btn sm ghost" data-do="reject-action">${t('Do not do it')}</button></div></div>`;
+  }
+  if (c.type === 'action-interrupted') {
+    return `<div class="card inbox-card" data-id="${c.id}" data-type="action-interrupted"><div class="xsmall muted">${icon('alert', 'sm')} ${t('Outcome unknown — check before retrying')}</div>
+      <div class="strong" style="margin:4px 0">${esc(c.title)}</div>
+      <div class="small muted">${t('The app closed while this was being done, so it may or may not have happened. It will not be tried again by itself.')}</div>
+      <div class="row" style="gap:8px;margin-top:10px"><button class="btn sm" data-do="resolve-done">${t('It was done')}</button><button class="btn sm ghost" data-do="resolve-not">${t('It was not done')}</button></div></div>`;
   }
   if (c.type === 'supersede') {
     return `<div class="card inbox-card" data-id="${esc(c.id)}" data-type="supersede"><div class="xsmall muted">${icon('merge', 'sm')} ${t('Does this replace an earlier decision?')}</div>
@@ -71,9 +77,10 @@ const card = (c) => {
   return '';
 };
 
-export async function render(main) {
+export async function render(main, { alive = () => true, signal = S.route.signal } = {}) {
   const draw = async () => {
     const { counts, cards } = await api('GET', '/api/inbox');
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     main.innerHTML = `<div class="page narrow">
       <div class="page-head"><div><h1>${t('Inbox')}</h1><div class="sub">${t('What needs a decision from you. The AI only suggests: each suggestion shows the words it rests on, and nothing counts until you accept it.')}</div></div></div>
       ${cards.length ? `<div class="stack">${cards.map(card).join('')}</div>` : `<div class="panel">${empty('inbox', t('All clear'), t('Nothing needs you. Decisions and promises found in your meetings appear here for you to accept.'))}</div>`}
@@ -100,6 +107,7 @@ export async function render(main) {
       else if (what === 'review-ok') await api('POST', `/api/inbox/access-review/${id}/dismiss`);
       else if (what === 'followup') { await composeMail({ itemId: id, title: t('Follow up'), body: '' }); }
       else if (what === 'reject-action') await api('POST', `/api/outbound/${id}/reject`);
+      else if (what === 'resolve-done' || what === 'resolve-not') await api('POST', `/api/outbound/${id}/resolve`, { done: what === 'resolve-done' });
       else if (what === 'sup-yes' || what === 'sup-no') { const [o, n] = id.split(':'); await api('POST', `/api/inbox/supersede/${o}/${n}/${what === 'sup-yes' ? 'confirm' : 'reject'}`); }
       else if (what === 'idle-no') await api('POST', `/api/inbox/idle/${id}/dismiss`);
       else if (what === 'nodismiss') await api('POST', `/api/inbox/noreply/${id}/dismiss`);
@@ -117,7 +125,7 @@ export async function render(main) {
     const k = e.key.toLowerCase();
     if (k === 'a') act(first, 'accept'); else if (k === 'd') act(first, 'dismiss'); else if (k === 'e') act(first, 'edit');
   };
-  document.addEventListener('keydown', keys);
+  document.addEventListener('keydown', keys, { signal });   // gone with the page: opening the Inbox again used to add a second one (A accepted twice)
 }
 
 // Fix what the AI got wrong: the words and where they were said stay as they were

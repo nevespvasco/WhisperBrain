@@ -4,7 +4,8 @@
 // nearest ones. The two ranked lists are fused by reciprocal rank (RRF): a chunk both agree on leads. The word index is always there;
 // the vectors are an extra that needs sqlite-vec and an embedding model, and where either is missing search is the word search.
 //
-// Only what changed is re-indexed: each owner (a meeting, an item) remembers the hash it was indexed at.
+// Only what changed is re-indexed: triggers queue each owner (a meeting, an item) whose pieces may have changed in dirty_owners, and an
+// index pass takes from that queue; index_owner remembers the hash each owner was indexed at.
 const crypto = require('node:crypto');
 const { rrf } = require('./semantic');
 const { speakerLabel } = require('../core/notes');
@@ -119,34 +120,46 @@ class ChunkIndex {
     this.db.prepare('DELETE FROM chunks WHERE owner_kind = ? AND owner_id = ?').run(kind, id);
   }
 
-  // One round of work: up to `batch` meetings or items that are out of date, and whatever was deleted. -> { done, left }
+  // One round of work: up to `batch` meetings or items from the change queue (dirty_owners, filled by triggers: see migration 30), so
+  // a pass costs what changed, not the size of the brain. -> { done: how many were looked at, left: how many still wait }
   syncBatch(batch = 40) {
     let done = 0;
     this.db.exec('BEGIN');
     try {
-      // deleted meetings, deleted or tombstoned items
-      for (const r of this.db.prepare(`SELECT owner_kind AS k, owner_id AS id FROM index_owner o WHERE (owner_kind = 'note' AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = o.owner_id))
-        OR (owner_kind = 'item' AND NOT EXISTS (SELECT 1 FROM items i WHERE i.id = o.owner_id AND i.deleted_at IS NULL))`).all()) { this.removeChunks(r.k, r.id); this.db.prepare('DELETE FROM index_owner WHERE owner_kind = ? AND owner_id = ?').run(r.k, r.id); done++; }
-      const staleItems = this.db.prepare(`SELECT i.id, i.title, i.text, i.hash FROM items i LEFT JOIN index_owner o ON o.owner_kind = 'item' AND o.owner_id = i.id
-        WHERE i.deleted_at IS NULL AND i.kind <> 'meeting' AND (o.hash IS NULL OR o.hash <> i.hash) LIMIT ?`).all(batch);
-      for (const it of staleItems) { this.replaceChunks('item', it.id, it.hash, this.itemChunks(it)); done++; }
-      const room = batch - staleItems.length;
-      if (room > 0) {
-        const stale = this.db.prepare(`SELECT n.id FROM notes n LEFT JOIN index_owner o ON o.owner_kind = 'note' AND o.owner_id = n.id
-          WHERE o.hash IS NULL OR o.hash <> (n.updated_at || ':' || (SELECT COUNT(*) FROM segments s WHERE s.note_id = n.id) || ':' || (SELECT COALESCE(MAX(s.id), 0) FROM segments s WHERE s.note_id = n.id)) LIMIT ?`).all(room);
-        for (const n of stale) { const h = this.noteHash(n.id); if (h) { this.replaceChunks('note', n.id, h, this.noteChunks(n.id)); done++; } }
+      const pop = this.db.prepare('DELETE FROM dirty_owners WHERE owner_kind = ? AND owner_id = ?');
+      for (const r of this.db.prepare('SELECT owner_kind AS k, owner_id AS id FROM dirty_owners ORDER BY rowid LIMIT ?').all(batch)) {
+        pop.run(r.k, r.id);
+        if (r.k === 'note') this.syncNote(r.id); else if (r.k === 'item') this.syncItem(r.id);
+        done++;
       }
       this.db.exec('COMMIT');
     } catch (e) { this.db.exec('ROLLBACK'); throw e; }
     return { done, left: this.pendingOwners() };
   }
 
-  pendingOwners() {
-    const items = this.db.prepare(`SELECT COUNT(*) AS n FROM items i LEFT JOIN index_owner o ON o.owner_kind = 'item' AND o.owner_id = i.id WHERE i.deleted_at IS NULL AND i.kind <> 'meeting' AND (o.hash IS NULL OR o.hash <> i.hash)`).get().n;
-    const notes = this.db.prepare(`SELECT COUNT(*) AS n FROM notes n LEFT JOIN index_owner o ON o.owner_kind = 'note' AND o.owner_id = n.id
-      WHERE o.hash IS NULL OR o.hash <> (n.updated_at || ':' || (SELECT COUNT(*) FROM segments s WHERE s.note_id = n.id) || ':' || (SELECT COALESCE(MAX(s.id), 0) FROM segments s WHERE s.note_id = n.id))`).get().n;
-    return items + notes;
+  forget(kind, id) { this.removeChunks(kind, id); this.db.prepare('DELETE FROM index_owner WHERE owner_kind = ? AND owner_id = ?').run(kind, id); }
+
+  // A meeting whose pieces come out the same (it was queued by an edit that changed nothing searchable) keeps its chunks, so their
+  // vectors are not made again.
+  syncNote(id) {
+    const hash = this.noteHash(id);
+    if (!hash) return this.forget('note', id);
+    const chunks = this.noteChunks(id);
+    const have = this.db.prepare('SELECT text, start_ms AS startMs, end_ms AS endMs, segment_id AS segmentId FROM chunks WHERE owner_kind = ? AND owner_id = ? ORDER BY seq').all('note', id);
+    const same = have.length === chunks.length && have.every((c, i) => c.text === chunks[i].text && c.startMs === chunks[i].startMs && c.endMs === chunks[i].endMs && c.segmentId === chunks[i].segmentId);
+    if (!same) return this.replaceChunks('note', id, hash, chunks);
+    this.db.prepare('INSERT INTO index_owner (owner_kind, owner_id, hash, chunks, indexed_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (owner_kind, owner_id) DO UPDATE SET hash = excluded.hash')
+      .run('note', id, hash, chunks.length, this.now());
   }
+
+  syncItem(id) {
+    const it = this.db.prepare("SELECT id, title, text, hash FROM items WHERE id = ? AND deleted_at IS NULL AND kind <> 'meeting'").get(id);
+    if (!it) return this.forget('item', id);
+    if (this.db.prepare("SELECT hash FROM index_owner WHERE owner_kind = 'item' AND owner_id = ?").get(id)?.hash === it.hash) return;
+    this.replaceChunks('item', it.id, it.hash, this.itemChunks(it));
+  }
+
+  pendingOwners() { return this.db.prepare('SELECT COUNT(*) AS n FROM dirty_owners').get().n; }
 
   // ---------- meaning (vectors) ----------
   // Is vector search possible right now? Makes the vector table for the model's dimension when it is first needed.
@@ -188,22 +201,30 @@ class ChunkIndex {
   }
 
   // Embed chunks that have no vector yet. mayEmbed(ownerKind, ownerId) -> false for what must not reach the embedding server (a private
-  // source and a server that is not on this computer). Never throws: it is an extra; the reason is kept for the Activity page.
-  async embedPending({ batch = 16, mayEmbed = () => true } = {}) {
+  // source and a server that is not on this computer); it is asked once per owner per call. Never throws: it is an extra; the reason is
+  // kept for the Activity page. Pages by chunk id: `after` is where the previous call stopped and `next` where the next one starts
+  // (null when the scan reached the end), so chunks that may not be embedded (old mail, a private source) never hide the ones behind them.
+  async embedPending({ batch = 16, mayEmbed = () => true, after = 0 } = {}) {
     const model = this.checkModel();
-    if (!model || !this.embedder?.configured?.()) return { embedded: 0, left: 0, reason: this.vec.reason };
-    const rows = this.db.prepare('SELECT id, owner_kind AS k, owner_id AS o, text FROM chunks WHERE embedded = 0 ORDER BY id LIMIT ?').all(batch * 4).filter((r) => mayEmbed(r.k, r.o)).slice(0, batch);
-    if (!rows.length) return { embedded: 0, left: 0, reason: this.vec.reason };
+    if (!model || !this.embedder?.configured?.()) return { embedded: 0, left: 0, reason: this.vec.reason, next: null };
+    const asked = new Map();
+    const may = (k, o) => { const key = `${k}:${o}`; if (!asked.has(key)) asked.set(key, !!mayEmbed(k, o)); return asked.get(key); };
+    const scanned = this.db.prepare('SELECT id, owner_kind AS k, owner_id AS o, text FROM chunks WHERE embedded = 0 AND id > ? ORDER BY id LIMIT ?').all(after, batch * 4);
+    const rows = [];
+    let next = null;
+    for (const r of scanned) { if (rows.length >= batch) break; next = r.id; if (may(r.k, r.o)) rows.push(r); }
+    if (scanned.length < batch * 4 && next === scanned[scanned.length - 1]?.id) next = null;   // the end of the table was reached
+    if (!rows.length) return { embedded: 0, left: 0, reason: this.vec.reason, next };
     let vectors;
-    try { vectors = await this.embedder.embed(rows.map((r) => r.text)); } catch (e) { this.vec = { ...this.vec, ready: this.vec.ready, reason: e.message }; return { embedded: 0, left: -1, reason: e.message }; }
-    if (!vectors.length || !this.ensureVec(vectors[0].length)) return { embedded: 0, left: -1, reason: this.vec.reason };
+    try { vectors = await this.embedder.embed(rows.map((r) => r.text)); } catch (e) { this.vec = { ...this.vec, ready: this.vec.ready, reason: e.message }; return { embedded: 0, left: -1, reason: e.message, next: null }; }
+    if (!vectors.length || !this.ensureVec(vectors[0].length)) return { embedded: 0, left: -1, reason: this.vec.reason, next: null };
     this.db.exec('BEGIN');
     try {
       const ins = this.db.prepare('INSERT INTO chunk_vec (rowid, embedding) VALUES (?, ?)');
       rows.forEach((r, i) => { if (this.db.prepare('SELECT 1 FROM chunks WHERE id = ?').get(r.id)) { this.db.prepare('DELETE FROM chunk_vec WHERE rowid = ?').run(BigInt(r.id)); ins.run(BigInt(r.id), blob(vectors[i])); this.db.prepare('UPDATE chunks SET embedded = 1 WHERE id = ?').run(r.id); } });
       this.db.exec('COMMIT');
-    } catch (e) { this.db.exec('ROLLBACK'); return { embedded: 0, left: -1, reason: e.message }; }
-    return { embedded: rows.length, left: this.db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE embedded = 0').get().n, reason: '' };
+    } catch (e) { this.db.exec('ROLLBACK'); return { embedded: 0, left: -1, reason: e.message, next: null }; }
+    return { embedded: rows.length, left: this.db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE embedded = 0').get().n, reason: '', next };
   }
 
   stats() {
@@ -228,13 +249,25 @@ class ChunkIndex {
       } catch { /* the words still find things */ }
     }
     const fused = rrf([lexical, semantic]);
-    const info = this.db.prepare('SELECT * FROM chunks WHERE id = ?');
+    if (!fused.length) return [];
+    // the chunks and their owners in three queries, not two per hit
+    const inList = (n) => Array(n).fill('?').join(',');
+    const ids = fused.map((f) => f.id);
+    const chunks = new Map(this.db.prepare(`SELECT * FROM chunks WHERE id IN (${inList(ids.length)})`).all(...ids).map((c) => [c.id, c]));
+    const of = (kind) => [...new Set([...chunks.values()].filter((c) => c.owner_kind === kind).map((c) => c.owner_id))];
+    const noteIds = of('note'), itemIds = of('item');
+    const notes = new Map(noteIds.length ? this.db.prepare(`SELECT id, title, started_at AS startedAt, created_at AS createdAt FROM notes WHERE id IN (${inList(noteIds.length)})`).all(...noteIds).map((n) => [n.id, n]) : []);
+    // an item waiting in the change queue is left out until it is indexed again: its body may just have been dropped (a narrowed grant)
+    // (the MCP reader may open a database the app has not migrated to the queue yet: then there is nothing queued to leave out)
+    this.hasQueue ??= !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'dirty_owners'").get();
+    const items = new Map(itemIds.length ? this.db.prepare(`SELECT i.id, i.title, i.occurred_at AS occurredAt, i.source_id AS sourceId, i.uri FROM items i WHERE i.id IN (${inList(itemIds.length)}) AND i.deleted_at IS NULL
+      ${this.hasQueue ? "AND NOT EXISTS (SELECT 1 FROM dirty_owners d WHERE d.owner_kind = 'item' AND d.owner_id = i.id)" : ''}`).all(...itemIds).map((i) => [i.id, i]) : []);
     const out = [];
     for (const f of fused) {
-      const c = info.get(f.id);
+      const c = chunks.get(f.id);
       if (!c || !allow(c.owner_kind, c.owner_id)) continue;
-      const owner = c.owner_kind === 'note' ? this.notes.get(c.owner_id) : this.items.item(c.owner_id);
-      if (!owner || owner.deletedAt) continue;
+      const owner = c.owner_kind === 'note' ? notes.get(c.owner_id) : items.get(c.owner_id);
+      if (!owner) continue;
       out.push({ chunkId: c.id, kind: c.owner_kind, id: c.owner_id, title: owner.title || '', text: c.text, startMs: c.start_ms, segmentId: c.segment_id, at: c.owner_kind === 'note' ? (owner.startedAt || owner.createdAt) : owner.occurredAt,
         sourceId: c.owner_kind === 'item' ? owner.sourceId : null, uri: c.owner_kind === 'item' ? owner.uri : '', via: [lexical.includes(f.id) && 'words', semantic.includes(f.id) && 'meaning'].filter(Boolean), score: f.score });
       if (out.length >= limit) break;

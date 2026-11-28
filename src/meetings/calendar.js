@@ -1,10 +1,30 @@
 'use strict';
 const fs = require('node:fs');
-const { parseIcs, expand } = require('./ics');
+const { parseIcs, expandCached } = require('./ics');
 const { busyEvent } = require('./google');
 const { newId } = require('../core/ids');
 
 const TTL_MS = 5 * 60 * 1000;
+// A feed (URL or file) larger than this is refused: the text is parsed in the main process, and a calendar URL is a third party
+// that could send gigabytes. Busy multi-year calendars are a few MB.
+const ICS_MAX_BYTES = 20 * 1024 * 1024;
+const tooLarge = () => new Error(`the calendar is too large (over ${ICS_MAX_BYTES / 1048576} MB)`);
+
+// the body as text, read no further than ICS_MAX_BYTES (refused at once when Content-Length already says more)
+async function readCapped(res) {
+  if (Number(res.headers?.get?.('content-length')) > ICS_MAX_BYTES) { try { await res.body?.cancel(); } catch { /* gone */ } throw tooLarge(); }
+  if (!res.body?.getReader) { const t = await res.text(); if (Buffer.byteLength(t) > ICS_MAX_BYTES) throw tooLarge(); return t; }
+  const reader = res.body.getReader(), parts = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > ICS_MAX_BYTES) { try { await reader.cancel(); } catch { /* gone */ } throw tooLarge(); }
+    parts.push(Buffer.from(value.buffer, value.byteOffset, value.length));
+  }
+  return Buffer.concat(parts).toString('utf8');
+}
 
 const GOOGLE = 'Google Calendar';
 
@@ -46,11 +66,11 @@ class Calendar {
     let entry;
     try {
       let text;
-      if (src.kind === 'file') text = fs.readFileSync(src.location, 'utf8');
+      if (src.kind === 'file') { if (fs.statSync(src.location).size > ICS_MAX_BYTES) throw tooLarge(); text = fs.readFileSync(src.location, 'utf8'); }
       else {
         const res = await this.fetch(src.location, { signal: AbortSignal.timeout(15000), headers: { Accept: 'text/calendar' } });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        text = await res.text();
+        text = await readCapped(res);
         if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error('the URL did not return an iCalendar feed');
       }
       entry = { at: this.now(), events: parseIcs(text), error: null };
@@ -87,7 +107,8 @@ class Calendar {
     for (const src of this.sources()) {
       const e = await this.load(src, { force });
       if (e.error) errors.push({ source: src.name, error: e.error });
-      for (const o of expand(e.events, from, to)) out.push({ ...o, id: `${src.id}:${o.uid}:${o.start}`, source: src.name, provider: 'ics' });
+      // cached per feed load and day window: the detector asks every 4 s with a window that moved by 4 s
+      for (const o of expandCached(e.events, from, to)) out.push({ ...o, id: `${src.id}:${o.uid}:${o.start}`, source: src.name, provider: 'ics' });
     }
     if (this.google?.connected()) {
       const g = await this.loadGoogle(from, to, { force });
@@ -114,4 +135,4 @@ class Calendar {
   async current({ at = this.now() } = {}) { return (await this.candidates({ at }))[0] || null; }
 }
 
-module.exports = { Calendar, TTL_MS };
+module.exports = { Calendar, TTL_MS, ICS_MAX_BYTES };

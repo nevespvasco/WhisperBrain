@@ -99,3 +99,38 @@ test('MCP: the database is opened read-only, and an old schema is refused with a
   const d = new DatabaseSync(old); d.exec('PRAGMA user_version = 12'); d.close();
   assert.throws(() => BrainReader.open(old), /older than the brain/);
 });
+
+// ---- audit 2026-11-28 (D1-2): people, promises and decisions follow each source's MCP switch, like search does ----
+test('MCP: a source with MCP off gives nothing through people, one person, promises or decisions', async (t) => {
+  const dataDir = tmpDir('wb-mcp-');
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const app = createApp({ dataDir, platform: fakePlatform(), version: 'test' });
+  await app.ready; await app.runner.stop();
+  app.settings.update({ userName: 'Ana' });
+  const open = app.notes.create({ title: 'Pricing review', status: 'done', attendees: [{ name: 'Ana', email: 'ana@x.pt' }, { name: 'Rui Costa', email: 'rui@x.pt' }] });
+  const hidden = app.notes.create({ title: 'Board secrets', status: 'done', source: 'notion', sourceRef: 'n1', attendees: [{ name: 'Rui Costa', email: 'rui@x.pt' }, { name: 'Zed Hidden', email: 'zed@y.pt' }] });
+  app.items.syncNote(open.id); app.items.syncNote(hidden.id);
+  app.items.setGrant(app.items.sourceOfNote(open.id).id, { aiReach: 'any', mcp: true });
+  app.items.setGrant(app.items.sourceOfNote(hidden.id).id, { aiReach: 'any', mcp: false });
+  app.assertions.add({ kind: 'commitment', text: 'Send the pricing sheet', owner: 'Rui Costa', noteId: open.id, origin: 'user' });
+  app.assertions.add({ kind: 'commitment', text: 'Sell the company quietly', owner: 'Rui Costa', quote: 'we sell quietly', noteId: hidden.id, origin: 'user' });
+  app.assertions.add({ kind: 'decision', text: 'Drop the free tier', noteId: open.id, origin: 'user' });
+  app.assertions.add({ kind: 'decision', text: 'Fire the auditors', noteId: hidden.id, origin: 'user' });
+  app.close(); await app.settled;
+
+  const { BrainReader } = require('../src/mcp/server');
+  const r = BrainReader.open(path.join(dataDir, 'whisperbrain.sqlite'));
+  t.after(() => r.db.close());
+  const people = await r.call('list_people', {});
+  assert.ok(people.some((p) => p.name === 'Rui Costa'));
+  assert.ok(!people.some((p) => p.name === 'Zed Hidden'), 'somebody met only in the hidden meeting is not listed');
+  assert.equal(people.find((p) => p.name === 'Rui Costa').meetings, 1, 'the hidden meeting is not counted');
+  await assert.rejects(r.call('get_person', { name: 'Zed Hidden' }), /Nobody/);
+  const rui = await r.call('get_person', { name: 'Rui Costa' });
+  assert.deepEqual(rui.recentMeetings.map((m) => m.title), ['Pricing review']);
+  assert.deepEqual(rui.openPromises.map((x) => x.text), ['Send the pricing sheet']);
+  const owed = await r.call('open_commitments', {});
+  assert.deepEqual([...owed.youOwe, ...owed.owedToYou].map((x) => x.text), ['Send the pricing sheet']);
+  assert.deepEqual((await r.call('recent_decisions', {})).map((x) => x.text), ['Drop the free tier']);
+  assert.ok(!JSON.stringify([people, rui, owed]).includes('Board secrets'));
+});

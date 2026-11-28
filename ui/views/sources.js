@@ -27,10 +27,11 @@ const ago = (ms) => {
   return h < 24 ? t('{n} h ago', { n: h }) : fmtDate(ms, { day: 'numeric', month: 'short' });
 };
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   let draft = { path: '', flavour: 'obsidian', check: null, busy: false, error: '', svc: null };
   const draw = async () => {
     const [sources, services] = await Promise.all([api('GET', '/api/sources'), api('GET', '/api/services').catch(() => [])]);
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     main._sources = sources;
     const folders = sources.filter((s) => !s.config?.imported);
     const meetings = sources.filter((s) => s.config?.imported && s.items);
@@ -215,5 +216,5 @@ export async function render(main) {
     if (S.view.name !== 'sources') { window.removeEventListener('wb:event', onEvent); onEvent = null; return; }
     if (['sources.changed', 'sources.syncing', 'sources.progress', 'job.changed'].includes(e.detail?.type)) redraw();
   };
-  window.addEventListener('wb:event', onEvent);
+  window.addEventListener('wb:event', onEvent, { signal: S.route.signal });   // and gone with the page (app.js route())
 }

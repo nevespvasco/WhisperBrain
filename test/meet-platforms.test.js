@@ -147,7 +147,7 @@ test('detector: the call is named after the platform the source reported, not as
 
 // ---- the accessibility reader and the native helpers ----
 const fs = require('node:fs');
-const os = require('node:os');
+const { tmpDir } = require('./helpers');
 const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
@@ -159,7 +159,7 @@ const fakeTree = (window, speaker) => ({ event: 'snapshot', platform: 'linux', a
   { p: 1, r: 'static', n: 'Ana' }, { p: 1, r: 'section', n: speaker === 'Ana' ? 'Speaking' : '' },
   { p: 1, r: 'static', n: 'Bruno' }, { p: 1, r: 'section', n: speaker === 'Bruno' ? 'Speaking' : '' },
 ] });
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wb-plat-'));
+const tmp = () => tmpDir('wb-plat-'); // removed when this file's tests end (test/helpers.js)
 function fakeSpawn(script) {
   const calls = [];
   const spawn = (command, args) => { const c = new EventEmitter(); c.stdout = new PassThrough(); c.stderr = new PassThrough(); c.kill = () => {}; calls.push({ command, args }); setImmediate(() => script(c)); return c; };

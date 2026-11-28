@@ -108,6 +108,8 @@ test('privacy gates: a remote AI server needs allowRemote, a meeting where someo
   await wait(300);
   assert.equal(remote.fake.requests.length, 0);
   assert.equal(remote.svc.state(remote.note.id).blocked, 'remote');
+  const lan = await rig(t, { llmUrl: 'http://192.168.1.20:11434/v1' });
+  assert.equal(lan.svc.state(lan.note.id).blocked, 'remote', 'a server on the local network is another computer: it needs allowRemote too');
 
   const declined = await rig(t, { consent: 'declined' });
   declined.say('them', 'When can the next release go out?');
@@ -221,4 +223,37 @@ test('term cards: a glossary term is explained without the AI; an unknown one is
   assert.equal(r.of('assistant.term')[1].ai, true);
   assert.equal(saved[0].term, 'k8s');
   assert.equal(saved[0].auto, true);
+});
+
+test('while the assistant helps a recording, background AI work is held; Stop (or switching it off) lets it run again', async (t) => {
+  const r = await rig(t);
+  const sched = r.svc.scheduler;
+  assert.equal(sched.stats().held, true, 'held from the start of an assisted recording');
+  r.svc.toggle(r.note.id, false);
+  assert.equal(sched.stats().held, false, 'switched off for this meeting');
+  r.svc.toggle(r.note.id, true);
+  assert.equal(sched.stats().held, true);
+  r.bus.publish('recording.stopped', { noteId: r.note.id });
+  assert.equal(sched.stats().held, false, 'released at Stop');
+});
+
+test('the live summary and term cards are live work: they run while held, without thinking, and Stop aborts them', async (t) => {
+  const r = await rig(t, { reply: (m) => (/running summary/.test(m[0].content) ? JSON.stringify({ summary: 'KPIs.', decisions: [], actions: [], openQuestions: [] }) : 'Key performance indicator.'), assistant: { liveSummaryMin: 0, termCards: true } });
+  const seen = { summary: [], background: [] };
+  for (const lane of ['summary', 'background']) {
+    const client = r.svc.llm[lane];
+    const orig = client.complete.bind(client);
+    client.complete = (messages, opts) => { seen[lane].push(opts); return orig(messages, opts); };
+  }
+  r.say('them', 'We need to agree the KPI targets for the quarter.');
+  r.svc.action(r.note.id, 'summary');
+  await until(() => r.of('assistant.summary').length && seen.background.length);
+  for (const opts of [seen.summary[0], seen.background[0]]) {
+    assert.equal(opts.reasoning, 'off');
+    assert.equal(opts.live, true, 'runs while background work is held');
+    assert.equal(opts.signal.aborted, false);
+  }
+  r.bus.publish('recording.stopped', { noteId: r.note.id });
+  assert.equal(seen.summary[0].signal.aborted, true, 'Stop aborts the live summary');
+  assert.equal(seen.background[0].signal.aborted, true, 'and the term cards');
 });

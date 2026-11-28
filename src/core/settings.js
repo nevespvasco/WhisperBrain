@@ -104,6 +104,7 @@ const DEFAULTS = {
   redactRemote: true,           // to an AI server that is not on this computer, swap e-mail addresses, phone numbers, IBAN/card numbers, keys, codes and secret links for placeholders (src/access/redact.js)
   rerank: false,                 // let the AI server order the excerpts for a question by how well each answers it (one extra request per question)
   autoAssertions: true,          // after a meeting, look for decisions and commitments (each one a suggestion with its quote; nothing is accepted by itself)
+  autoRemote: false,             // what runs by itself after a meeting (enhanced notes when autoSummarize, topics/terms/action items, decisions and commitments) also goes to an AI server that is NOT on this computer; off = only to a server on this computer (what the person starts by hand is not affected; names have their own speakerNamesFromTranscript)
   embeddingModel: '',            // an embedding model on the AI server (e.g. embeddinggemma): search by meaning as well as by words; '' = words only (src/search)
   startPage: 'home',            // what opens with the app: 'home' (Today door) | 'meetings' (the meetings list)
   consentPreset: 'general',     // wording of the "this call is recorded" notice: 'general' | 'eu' | 'us' (see src/consent/notice.js)
@@ -136,6 +137,7 @@ const DEFAULTS = {
     learnVoices: false,         // opt-in (a voice print is biometric data): remember a voice the call named clearly (many seconds, no doubt) so the next meetings recognise it
     captions: true,             // use the meeting's live captions (name and words) when the extension sends them
     vision: false,              // last resort: look at the meeting window and ask your local vision model who is speaking
+    visionRemote: false,        // ...also when the AI server is not on this computer: pictures of the call are then sent to it (like assistant.allowRemote)
   },
   // Discord without a bot: the local RPC of the Discord desktop app (src/discord/rpc.js), through the person's own Discord application
   // (developer portal; redirect http://localhost). Says which call the person is in, who is in it and who speaks; gives no audio.
@@ -167,6 +169,14 @@ async function mapSecretsAsync(key, value, f) {
   for (const [holder, field] of secretFields(key, out)) if (typeof holder[field] === 'string' && holder[field]) holder[field] = await f(holder[field]);
   return out;
 }
+
+// Where a secret is sent. A masked secret written back with a different endpoint is dropped, so an API caller cannot point a
+// stored key or password at its own server: the scheme, host and port of a URL; an IMAP account's IMAP, SMTP and token hosts.
+function endpoint(url) {
+  try { const o = new URL(String(url || '').trim()).origin; if (o !== 'null') return o; } catch { /* not a URL */ }
+  return String(url || '').trim().toLowerCase();
+}
+const imapEndpoints = (m) => [String(m?.host ?? '').trim().toLowerCase(), String(m?.smtp?.host ?? '').trim().toLowerCase(), endpoint(m?.tokenUrl)].join('|');
 
 // assistant.mode used to be 'meeting' | 'interview': a value an older version stored (or an older client sends) still reads
 const LEGACY_ASSISTANT_MODES = { meeting: 'bullets', interview: 'spoken' };
@@ -432,15 +442,17 @@ class Settings {
       if (key === 'assistant' && v && typeof v === 'object' && v.hotkeys && typeof v.hotkeys === 'object') v = { ...v, hotkeys: { ...current.assistant.hotkeys, ...v.hotkeys } };   // one shortcut changed, the others kept
       if (SECRETS[key] && v && typeof v === 'object') {
         v = { ...v };
-        for (const f of SECRETS[key]) if (v[f] === MASK) v[f] = current[key][f];
+        const moved = key === 'llm' && 'baseUrl' in v && endpoint(v.baseUrl) !== endpoint(raw.llm.baseUrl);   // a key is bound to its server: a mask never follows it elsewhere
+        for (const f of SECRETS[key]) if (v[f] === MASK) v[f] = moved ? '' : current[key][f];
       }
-      if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => (w?.secret === MASK ? { ...w, secret: current.webhooks.find((x) => x.id === w.id)?.secret || '' } : w));
-      if (key === 'imapAccounts' && Array.isArray(v)) v = v.map((m) => { const cur = current.imapAccounts.find((x) => x.id === m?.id) || {}; const fix = (f) => (m?.[f] === MASK ? cur[f] || '' : m?.[f]); return { ...m, password: fix('password'), refreshToken: fix('refreshToken'), accessToken: fix('accessToken'), clientSecret: fix('clientSecret') }; });
+      if (key === 'webhooks' && Array.isArray(v)) v = v.map((w) => { const cur = current.webhooks.find((x) => x.id === w?.id); return w?.secret === MASK ? { ...w, secret: cur && String(w.url || '').trim() === cur.url ? cur.secret : '' } : w; });
+      if (key === 'imapAccounts' && Array.isArray(v)) v = v.map((m) => { const cur = current.imapAccounts.find((x) => x.id === m?.id) || {}; const moved = imapEndpoints(m) !== imapEndpoints(cur); const fix = (f) => (m?.[f] === MASK ? (moved ? '' : cur[f] || '') : m?.[f]); return { ...m, password: fix('password'), refreshToken: fix('refreshToken'), accessToken: fix('accessToken'), clientSecret: fix('clientSecret') }; });
       if (key === 'mailAccounts' && Array.isArray(v)) v = v.map((m) => { const cur = current.mailAccounts.find((x) => x.id === m?.id) || {}; const fix = (f) => (m?.[f] === MASK ? cur[f] || '' : m?.[f]); return { ...m, refreshToken: fix('refreshToken'), accessToken: fix('accessToken'), clientSecret: fix('clientSecret') }; });
       next[key] = validate(key, OBJECT_KEYS.has(key) ? { ...current[key], ...v } : v);        // as it will read (policy applied): checked and cached
       stored[key] = OBJECT_KEYS.has(key) ? validate(key, { ...raw[key], ...v }) : next[key];   // as it is kept
     }
     this.checkPolicy(next);
+    for (const [k, v] of Object.entries(stored)) this.raw[k] = structuredClone(v);   // the next partial update merges onto this (with a box the cache is not rebuilt from disk)
     const before = current.secretStorage;
     const sync = Object.entries(stored).filter(([k]) => !(this.box && hasSecrets(k)));
     if (sync.length) this.write(sync);

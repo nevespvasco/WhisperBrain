@@ -8,6 +8,7 @@ const { Notes } = require('../core/notes');
 const { ItemStore } = require('../items/store');
 const { ChunkIndex } = require('../search/index');
 const { can } = require('../access/grants');
+const { MCP_FRESH_MS } = require('../core/lock');
 
 const PROTOCOL = '2025-06-18';
 const NEEDS_SCHEMA = 19;
@@ -35,10 +36,12 @@ class BrainReader {
   }
 
   // While WhisperBrain is locked (src/core/lock.js), nothing is served: the lock screen must not be walked around through MCP.
-  // A passphrase is set and the app has not said it is unlocked (it writes lock:state; it starts locked).
+  // A passphrase is set and the app has not said it is unlocked (it writes lock:state; it starts locked), or has not said so lately:
+  // the app writes lock:seen every 30 s, so a crashed app (that never wrote 'locked' on its way out) reads as locked.
   locked() {
     const meta = (k) => { try { return this.db.prepare('SELECT value FROM index_meta WHERE key = ?').get(`lock:${k}`)?.value ?? null; } catch { return null; } };
-    return !!meta('hash') && meta('state') !== 'unlocked';
+    if (!meta('hash')) return false;
+    return meta('state') !== 'unlocked' || !(Date.now() - Number(meta('seen')) < MCP_FRESH_MS);
   }
 
   static open(file) {
@@ -78,14 +81,29 @@ class BrainReader {
     throw new Error('Not found.');
   }
 
-  people(query) {
-    const rows = this.db.prepare(`SELECT e.id, e.name, e.key, COUNT(DISTINCT m.note_id) AS meetings, MAX(m.at) AS lastAt FROM entities e JOIN mentions m ON m.entity_id = e.id WHERE e.merged_into IS NULL GROUP BY e.id ORDER BY meetings DESC, lastAt DESC`).all();
+  // People, promises and decisions come only from meetings MCP may serve: somebody met only in a meeting whose source is not
+  // shared is not listed, and that meeting is not counted (each note checked once per call).
+  noteFilter() {
+    const ok = this.allowed(), seen = new Map();
+    return (id) => { if (!seen.has(id)) seen.set(id, ok('note', id)); return seen.get(id); };
+  }
+
+  people(query, shared = this.noteFilter()) {
+    const by = new Map();
+    for (const m of this.db.prepare('SELECT e.id, e.name, m.note_id, m.at FROM entities e JOIN mentions m ON m.entity_id = e.id WHERE e.merged_into IS NULL').all()) {
+      if (!shared(m.note_id)) continue;
+      const p = by.get(m.id) || by.set(m.id, { name: m.name, notes: new Set(), lastAt: 0 }).get(m.id);
+      p.notes.add(m.note_id); p.lastAt = Math.max(p.lastAt, m.at || 0);
+    }
+    const rows = [...by.values()].map((p) => ({ name: p.name, meetings: p.notes.size, lastAt: p.lastAt })).sort((a, b) => b.meetings - a.meetings || b.lastAt - a.lastAt);
     const q = fold(query || '');
     return rows.filter((r) => !q || fold(r.name).includes(q)).slice(0, 100).map((r) => ({ name: r.name, meetings: r.meetings, last: r.lastAt ? new Date(r.lastAt).toISOString().slice(0, 10) : null }));
   }
 
-  accepted(kind, limit = 200) {
-    return this.db.prepare(`SELECT a.*, n.title AS noteTitle FROM assertions a LEFT JOIN notes n ON n.id = a.note_id WHERE a.state = 'accepted' AND a.kind = ? ORDER BY a.occurred_at DESC LIMIT ?`).all(kind, limit)
+  // a promise or decision typed with no meeting behind it is the user's own and is shared; one from a meeting follows that meeting
+  accepted(kind, limit = 200, shared = this.noteFilter()) {
+    return this.db.prepare(`SELECT a.*, n.title AS noteTitle FROM assertions a LEFT JOIN notes n ON n.id = a.note_id WHERE a.state = 'accepted' AND a.kind = ? ORDER BY a.occurred_at DESC`).all(kind)
+      .filter((a) => !a.note_id || shared(a.note_id)).slice(0, limit)
       .map((a) => ({ text: a.text, owner: a.owner_name || undefined, to: a.to_name || undefined, due: a.due_at ? new Date(a.due_at).toISOString().slice(0, 10) : undefined, said: a.quote || undefined, meeting: a.noteTitle || undefined, when: new Date(a.occurred_at).toISOString().slice(0, 10) }));
   }
 
@@ -97,13 +115,15 @@ class BrainReader {
 
   person({ name }) {
     const key = fold(name);
-    const row = this.db.prepare(`SELECT e.* FROM entities e WHERE e.merged_into IS NULL AND (e.key = ? OR e.id IN (SELECT entity_id FROM entity_identities WHERE kind = 'name' AND value = ?))`).get(key, key)
-      || this.people(name).length && this.db.prepare('SELECT e.* FROM entities e WHERE e.merged_into IS NULL AND e.name LIKE ? LIMIT 1').get(`%${name}%`);
-    if (!row) throw new Error('Nobody by that name.');
+    const shared = this.noteFilter();
+    const seenIn = (r) => r && this.db.prepare('SELECT note_id FROM mentions WHERE entity_id = ?').all(r.id).some((m) => shared(m.note_id));
+    let row = this.db.prepare(`SELECT e.* FROM entities e WHERE e.merged_into IS NULL AND (e.key = ? OR e.id IN (SELECT entity_id FROM entity_identities WHERE kind = 'name' AND value = ?))`).get(key, key);
+    if (!seenIn(row)) row = this.people(name, shared).length ? this.db.prepare('SELECT e.* FROM entities e WHERE e.merged_into IS NULL AND e.name LIKE ?').all(`%${name}%`).find(seenIn) : null;
+    if (!row) throw new Error('Nobody by that name.');   // also somebody met only in meetings that are not shared
     const idents = this.db.prepare('SELECT kind, value FROM entity_identities WHERE entity_id = ?').all(row.id);
-    const meetings = this.db.prepare(`SELECT n.id, n.title, n.created_at AS at FROM mentions m JOIN notes n ON n.id = m.note_id WHERE m.entity_id = ? GROUP BY n.id ORDER BY n.created_at DESC LIMIT 8`).all(row.id).map((n) => ({ id: n.id, title: n.title, when: new Date(n.at).toISOString().slice(0, 10) }));
-    const mine = new Set(this.db.prepare('SELECT note_id FROM mentions WHERE entity_id = ?').all(row.id).map((r) => r.note_id));
-    const promises = this.accepted('commitment', 500).filter((a) => fold(a.owner || '') === fold(row.name) || (a.to && fold(a.to) === fold(row.name)));
+    const meetings = this.db.prepare(`SELECT n.id, n.title, n.created_at AS at FROM mentions m JOIN notes n ON n.id = m.note_id WHERE m.entity_id = ? GROUP BY n.id ORDER BY n.created_at DESC`).all(row.id).filter((n) => shared(n.id)).slice(0, 8).map((n) => ({ id: n.id, title: n.title, when: new Date(n.at).toISOString().slice(0, 10) }));
+    const mine = new Set(this.db.prepare('SELECT note_id FROM mentions WHERE entity_id = ?').all(row.id).map((r) => r.note_id).filter(shared));
+    const promises = this.accepted('commitment', 500, shared).filter((a) => fold(a.owner || '') === fold(row.name) || (a.to && fold(a.to) === fold(row.name)));
     return { name: row.name, emails: idents.filter((i) => i.kind === 'email').map((i) => i.value), accounts: idents.filter((i) => i.kind === 'account').map((i) => i.value), alsoKnownAs: idents.filter((i) => i.kind === 'name').map((i) => i.value), recentMeetings: meetings, openPromises: promises, meetingsCount: mine.size };
   }
 

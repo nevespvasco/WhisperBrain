@@ -42,24 +42,61 @@ function insightsMessages({ note, transcript, existingTopics = [], existingTerms
   return [{ role: 'system', content: INSIGHTS_SYSTEM }, { role: 'user', content: user }];
 }
 
-// Pull the first balanced JSON object out of a model reply (handles code fences and chatter around it).
-function extractJson(text) {
-  const s = String(text || '');
-  const start = s.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0, inStr = false, esc = false;
+// JSON out of a model reply: chatter and code fences around it, a broken first try followed by a good one, and a reply the token cap
+// cut off. Objects are looked for first (a reply's "[1]" is a citation, not the answer), then arrays. A cut-off reply keeps the whole
+// array elements before the cut (never half an element: a half-copied quote or owner would be worse than none), and says it was cut.
+// Bounded work: at most MAX_STARTS starts are scanned, each once, and the starts inside a value already scanned are skipped.
+const MAX_STARTS = 64;
+const CLOSE = { '{': '}', '[': ']' };
+
+// One scan from `start`: { end } just after the balanced value, or, when the text ends first, { cuts }: the places where the value
+// could be closed (after each complete array element), with the brackets still open there.
+function scanJson(s, start) {
+  const stack = [], cuts = [];
+  let inStr = false, esc = false;
   for (let i = start; i < s.length; i++) {
     const c = s[i];
     if (inStr) { if (esc) esc = false; else if (c === '\\') esc = true; else if (c === '"') inStr = false; continue; }
     if (c === '"') inStr = true;
-    else if (c === '{') depth++;
-    else if (c === '}' && --depth === 0) {
-      const raw = s.slice(start, i + 1);
-      try { return JSON.parse(raw); } catch { try { return JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch { return null; } }
-    }
+    else if (c === '{' || c === '[') stack.push(c);
+    else if (c === '}' || c === ']') {
+      stack.pop();
+      if (!stack.length) return { end: i + 1 };
+      if (stack[stack.length - 1] === '[') cuts.push({ at: i + 1, open: stack.slice() });
+    } else if (c === ',' && stack[stack.length - 1] === '[') cuts.push({ at: i, open: stack.slice() });
+    if (cuts.length > 40) cuts.shift();   // only the last few are ever tried
   }
-  return null;
+  return { cuts };
 }
+
+const parseLoose = (raw) => { try { return JSON.parse(raw); } catch { try { return JSON.parse(raw.replace(/,\s*([}\]])/g, '$1')); } catch { return undefined; } } };
+
+// -> { value (null when nothing usable), truncated (the reply ended inside the JSON) }
+function parseJsonReply(text) {
+  const s = String(text || '');
+  const spans = [];
+  let cut = null;
+  for (const open of ['{', '[']) {
+    for (let i = s.indexOf(open), tries = 0; i >= 0 && tries < MAX_STARTS; tries++) {
+      if (spans.some(([a, b]) => i > a && i < b)) { i = s.indexOf(open, i + 1); continue; }
+      const r = scanJson(s, i);
+      if (!r.end) { cut = { start: i, cuts: r.cuts }; break; }   // runs to the end: every later start is inside it
+      const v = parseLoose(s.slice(i, r.end));
+      if (v !== undefined) return { value: v, truncated: false };
+      spans.push([i, r.end]);
+      i = s.indexOf(open, r.end);
+    }
+    if (cut) break;
+  }
+  if (!cut) return { value: null, truncated: false };
+  for (const c of cut.cuts.slice(-20).reverse()) {
+    const v = parseLoose(s.slice(cut.start, c.at) + c.open.slice().reverse().map((b) => CLOSE[b]).join(''));
+    if (v !== undefined) return { value: v, truncated: true };
+  }
+  return { value: null, truncated: true };
+}
+
+function extractJson(text) { return parseJsonReply(text).value; }
 
 const str = (v, n = 400) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').trim().slice(0, n) : '');
 // Action items leave the app (Notion, Linear, webhooks), so what a model wrote, possibly steered by the transcript, is
@@ -132,4 +169,4 @@ function topicBriefMessages({ topic, items }) {
   ];
 }
 
-module.exports = { INSIGHTS_SYSTEM, insightsMessages, extractJson, parseInsights, sanitize, parseChecklist, localInsights, topicBriefMessages };
+module.exports = { INSIGHTS_SYSTEM, insightsMessages, extractJson, parseJsonReply, parseInsights, sanitize, parseChecklist, localInsights, topicBriefMessages };

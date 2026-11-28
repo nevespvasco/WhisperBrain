@@ -73,12 +73,13 @@ export async function render() {
 
       <h4 class="mt">${t('A look at the window')}</h4>
       ${toggle('meet-vision', m.vision, t('Last resort: look at the meeting window'), t('Only when nothing above is connected. Sends a picture of the window to the AI model you set in Settings → AI, so use a model that runs on this computer and can see pictures. Off by default.'))}
+      ${m.vision ? toggle('meet-vision-remote', m.visionRemote, t('Also with an AI server that is not on this computer'), t('Off: pictures of the call only go to an AI server on this computer. On: a picture of the meeting window is sent to your server every few seconds while nothing else is connected.')) : ''}
       ${m.vision && !st.vision.available ? `<div class="small muted">${t('This build cannot capture another window.')}</div>` : ''}
     ` : ''}</section>`;
 }
 
 export function bind(body, rerender) {
-  const KEYS = { 'meet-enabled': 'enabled', 'meet-headcount': 'headcount', 'meet-refine': 'refine', 'meet-learn': 'learnVoices', 'meet-captions': 'captions', 'meet-a11y': 'a11y', 'meet-ext': 'extension', 'meet-vision': 'vision' };
+  const KEYS = { 'meet-enabled': 'enabled', 'meet-headcount': 'headcount', 'meet-refine': 'refine', 'meet-learn': 'learnVoices', 'meet-captions': 'captions', 'meet-a11y': 'a11y', 'meet-ext': 'extension', 'meet-vision': 'vision', 'meet-vision-remote': 'visionRemote' };
   body.addEventListener('change', async (e) => {
     const k = KEYS[e.target.id];
     if (!k) return;

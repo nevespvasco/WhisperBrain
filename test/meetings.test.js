@@ -23,6 +23,27 @@ function env() {
 const ICS = (start) => `BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:e1\r\nSUMMARY:Planning\r\nDTSTART:${start}\r\nDURATION:PT1H\r\nLOCATION:https://meet.google.com/aaa-bbbb-ccc\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n`;
 const stamp = (ms) => new Date(ms).toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
 
+test('calendar: a feed over the size cap is refused (by its length header or while it streams), and the old events stay', async () => {
+  const { settings, bus } = env();
+  const t0 = Date.parse('2026-11-25T10:00:00Z');
+  const { ICS_MAX_BYTES } = require('../src/meetings/calendar');
+  let mode = 'ok', streamed = 0;
+  const huge = () => new ReadableStream({ pull(c) { streamed += 1 << 20; if (streamed > ICS_MAX_BYTES * 3) c.close(); else c.enqueue(new Uint8Array(1 << 20).fill(65)); } });
+  const fetchImpl = async () => (mode === 'ok' ? new Response(ICS(stamp(t0 + 600000)))
+    : mode === 'declared' ? new Response('BEGIN:VCALENDAR', { headers: { 'Content-Length': String(ICS_MAX_BYTES + 1) } }) : new Response(huge()));
+  const cal = new Calendar({ settings, bus, fetchImpl, now: () => t0 });
+  const src = cal.addSource({ kind: 'url', location: 'https://cal.example.com/me.ics', name: 'Work' });
+  assert.equal((await cal.load(src, { force: true })).events.length, 1);
+  mode = 'declared';
+  const a = await cal.load(src, { force: true });
+  assert.match(a.error, /too large/);
+  assert.equal(a.events.length, 1, 'the events read before are kept');
+  mode = 'stream';
+  const b = await cal.load(src, { force: true });
+  assert.match(b.error, /too large/);
+  assert.ok(streamed <= ICS_MAX_BYTES + (2 << 20), `reading stopped at the cap (${streamed} bytes)`);
+});
+
 test('calendar: file and URL sources, caching, error reporting, source validation', async () => {
   const { settings, bus } = env();
   const t0 = Date.parse('2026-11-25T10:00:00Z');

@@ -2,10 +2,11 @@
 // have matched in the past; then you save it. A rule can only PROPOSE: whatever it proposes waits in the Inbox for your approval.
 import { S, $, api, t, esc, icon, fail, done, empty, confirmDialog } from '../lib.js';
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   let draft = null;
   const draw = async () => {
     const rules = await api('GET', '/api/rules');
+    if (!alive()) return;   // the user moved on meanwhile (app.js route())
     main.innerHTML = `<div class="page narrow">
       <div class="page-head"><div><h1>${t('Rules')}</h1><div class="sub">${t('Say in a sentence what should happen. A rule can only propose: everything it proposes waits in your Inbox for your approval, so nothing is ever sent by itself.')}</div></div></div>
       <section class="panel mb"><div class="panel-head"><h3>${icon('wand')} ${t('New rule')}</h3></div>

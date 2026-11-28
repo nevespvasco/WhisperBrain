@@ -69,7 +69,10 @@ e-mail address). A newsletter or no-reply sender never creates a person. That gi
 ## Leak prevention
 
 - **An AI server that is not on this computer** gets nothing from a source kept “only on this computer”, on any path: Ask and its
-  re-ranking, summaries, titles, translation, decision extraction, the brief's wording, retrieval for tools, MCP.
+  re-ranking, summaries, titles, translation, decision extraction, the brief's wording, retrieval for tools, MCP. *This computer*
+  means `localhost`, `127.x.x.x` or `::1` only: a server elsewhere on your network (`192.168.x.x`, `10.x.x.x`, `*.lan`, `*.local`)
+  is another computer, is redacted like any remote server, and counts in the activity log as text that left
+  (`isThisComputer`, `src/core/policy.js`). An organisation's `requireLocalLlm` still accepts a server on its own network.
 - With **“any AI server”** (and `redactRemote`, on by default) e-mail addresses, phone numbers, IBAN and card numbers, keys, one-time
   codes and secret links are replaced by placeholders (`<email_1>`) before the text leaves, and put back in the answer here.
 - **Mail is data, not instructions.** Excerpts from a sender you have never dealt with are marked *(unverified sender)*; the AI is told

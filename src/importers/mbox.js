@@ -84,7 +84,8 @@ async function* readMbox(stream, { maxBytes = DEFAULT_MAX_BYTES, maxMessageBytes
 const labelsOf = (h) => String(h.text('x-gmail-labels') || '').split(',').map((l) => l.trim()).filter(Boolean);
 const toMsg = (parsed, h, labels, fallbackAt, metadataOnly) => ({
   from: parsed.from, to: parsed.to.map((a) => a.address), cc: parsed.cc.map((a) => a.address), subject: parsed.subject, at: parsed.date || fallbackAt || 0,
-  text: metadataOnly ? '' : M.cutQuote(parsed.text), labels, unsubscribe: parsed.listUnsubscribe, attachments: metadataOnly ? [] : parsed.attachments,
+  // cut to what an item keeps of a message now: the threads of the whole file are held until its end
+  text: metadataOnly ? '' : M.cutQuote(parsed.text).slice(0, M.MAX_MESSAGE_TEXT), labels, unsubscribe: parsed.listUnsubscribe, attachments: metadataOnly ? [] : parsed.attachments,
   draft: labels.some((l) => l.toLowerCase() === 'drafts'), messageId: parsed.messageId ? `<${parsed.messageId}>` : '', references: parsed.references.map((r) => `<${r}>`),
 });
 const toTime = (v) => { if (v == null || v === '') return null; const t = typeof v === 'number' ? v : Date.parse(v); return Number.isFinite(t) ? t : null; };

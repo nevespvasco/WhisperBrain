@@ -13,7 +13,7 @@ const { TermSpotter } = require('./terms');
 const { liveSummaryMessages, parseLiveSummary, EMPTY } = require('./live-summary');
 const { assistantMessages, liveAskMessages, neutralizeTags, UNTRUSTED } = require('../llm/prompts');
 const { languageName } = require('../llm/languages');
-const { isLocalUrl } = require('../core/policy');
+const { isThisComputer } = require('../core/policy');
 
 const TAIL_LINES = 40;        // lines kept in memory for the context (the database has the rest)
 const HISTORY_PAIRS = 6;
@@ -31,6 +31,10 @@ class AssistantService {
     Object.assign(this, { db, notes, settings, bus, knowledge, briefings, engineOptions });
     const lane = (p) => (typeof llm.client === 'function' ? llm.client(p) : llm);
     this.llm = { assistant: lane('assistant'), summary: lane('summary'), background: lane('background') };
+    // While it helps a recording, background AI work (the previous meeting's notes, extraction, indexing) starts nothing new, so a
+    // local server's one slot is free when a question comes: src/llm/scheduler.js hold()
+    this.scheduler = typeof llm.hold === 'function' ? llm : null;
+    this.releaseHold = null;
     this.live = null;          // the recording being helped: see start()
     this.overrides = new Map(); // noteId -> true/false: switched on or off for that meeting only
     this.unsubscribe = null;
@@ -65,7 +69,7 @@ class AssistantService {
     if (!this.enabledFor(noteId)) return 'off';
     const llm = this.settings.get('llm');
     if (!llm.baseUrl) return 'no-llm';
-    if (!isLocalUrl(llm.baseUrl) && !this.options().allowRemote) return 'remote';
+    if (!isThisComputer(llm.baseUrl) && !this.options().allowRemote) return 'remote';
     if (this.notes.get(noteId)?.consent === 'declined') return 'consent';
     return null;
   }
@@ -85,6 +89,7 @@ class AssistantService {
   toggle(noteId, enabled) {
     this.overrides.set(noteId, !!enabled);
     if (!enabled && this.live?.noteId === noteId) this.live.engine.dismiss();
+    this.syncHold();
     this.announce(noteId);
     return this.state(noteId);
   }
@@ -98,23 +103,33 @@ class AssistantService {
   start(noteId) {
     if (this.live) this.stop(this.live.noteId);
     const engine = new TurnEngine(this.engineConfig());
-    const live = this.live = { noteId, engine, tail: [], history: [], pending: null, lastAnswer: null, summary: null, summarizedUpTo: 0, summaryTimer: null, summarizing: null, terms: null };
+    const live = this.live = { noteId, engine, tail: [], history: [], pending: null, lastAnswer: null, summary: null, summarizedUpTo: 0, summaryTimer: null, summarizing: null, terms: null, ctl: new AbortController() };
     live.terms = new TermSpotter({ glossary: () => this.glossary() });
     engine.on('speculate', (e) => this.onSpeculate(live, e));
     engine.on('reveal', (e) => this.onReveal(live, e));
     engine.on('cancel', (e) => this.onCancel(live, e));
     engine.on('repeat', () => this.onRepeat(live));
     this.scheduleSummary(live);
+    this.syncHold();
     this.announce(noteId);
+  }
+
+  // Held while a recording is being helped (switched on, and not blocked), released otherwise
+  syncHold() {
+    const want = !!this.live && !this.blockedFor(this.live.noteId);
+    if (want && !this.releaseHold && this.scheduler) this.releaseHold = this.scheduler.hold();
+    else if (!want && this.releaseHold) { this.releaseHold(); this.releaseHold = null; }
   }
 
   stop(noteId) {
     const live = this.live;
     if (!live || live.noteId !== noteId) return;
     live.pending?.ctl.abort();
+    live.ctl.abort();   // the live summary and term cards still waiting or running
     live.engine.reset();
     clearInterval(live.summaryTimer);
     this.live = null;
+    this.syncHold();
     this.announce(noteId);
   }
 
@@ -122,6 +137,7 @@ class AssistantService {
     const live = this.live;
     if (!live) return;
     live.engine.configure(this.engineConfig());
+    this.syncHold();
     clearInterval(live.summaryTimer);
     this.scheduleSummary(live);
     this.announce(live.noteId);
@@ -267,7 +283,7 @@ class AssistantService {
     if (!lines.length) return live.summary;
     const upTo = lines[lines.length - 1].at;
     live.summarizing = (async () => {
-      const reply = await this.llm.summary.complete(liveSummaryMessages({ previous: live.summary || EMPTY, lines, language: this.options().language }), { temperature: 0.1, maxTokens: 900 });
+      const reply = await this.llm.summary.complete(liveSummaryMessages({ previous: live.summary || EMPTY, lines, language: this.options().language }), { temperature: 0.1, maxTokens: 900, reasoning: 'off', live: true, signal: live.ctl.signal });
       const parsed = parseLiveSummary(reply);
       if (!parsed || this.live !== live) return live.summary;
       live.summary = parsed;
@@ -285,7 +301,7 @@ class AssistantService {
     if (!card) return;
     if (!card.needsAi) { this.publishTerm(live, card.term, card.definition, false); return; }
     const messages = live.terms.explainMessages({ term: card.term, line, language: this.options().language });
-    this.llm.background.complete(messages, { temperature: 0.1, maxTokens: 120, reasoning: 'off' }).then((definition) => {
+    this.llm.background.complete(messages, { temperature: 0.1, maxTokens: 120, reasoning: 'off', live: true, signal: live.ctl.signal }).then((definition) => {
       const d = String(definition || '').trim();
       if (!d || this.live !== live) return;
       try { this.knowledge?.upsertTerm?.({ term: card.term, definition: d, noteId: live.noteId, auto: true }); } catch { /* the card still shows */ }

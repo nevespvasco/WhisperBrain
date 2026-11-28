@@ -1,6 +1,6 @@
 // One meeting: summary (overview, key points, decisions, action items), transcript (who said what), notes,
 // snippets and chat; the side column has speaker analytics, topics, glossary terms, links and related meetings.
-import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, toast, fail, done, go, menu, pickFrom, modal, promptDialog, confirmDialog, fmtDate, fmtHour, fmtClock, fmtDur, avatar, speakerColor, speakerText, lineText, speakerEntryText, debounce, throttleFrame, empty, tagChip, srcIcon, SOURCES, PLATFORMS, meetingRow } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { startRecording, stopRecording } from '../recording.js';
@@ -10,30 +10,40 @@ import { renderChat } from './chat.js';
 import { follow } from '../follow.js';
 import { todayIso, dueText, dueChip, ownerChip, dueClick, setDue, offerUndo } from '../task-chips.js';
 import { assistantSlot, dropAssistant } from './assistant-panel.js';
+import { highlight } from '../highlight.js';
 
 const TABS = [['summary', 'Summary', 'sparkles'], ['transcript', 'Transcript', 'waves'], ['notes', 'Notes', 'edit'], ['snippets', 'Snippets', 'star'], ['chat', 'Chat', 'chat']];
 let N = null; // the open meeting's state
 let offEvents = null;
 
-export async function render(main, { parts, params }) {
+// alive(): false once the user has moved on. N is shared by the whole module, so a slow load that comes back late must stop
+// before it touches N (it would be the next meeting's) or the page; every await below is followed by that check.
+export async function render(main, { parts, params, signal = S.route.signal, alive = () => true }) {
   const id = parts[1];
   offEvents?.();
-  const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`), api('GET', `/api/notes/${id}/transcript`), api('GET', `/api/notes/${id}/speakers`), api('GET', `/api/chat?noteId=${id}`), api('GET', '/api/integrations').catch(() => null)]);
+  const [ov, segs, speakers, chat, ints] = await Promise.all([api('GET', `/api/notes/${id}/overview`, undefined, { signal }), api('GET', `/api/notes/${id}/transcript`, undefined, { signal }), api('GET', `/api/notes/${id}/speakers`, undefined, { signal }), api('GET', `/api/chat?noteId=${id}`, undefined, { signal }), api('GET', '/api/integrations').catch(() => null)]);
+  if (!alive()) return;
   if (ints) S.integrations = ints;
-  N = { id, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length || (!ov.note.body.trim() && preflightOn(ov.note, segs)) ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
-  N.offer = await api('GET', `/api/notes/${id}/platform-transcript`).catch(() => ({ state: 'none' }));
+  N = { id, alive, ...ov, segs, speakers, chat, tab: params.get('tab') || (ov.note.summary || ov.note.insights ? 'summary' : segs.length || (!ov.note.body.trim() && preflightOn(ov.note, segs)) ? 'transcript' : 'notes'), seg: params.get('seg'), trq: '', drafts: {} };
+  const offer = await api('GET', `/api/notes/${id}/platform-transcript`).catch(() => ({ state: 'none' }));
+  if (!alive()) return;
+  N.offer = offer;
   if (S.rec.active && S.rec.noteId === id && !params.get('tab')) N.tab = 'transcript';
   await trInit();
+  if (!alive()) return;
   const wantTr = params.get('tr');   // "Translate this meeting" in the top bar
   if (wantTr && trOn()) await trSelect(wantTr, { render: false });
   if (preflightOn(N.note, N.segs)) await warmPreflight();   // the devices and languages its chips list
+  if (!alive()) return;
   main.innerHTML = `<div class="page">${header()}<div class="note-grid"><div class="tabcard"><div class="tabs" role="tablist">${TABS.map(([k, l, ic]) => `<button class="tab" role="tab" data-tab="${k}" aria-selected="${N.tab === k}">${icon(ic, 'sm')}${t(l)}<span class="badge" data-count="${k}">${count(k)}</span></button>`).join('')}</div><div class="tabbody" id="tabbody"></div></div><aside class="note-aside" id="aside"></aside></div></div>`;
   $$('[data-count]', main).forEach((b) => { if (!b.textContent) b.hidden = true; });
   renderTab(); renderAside();
   bind(main);
   const onEvent = (e) => handleEvent(main, e.detail.type, e.detail.data);
-  window.addEventListener('wb:event', onEvent);
+  window.addEventListener('wb:event', onEvent, { signal });
   offEvents = () => window.removeEventListener('wb:event', onEvent);
+  // leaving the page (or opening this meeting again) ends the polling for the platform's transcript
+  signal.addEventListener('abort', () => clearTimeout(offerTimer), { once: true });
   window.addEventListener('hashchange', () => { if (!location.hash.startsWith(`#/note/${id}`)) { offEvents?.(); offEvents = null; dropAssistant(id); } }, { once: true });
 }
 
@@ -67,26 +77,27 @@ const spLabel = speakerEntryText;
 // arrives (live while recording, or on demand), and the summary can be read in another language.
 const trOn = () => !!S.settings?.translation?.enabled;
 const langName = (c) => S.languages?.find((l) => l.code === c)?.name || c;
+// tr and id are held locally: a meeting opened meanwhile replaces N, and these answers must not land on it
 async function trInit() {
-  const cfg = S.settings?.translation;
-  N.tr = { lang: '', view: cfg?.view || 'original', text: new Map(), info: { languages: [], running: [] }, job: null, sumLang: '', summary: '' };
+  const cfg = S.settings?.translation, id = N.id;
+  const tr = N.tr = { lang: '', view: cfg?.view || 'original', text: new Map(), info: { languages: [], running: [] }, job: null, sumLang: '', summary: '' };
   if (!trOn()) return;
   try {
     S.languages ||= await api('GET', '/api/languages');
-    N.tr.info = await api('GET', `/api/notes/${N.id}/translations`);
-    const job = N.tr.info.running[0];
-    if (job) N.tr.job = job;
+    tr.info = await api('GET', `/api/notes/${id}/translations`);
+    const job = tr.info.running[0];
+    if (job) tr.job = job;
     // while recording with live translation on, the first language is what is being written; otherwise the language the settings
     // ask to see first, if the meeting already has it
-    const have = N.tr.info.languages.map((l) => l.lang);
+    const have = tr.info.languages.map((l) => l.lang);
     const first = recHere() && cfg.live ? cfg.targets[0] : cfg.view !== 'original' ? cfg.targets.find((c) => have.includes(c)) || have[0] : '';
-    if (first) { N.tr.lang = first; if (N.tr.view === 'original') N.tr.view = 'both'; await trLoad(first); }
-  } catch { N.tr.lang = ''; }
+    if (first) { tr.lang = first; if (tr.view === 'original') tr.view = 'both'; await trLoad(first, tr, id); }
+  } catch { tr.lang = ''; }
 }
-async function trLoad(lang) {
-  N.tr.text = new Map();
+async function trLoad(lang, tr = N.tr, id = N.id) {
+  const text = tr.text = new Map();
   if (!lang) return;
-  for (const s of await api('GET', `/api/notes/${N.id}/transcript?lang=${encodeURIComponent(lang)}`)) if (s.translation) N.tr.text.set(s.id, s.translation);
+  for (const s of await api('GET', `/api/notes/${id}/transcript?lang=${encodeURIComponent(lang)}`)) if (s.translation) text.set(s.id, s.translation);
 }
 async function trStart(lang) {
   const r = await api('POST', `/api/notes/${N.id}/translate`, { lang });
@@ -286,16 +297,39 @@ function offerCard() {
 }
 let offerTimer = null;
 async function refreshOffer() {
-  if (!N) return;
-  try { N.offer = await api('GET', `/api/notes/${N.id}/platform-transcript`); } catch { return; }
+  if (!N?.alive()) return;
+  const n = N;
+  try { n.offer = await api('GET', `/api/notes/${n.id}/platform-transcript`); } catch { return; }
+  if (n !== N || !n.alive()) return;
   if (N.tab === 'transcript') renderTab();
   clearTimeout(offerTimer);
   if (N.offer.state === 'working') offerTimer = setTimeout(refreshOffer, 4000);
   else if (N.offer.state === 'done') await reloadTranscript();
 }
 
-function transcriptTab(body) {
+// What has the focus inside the tab (the search box, a line's "who said this" list) and where its caret is, to give it back
+// after a redraw: replacing the toolbar took the focus away from somebody typing in the search box.
+function focusOf(body) {
+  const el = document.activeElement;
+  if (!el || !body.contains(el)) return null;
+  const sel = el.id ? `#${el.id}` : el.dataset?.seg ? `.seg-reassign[data-seg="${el.dataset.seg}"]` : null;
+  return sel && { sel, value: el.tagName === 'INPUT' ? el.value : null, start: el.selectionStart, end: el.selectionEnd };
+}
+function refocus(body, f) {
+  const el = f && $(f.sel, body);
+  if (!el || el === document.activeElement) return;
+  if (f.value != null) el.value = f.value;
+  el.focus({ preventScroll: true });
+  if (f.start != null) try { el.setSelectionRange(f.start, f.end); } catch { /* not a text field */ }
+}
+// The speaker chips and the who-spoke-when bar: a block of their own, so a rename redraws them without touching the lines
+function peopleHtml() {
   const total = N.analytics.durationMs || 1;
+  return `${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${x.suggestedName ? `<span class="chip suggest" title="${esc(t('This voice sounds like {name}, but not surely enough to say so', { name: x.suggestedName }))}">${esc(t('{name}?', { name: x.suggestedName }))}</span><button class="btn xs ghost icon" data-suggest-yes="${x.speakerId}" title="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}" aria-label="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-suggest-no="${x.speakerId}" title="${esc(t('No, not {name}', { name: x.suggestedName }))}" aria-label="${esc(t('No, not {name}', { name: x.suggestedName }))}">${icon('x', 'sm')}</button>` : ''}${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
+    ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}`;
+}
+function transcriptTab(body) {
+  const focus = focusOf(body);
   // drawn again (a speaker renamed, the voices relabelled after Stop): stay where the reader was, unless following the newest line
   const prev = $('#segs');
   N.restoreTop = !prev ? null : N.follow ? 'end' : prev.scrollTop;
@@ -307,11 +341,11 @@ function transcriptTab(body) {
       ${!S.rec.active ? `<label class="btn sm ghost" title="${t('Add audio to this meeting')}">${icon('upload', 'sm')} ${t('Add audio')}<input type="file" id="importfile" accept="audio/*,video/*" hidden></label>` : ''}
       ${N.segs.length ? `<button class="btn sm ghost" data-act="copy-transcript">${icon('copy', 'sm')} ${t('Copy')}</button>` : ''}</div>
     ${offerCard()}
-    ${N.speakers.length ? `<div class="chips mb">${N.speakers.map((x) => `<button class="chip" data-rename="${x.speakerId}" title="${esc(whyName(x) || t('Name this speaker'))}"><span class="dot" style="background:${speakerColor(x.speakerId)}"></span>${esc(spLabel(x))}${x.voiceId ? ` ${icon('check', 'sm')}` : ''}${guessed(x) ? ` <span title="${esc(t('from the conversation'))}">${icon('sparkles', 'sm')}</span>` : ''}</button>${x.suggestedName ? `<span class="chip suggest" title="${esc(t('This voice sounds like {name}, but not surely enough to say so', { name: x.suggestedName }))}">${esc(t('{name}?', { name: x.suggestedName }))}</span><button class="btn xs ghost icon" data-suggest-yes="${x.speakerId}" title="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}" aria-label="${esc(t('Yes, it is {name}', { name: x.suggestedName }))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-suggest-no="${x.speakerId}" title="${esc(t('No, not {name}', { name: x.suggestedName }))}" aria-label="${esc(t('No, not {name}', { name: x.suggestedName }))}">${icon('x', 'sm')}</button>` : ''}${guessed(x) ? `<button class="btn xs ghost icon" data-confirm-name="${x.speakerId}" title="${esc(t('Keep this name'))}" aria-label="${esc(t('Keep this name'))}">${icon('check', 'sm')}</button><button class="btn xs ghost icon" data-reject-name="${x.speakerId}" title="${esc(t('Not this name'))}" aria-label="${esc(t('Not this name'))}">${icon('x', 'sm')}</button>` : ''}`).join('')}${N.speakers.some(unnamed) && S.settings?.llm?.baseUrl ? `<button class="btn xs ghost" data-guess-names title="${esc(t('Ask your AI who they are, from what they say: "I\'m Maria", "Thanks, George".'))}">${icon('sparkles', 'sm')}${t('Guess names')}</button>` : ''}${N.speakers.length > 1 ? `<button class="btn xs ghost" data-merge-speakers title="${t('Two names for the same person? Join them.')}">${icon('users', 'sm')}${t('Merge speakers')}</button>` : ''}<span class="xsmall muted" style="align-self:center">${t('Click a name to rename; names can be remembered by voice.')}</span></div>` : N.segs.length && !S.state?.speakerModel ? `<div class="banner small mb">${icon('users')}<div class="grow">${t('Telling speakers apart needs a small voice model.')}</div><a class="btn xs" href="#/settings/audio">${t('Get it')}</a></div>` : ''}
-    ${N.analytics.timeline.length > 1 ? `<div class="timeline" title="${t('Who spoke when')}">${N.analytics.timeline.map((s) => `<i style="left:${(s.startMs / total) * 100}%;width:${Math.max(0.3, ((s.endMs - s.startMs) / total) * 100)}%;background:${speakerColor(s.speakerId, s.speakerId)}"></i>`).join('')}</div><div class="timeline-legend mb"><span>0:00</span><span>${fmtClock(total)}</span></div>` : ''}
+    <div id="tr-people" style="display:contents">${peopleHtml()}</div>
     ${finBanner()}<div class="segs-wrap"><div class="segs boxed${recHere() ? ' live' : ''}" id="segs">${N.segs.length || draftsHtml() ? N.segs.map(segHtml).join('') + draftsHtml() : preflightOn(N.note, N.segs) ? preflightHtml(N.note) : empty('waves', t('No transcript yet'), recHere() ? t('Listening… lines appear here as people speak.') : t('Press Record to capture the meeting, or add an audio file.'))}</div>${jumpHtml()}</div>`;
   if (prev && $('.segs-wrap', body)?.contains(prev)) { patchTranscript(body, html); } else body.innerHTML = html;
   if (N.trq) filterTranscript();
+  refocus(body, focus);
   if (N.seg) { const el = $(`.seg[data-id="${N.seg}"]`); if (el) { el.classList.add('hl'); N.restoreTop = null; setTimeout(() => centreLine(el), 60); } N.seg = null; }
   wireLiveBox(N.restoreTop !== null);
   if (recHere() && N.restoreTop === null) requestAnimationFrame(() => N.fol?.end());
@@ -346,21 +380,13 @@ function syncFinishing() {
 const muteBtn = () => (S.rec.micAvailable === false ? '' : `<button class="btn sm ${S.rec.micMuted ? 'danger' : ''}" data-act="mute" aria-pressed="${!!S.rec.micMuted}" title="${esc(S.rec.micMuted ? t('Unmute my microphone') : t('Mute my microphone: nothing I say is recorded'))}">${icon(S.rec.micMuted ? 'micoff' : 'mic', 'sm')} ${S.rec.micMuted ? t('Unmute') : t('Mute')}</button>`);
 const recControls = () => (finishing() ? `<button class="btn sm" data-act="finishing" disabled>${spinner()} ${t('Finishing…')}</button>` : recHere() ? `${muteBtn()}<button class="btn sm" data-act="pause">${icon(S.rec.paused ? 'play' : 'pause', 'sm')} ${S.rec.paused ? t('Resume') : t('Pause')}</button><button class="btn sm danger" data-act="stop">${icon('stop', 'sm')} ${t('Stop')}</button>` : `<button class="btn sm primary" data-act="record" ${S.rec.active ? 'disabled' : ''}>${icon('mic', 'sm')} ${t('Record')}</button>`);
 
-function highlightTerms(text) {
-  let html = esc(text);
-  for (const g of N.glossary) {
-    for (const term of [g.term, ...(g.aliases || [])].filter((x) => x && x.length > 1)) {
-      const re = new RegExp(`(^|[^\\p{L}\\p{N}])(${esc(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?=$|[^\\p{L}\\p{N}])`, 'giu');
-      html = html.replace(re, (m, pre, w) => `${pre}<span class="term" title="${esc(g.definition)}">${w}</span>`);
-    }
-  }
-  return html;
-}
 // The words of a line: as said, with the translation beneath ('both') or in their place ('translation'), when there is one
-function lineBody(s) {
+// (glossary terms and what the search box holds are marked by ui/highlight.js, on the text itself)
+function lineBody(s, q = '') {
   const tr = N.tr?.lang && N.tr.view !== 'original' ? N.tr.text.get(s.id) : '';
-  if (!tr) return `<div class="txt${N.tr?.lang && N.tr.view === 'translation' && /\p{L}/u.test(s.text) ? ' untranslated' : ''}">${highlightTerms(s.text)}</div>`;
-  return N.tr.view === 'translation' ? `<div class="txt">${highlightTerms(tr)}</div>` : `<div class="txt">${highlightTerms(s.text)}</div><div class="txt tr-line">${highlightTerms(tr)}</div>`;
+  const h = (text) => highlight(text, N.glossary, q);
+  if (!tr) return `<div class="txt${N.tr?.lang && N.tr.view === 'translation' && /\p{L}/u.test(s.text) ? ' untranslated' : ''}">${h(s.text)}</div>`;
+  return N.tr.view === 'translation' ? `<div class="txt">${h(tr)}</div>` : `<div class="txt">${h(s.text)}</div><div class="txt tr-line">${h(tr)}</div>`;
 }
 function segHtml(s) {
   const name = label(s);
@@ -453,19 +479,33 @@ function syncLiveBox() {
   if (live && !was) N.fol?.end();
 }
 const keepInView = () => N.fol?.update();
+// The search box: rows that do not match are hidden, only rows whose marks change are written again (a long transcript was
+// rebuilt in full, with a linear lookup per row, on every keystroke). Lines are found by id through a map kept with N.segs.
+let segIndex = { of: null, n: 0, map: new Map() };
+function segById(id) {
+  if (segIndex.of !== N.segs || segIndex.n !== N.segs.length) segIndex = { of: N.segs, n: N.segs.length, map: new Map(N.segs.map((x) => [x.id, x])) };
+  return segIndex.map.get(id);
+}
 function filterTranscript() {
   const q = N.trq.toLowerCase();
   let hits = 0;
-  $$('.seg:not(.draft)', $('#segs')).forEach((el) => {
-    const s = N.segs.find((x) => x.id === Number(el.dataset.id));
-    const match = !q || s.text.toLowerCase().includes(q) || label(s).toLowerCase().includes(q);
-    el.hidden = !match;
+  for (const el of $$('.seg:not(.draft)', $('#segs'))) {
+    const s = segById(Number(el.dataset.id));
+    if (!s) continue;
+    const tr = N.tr?.lang ? N.tr.text.get(s.id) || '' : '';
+    const match = !q || s.text.toLowerCase().includes(q) || tr.toLowerCase().includes(q) || label(s).toLowerCase().includes(q);
+    if (el.hidden === match) el.hidden = !match;
     if (match && q) hits++;
-    const txt = $('.txt', el);
-    txt.innerHTML = q && match ? highlightTerms(s.text).replace(new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![^<]*>)`, 'gi'), '<mark>$1</mark>') : highlightTerms(s.text);
-  });
+    const mark = match ? q : '';
+    if ((el.dataset.q || '') === mark) continue;
+    if (mark) el.dataset.q = mark; else delete el.dataset.q;
+    const words = $$('.txt', el);
+    words[0].insertAdjacentHTML('beforebegin', lineBody(s, mark));
+    words.forEach((x) => x.replaceWith());
+  }
   return hits;
 }
+const filterSoon = debounce(() => { if (N && N.tab === 'transcript') filterTranscript(); }, 120);
 
 function notesTab(body) {
   body.innerHTML = `<div class="tb">${recControls()}<span class="spacer"></span><span class="xsmall faint">${t('Markdown supported · saved automatically')}</span></div>
@@ -568,7 +608,7 @@ function bind(main) {
     if (e.target.matches('.title-input')) { N.note.title = e.target.value; saveNote({ title: e.target.value }); }
     else if (e.target.matches('.editor')) { N.note.body = e.target.value; saveNote({ body: e.target.value }); }
     else if (e.target.matches('#summary-edit')) { N.note.summary = e.target.value; saveNote({ summary: e.target.value }); }
-    else if (e.target.matches('#tr-q')) { N.trq = e.target.value.trim(); filterTranscript(); }
+    else if (e.target.matches('#tr-q')) { N.trq = e.target.value.trim(); filterSoon(); }   // N.trq at once (a redraw keeps it), the rows a moment later
     else if (e.target.matches('#a-new')) { const b = $('#a-submit'); if (b) b.disabled = !e.target.value.trim(); }
   };
   main.onchange = async (e) => {
@@ -812,7 +852,12 @@ async function mergeSpeakers() {
 async function guessNames(btn) {
   btn.disabled = true;
   try {
-    const r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`);
+    let r;
+    try { r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`); } catch (e) {
+      if (e.code !== 'confirm-remote') throw e;   // a server elsewhere: the transcript goes there only with a yes for this meeting
+      if (!(await confirmDialog(t('Your AI server is not on this computer: guessing names sends this meeting\'s transcript to it. Go ahead?')))) { btn.disabled = false; return; }
+      r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`, { confirm: true });
+    }
     toast(r.named.length ? t('Names found: {n}', { n: r.named.length }) : t('Nobody could be named: the conversation does not say who they are.'));
     await reloadTranscript();
   } catch (e) { fail(e); btn.disabled = false; }
@@ -869,15 +914,18 @@ async function enhance() {
   const n = N.note, id = N.id;
   S.streaming = { noteId: id, text: '', stage: '' };
   renderTab();
+  // the final notes are drawn by reloadOverview below, so a pending frame is dropped, not flushed
+  const draw = throttleFrame(() => { if (S.streaming?.noteId === id && N?.id === id && N.tab === 'summary' && $('#summary')) $('#summary').innerHTML = streamingHtml(); });
   try {
     const result = await stream(`/api/notes/${id}/summarize`, { templateId: $('#tpl')?.value }, {
-      onDelta: (d) => { S.streaming.text += d; if (N?.id === id && N.tab === 'summary' && $('#summary')) $('#summary').innerHTML = streamingHtml(); },
+      onDelta: (d) => { S.streaming.text += d; draw(); },
       onStage: (s) => { S.streaming.stage = s.stage === 'reduce' ? `${t('Reading the transcript…')} ${s.index}/${s.total}` : t('Writing…'); if ($('#summary')) $('#summary').innerHTML = streamingHtml(); },
     });
+    draw.cancel();
     if (N?.id === id) Object.assign(n, result);
     S.streaming = null;
     if (S.settings.autoInsights) { toast(t('Finding topics, glossary terms and action items…'), { iconName: 'wand', timeout: 4000 }); await api('POST', `/api/notes/${id}/insights`, {}).catch((e) => toast(e.message, { error: true })); }
-  } catch (e) { fail(e); } finally { S.streaming = null; if (N?.id === id) await reloadOverview($('#main')); window.dispatchEvent(new Event('wb:refresh')); }
+  } catch (e) { fail(e); } finally { draw.cancel(); S.streaming = null; if (N?.id === id) await reloadOverview($('#main')); window.dispatchEvent(new Event('wb:refresh')); }
 }
 
 async function analyse(btn, local = false) {
@@ -941,10 +989,11 @@ function rerenderActions() {
 function updateCounts() { $$('[data-count]').forEach((b) => { const c = count(b.dataset.count); b.textContent = c; b.hidden = !c; }); }
 
 // ---------- live events ----------
+const LIVE_STATE = new Set(['recording.started', 'recording.stopped', 'recording.paused', 'recording.resumed', 'recording.mic-muted', 'recording.finalizing']);
 function handleEvent(main, type, d) {
   if (!N) return;
   const mine = (x) => x === N.id;
-  if (type.startsWith('recording.')) requestAnimationFrame(syncLiveBox);
+  if (LIVE_STATE.has(type)) requestAnimationFrame(syncLiveBox);   // not recording.level: the meter ticks 8 times a second and this measures the layout
   if (type === 'recording.stopped' && mine(d.noteId)) setTimeout(refreshOffer, 1500);   // the call's platform and link are on the note by now
   if (type === 'recording.stopped' || type === 'recording.paused') { N.drafts = {}; $$('.seg.draft').forEach((el) => el.remove()); } // nothing is being said any more
   if (type === 'transcript.partial' && mine(d.noteId)) {
@@ -960,6 +1009,7 @@ function handleEvent(main, type, d) {
         const html = segHtml(d.segment).replace('class="seg ', 'class="seg new ');
         const open = $('.seg.draft', box); // lines still being spoken stay below the finished ones
         if (open) open.insertAdjacentHTML('beforebegin', html); else box.insertAdjacentHTML('beforeend', html);
+        if (N.trq) filterSoon();
         keepInView();
       }
     }
@@ -983,5 +1033,52 @@ function handleEvent(main, type, d) {
     api('GET', `/api/notes/${N.id}/overview`).then((ov) => { N.glossary = ov.glossary; renderAside(); });
   }
 }
-const debouncedSpeakers = debounce(async () => { if (!N) return; N.speakers = await api('GET', `/api/notes/${N.id}/speakers`); if (!recHere()) { await reloadTranscript(); } else { [N.segs, N.analytics] = await Promise.all([api('GET', `/api/notes/${N.id}/transcript`), api('GET', `/api/notes/${N.id}/analytics`)]); if (N.tab === 'transcript') renderTab(); renderAside(); } }, 400); // while recording, a voice coming on show renames the lines already drawn
+// Voices named, relabelled or merged (during a recording too: a voice coming on renames the lines already drawn). The lines keep
+// their elements (the reader's scroll, search and focus stay); only names, colours, the chips and the timeline change. A full
+// redraw only when the lines themselves are not the ones on screen.
+const debouncedSpeakers = debounce(async () => {
+  const n = N;
+  if (!n?.alive()) return;
+  const [speakers, segs, analytics] = await Promise.all([api('GET', `/api/notes/${n.id}/speakers`), api('GET', `/api/notes/${n.id}/transcript`), api('GET', `/api/notes/${n.id}/analytics`)]);
+  if (n !== N || !n.alive()) return;
+  N.speakers = speakers; N.analytics = analytics;
+  if (!(N.tab === 'transcript' && patchSpeakers(segs))) { N.segs = segs; if (N.tab === 'transcript') renderTab(); }
+  renderAside(); updateCounts();
+}, 400);
+function patchSpeakers(segs) {
+  const box = $('#segs'), people = $('#tr-people');
+  if (!box || !people) return false;
+  const byId = new Map(segs.map((x) => [x.id, x]));
+  const last = segs.length ? segs[segs.length - 1].id : 0;
+  const rows = $$('.seg:not(.draft)', box);
+  // every line on screen is still there (or arrived after this answer was read), and nothing new came back that is not on screen
+  const shown = new Set(rows.map((el) => Number(el.dataset.id)));
+  if (rows.some((el) => !byId.has(Number(el.dataset.id)) && Number(el.dataset.id) <= last) || segs.some((x) => !shown.has(x.id))) return false;
+  const reassign = N.speakers.length > 1;
+  for (const el of rows) {
+    const s = byId.get(Number(el.dataset.id));
+    if (!s) continue;
+    const sel = $('.seg-reassign', el);
+    if (!!sel !== (reassign && !!s.speakerId)) return false;   // the "who said this" list comes or goes: draw the line again
+  }
+  N.segs = [...segs, ...N.segs.filter((x) => x.id > last)];
+  for (const el of rows) {
+    const s = byId.get(Number(el.dataset.id));
+    if (!s) continue;
+    const name = label(s), color = speakerColor(s.speakerId, name);
+    const who = $('.who [data-rename]', el);
+    if (who) { if (who.textContent !== name) who.textContent = name; who.dataset.rename = s.speakerId || ''; who.style.color = color; }
+    const av = $('.av', el);
+    if (av && (av.title !== name || !av.getAttribute('style')?.startsWith(`background:${color};`))) av.outerHTML = avatar(name, { color });
+    const sel = $('.seg-reassign', el);
+    if (sel) {
+      const opts = N.speakers.map((x) => `<option value="${esc(x.speakerId)}" ${x.speakerId === s.speakerId ? 'selected' : ''}>${esc(spLabel(x))}</option>`).join('');
+      if (sel.innerHTML !== opts) { sel.innerHTML = opts; sel.value = s.speakerId; }   // the element stays: a focused list keeps the focus
+    }
+  }
+  const html = peopleHtml();
+  if (people.innerHTML !== html) people.innerHTML = html;
+  if (N.trq) filterTranscript();
+  return true;
+}
 void tagChip; void srcIcon;

@@ -6,7 +6,10 @@ const fail = (msg) => Object.assign(new Error(msg), { code: 'EZIP' });
 
 // Minimal read-only ZIP: End Of Central Directory → central directory → local headers.
 // Stored (0) and deflate (8) only; zip64, multi-disk and encrypted entries are refused.
-function readZip(input, { maxTotal = MAX_TOTAL, maxEntries = 20000 } = {}) {
+// maxTotal is checked up front against the declared sizes of ALL entries, unless `lazy`: then only what is really read counts
+// (a Discord data package has analytics files far over 100 MB that are never read). Either way an entry never inflates past its
+// declared size or the remaining budget, and its CRC is checked.
+function readZip(input, { maxTotal = MAX_TOTAL, maxEntries = 20000, lazy = false } = {}) {
   const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 22 - 0xffff); i--) {
@@ -33,7 +36,7 @@ function readZip(input, { maxTotal = MAX_TOTAL, maxEntries = 20000 } = {}) {
     };
     if (e.csize === 0xffffffff || e.usize === 0xffffffff || e.offset === 0xffffffff) throw fail('ZIP64 archives are not supported');
     declared += e.usize;
-    if (declared > maxTotal) throw fail(`archive is too large when uncompressed (over ${Math.round(maxTotal / 1048576)} MB)`);
+    if (!lazy && declared > maxTotal) throw fail(`archive is too large when uncompressed (over ${Math.round(maxTotal / 1048576)} MB)`);
     entries.push(e);
     p += 46 + nameLen + extraLen + commentLen;
   }
@@ -49,6 +52,7 @@ function readZip(input, { maxTotal = MAX_TOTAL, maxEntries = 20000 } = {}) {
     if (start + e.csize > buf.length) throw fail(`corrupt archive (${e.name} is truncated)`);
     const raw = buf.subarray(start, start + e.csize);
     const room = maxTotal - produced;
+    if (e.usize > room) throw fail(`archive is too large when uncompressed (over ${Math.round(maxTotal / 1048576)} MB)`);
     let data;
     if (e.method === 0) data = raw;
     else if (e.method === 8) {

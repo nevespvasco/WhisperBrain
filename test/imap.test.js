@@ -348,6 +348,149 @@ test('an XOAUTH2 account refreshes its access token (kept for next time); an exp
   await assert.rejects(imap.accessTokenOf(bad, account), (e) => e.permanent === true && /sign in again/.test(e.message));
 });
 
+// ---------- one bad thread, a dropped connection, a slow answer ----------
+const covers = (set, uid) => String(set).split(',').some((r) => { const [a, b = a] = r.split(':').map(Number); return uid >= a && uid <= b; });
+
+test('a thread the server refuses to search is skipped and tried again next run; the others are stored and the cursor moves on', async (t) => {
+  const g = await fakeImap(); t.after(() => g.close());
+  put(g, 'INBOX', { id: 'ok1@x', subject: 'One' }, 3);
+  put(g, 'INBOX', { id: 'bad@x', subject: 'Two' }, 2);
+  put(g, 'INBOX', { id: 'ok3@x', subject: 'Three' }, 1);
+  g.refuse = (l) => /^UID SEARCH/.test(l) && l.includes('bad@x');
+  const s = setup(g, { config: { folders: ['INBOX'] } });
+  const r1 = await s.run();
+  assert.equal(r1.created, 2);
+  assert.equal(r1.errors, 1);
+  let cur = imap.readCursor(s.live().cursor);
+  assert.equal(cur.f.INBOX.hi, 3, 'the folder state is kept although one thread failed');
+  assert.equal(cur.f.INBOX.lo, 0);
+  assert.deepEqual(Object.keys(cur.retry), [s.key('bad@x').replace(/^thread:/, '')]);
+  g.refuse = null;                                        // the server recovers: the thread comes in on the next run
+  const r2 = await s.run();
+  assert.equal(r2.created, 1);
+  assert.equal(r2.errors, 0);
+  assert.ok(s.store.byExternal(s.src.id, s.key('bad@x')));
+  cur = imap.readCursor(s.live().cursor);
+  assert.deepEqual(cur.retry, {});
+  // a thread that keeps failing is given up after three runs (counted as errors), never blocking the source
+  put(g, 'INBOX', { id: 'poison@x', subject: 'Four' }, 0.5);
+  g.refuse = (l) => /^UID SEARCH/.test(l) && l.includes('poison@x');
+  for (let i = 0; i < 3; i++) assert.equal((await s.run()).errors, 1);
+  assert.deepEqual(imap.readCursor(s.live().cursor).retry, {});
+  assert.equal((await s.run()).errors, 0);
+});
+
+test('a message the server refuses to fetch costs only its own thread; the rest of its chunk is read one by one', async (t) => {
+  const g = await fakeImap(); t.after(() => g.close());
+  for (let i = 1; i <= 4; i++) put(g, 'INBOX', { id: `f${i}@x`, subject: `Sub ${i}` }, 5 - i);
+  g.refuse = (l) => { const m = /^UID FETCH (\S+) \(UID FLAGS INTERNALDATE BODY\.PEEK\[\]/.exec(l); return !!m && covers(m[1], 2); };
+  const s = setup(g, { config: { folders: ['INBOX'] } });
+  const r = await s.run();
+  assert.equal(r.created, 3);
+  assert.equal(r.errors, 1);
+  assert.equal(s.store.byExternal(s.src.id, s.key('f2@x')), null, 'never stored half-read, never tombstoned');
+  // headers that cannot even be listed: that message is skipped, the others come in
+  const g2 = await fakeImap(); t.after(() => g2.close());
+  for (let i = 1; i <= 3; i++) put(g2, 'INBOX', { id: `h${i}@x`, subject: `Head ${i}` }, 4 - i);
+  g2.refuse = (l) => { const m = /^UID FETCH (\S+) \(UID FLAGS INTERNALDATE BODY\.PEEK\[HEADER/.exec(l); return !!m && covers(m[1], 3); };
+  const s2 = setup(g2, { config: { folders: ['INBOX'] } });
+  const r2 = await s2.run();
+  assert.equal(r2.created, 2);
+  assert.ok(r2.errors >= 1);
+});
+
+test('each folder\'s state is saved as soon as its threads are stored: a connection lost in the next folder keeps that progress', async (t) => {
+  const g = await fakeImap(); t.after(() => g.close());
+  put(g, 'INBOX', { id: 'in1@x', subject: 'Inbox one' }, 2);
+  put(g, 'Sent', { id: 'sent1@x', subject: 'Sent one', from: 'Ana <ana@x.pt>', to: 'rui@x.pt' }, 1);
+  let examined = 0;
+  // the first EXAMINE of Sent is the INBOX thread being looked for there; the second starts reading Sent itself
+  g.refuse = (l) => (/^EXAMINE "Sent"/.test(l) && ++examined === 2 ? 'close' : false);
+  const s = setup(g);
+  await assert.rejects(s.run(), /closed|connection/i);
+  assert.ok(s.store.byExternal(s.src.id, s.key('in1@x')), 'the INBOX thread was stored before Sent failed');
+  const cur = imap.readCursor(s.live().cursor);
+  assert.equal(cur.f.INBOX?.hi, 1);
+  assert.equal(cur.f.Sent, undefined);
+  g.refuse = null;
+  const r = await s.run();
+  assert.equal(r.created, 1, 'only Sent is left to read');
+});
+
+test('new mail follows the budget too (oldest new mail first, nothing skipped); a huge list of new uids does not overflow', async (t) => {
+  const g = await fakeImap(); t.after(() => g.close());
+  put(g, 'INBOX', { id: 'old@x', subject: 'Old' }, 30);
+  const s = setup(g, { config: { folders: ['INBOX'] } });
+  await s.run(3);
+  for (let i = 1; i <= 8; i++) put(g, 'INBOX', { id: `n${i}@x`, subject: `New ${i}` }, 10 - i);
+  await s.run(3);
+  assert.equal(imap.readCursor(s.live().cursor).f.INBOX.hi, 4, 'three of the eight new messages');
+  await s.run(3); await s.run(3);
+  assert.equal(s.store.count(), 9);
+  // a stub server that reports 200,000 new uids: Math.max(...arrivals) threw a RangeError
+  const many = Array.from({ length: 200_000 }, (_, i) => i + 2);
+  let searches = 0;
+  const stub = { caps: new Set(), list: async () => [{ name: 'INBOX', delimiter: '/', flags: [], specialUse: '' }], select: async () => ({ exists: 1, uidValidity: 1, uidNext: 2 }),
+    search: async (c) => (c[0] === 'UID' && /^2:/.test(c[1]) ? (searches++, many) : []), fetch: async () => [], logout: async () => {} };
+  const s2 = setup(g, { config: { folders: ['INBOX'] } });
+  const ctx = { ...s2.ctx, imapConnect: async () => stub };
+  await imap.sync({ ...ctx, source: s2.live(), items: s2.store });
+  await imap.sync({ ...ctx, source: s2.live(), items: s2.store, budget: 400 });
+  assert.equal(searches, 1);
+  assert.equal(imap.readCursor(s2.live().cursor).f.INBOX.hi, 401);
+});
+
+test('ids sent in a SEARCH carry no control characters (a stray CR/LF or NUL would break the command)', async (t) => {
+  const g = await fakeImap(); t.after(() => g.close());
+  put(g, 'INBOX', { id: 'abc@x', subject: 'Ctl' }, 1);
+  const s = setup(g, { config: { folders: ['INBOX'] } });
+  const key = `m:${Buffer.from('abc@x\r\n\x00').toString('base64url')}`;
+  await imap.openLive({ ctx: s.ctx, source: s.live(), externalId: `thread:${key}` });
+  const searches = g.log.filter((l) => /^UID SEARCH/.test(l));
+  assert.ok(searches.length && searches.every((l) => l.includes('"abc@x"') && !/bytes>/.test(l)), searches.join(' | '));
+});
+
+test('client: the command timer restarts while data arrives; STARTTLS refuses bytes sent before the handshake', async (t) => {
+  const net = require('node:net');
+  const serve = (onLine) => new Promise((resolve) => {
+    const srv = net.createServer((sock) => {
+      sock.on('error', () => {});
+      sock.write('* OK [CAPABILITY IMAP4rev1 STARTTLS] hi\r\n');
+      let buf = '';
+      sock.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\r\n')) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 2); onLine(sock, line); } });
+    });
+    srv.listen(0, '127.0.0.1', () => resolve(srv));
+  });
+  // a long answer trickling in for 600 ms, with a 250 ms command timeout
+  const slow = await serve((sock, line) => {
+    const tag = line.split(' ')[0];
+    let n = 0;
+    const iv = setInterval(() => { if (++n <= 6) sock.write(`* ${n} EXISTS\r\n`); else { clearInterval(iv); sock.write(`${tag} OK done\r\n`); } }, 100);
+  });
+  t.after(() => slow.close());
+  const c = new ImapClient({ host: '127.0.0.1', port: slow.address().port, tls: false, starttls: 'never', timeoutMs: 250 });
+  await c.connect();
+  await c.noop();
+  c.close();
+  // a man in the middle answering STARTTLS and appending a forged CAPABILITY before TLS starts
+  const mitm = await serve((sock, line) => { const tag = line.split(' ')[0]; sock.write(`${tag} OK begin TLS\r\n* CAPABILITY IMAP4rev1 AUTH=PLAIN\r\n`); });
+  t.after(() => mitm.close());
+  const c2 = new ImapClient({ host: '127.0.0.1', port: mitm.address().port, tls: false, timeoutMs: 2000 });
+  await assert.rejects(c2.connect(), (e) => e.code === 'insecure' && /before the TLS handshake/.test(e.message));
+});
+
+test('XOAUTH2: two runs at once share one token refresh; a token URL over plain http is refused (loopback allowed for tests)', async () => {
+  let calls = 0;
+  const ctx = { settings: { get: () => [], update: () => {} }, imapAccounts: { save: () => {} },
+    fetchImpl: async () => { calls++; await new Promise((r) => setTimeout(r, 30)); return { ok: true, status: 200, json: async () => ({ access_token: `t${calls}`, expires_in: 3600 }) }; } };
+  const account = { id: 'dedupe', authMethod: 'xoauth2', accessToken: 'old', expiresAt: Date.now() - 1000, refreshToken: 'r1', tokenUrl: 'https://login.example/token', clientId: 'cid' };
+  const [a, b] = await Promise.all([imap.accessTokenOf(ctx, account), imap.accessTokenOf(ctx, account)]);
+  assert.equal(calls, 1);
+  assert.equal(a, b);
+  await assert.rejects(imap.accessTokenOf(ctx, { ...account, id: 'plain', tokenUrl: 'http://login.example/token' }), (e) => e.permanent === true && /https/.test(e.message));
+  assert.equal(await imap.accessTokenOf(ctx, { ...account, id: 'loop', tokenUrl: 'http://127.0.0.1:9/token' }), 't2');
+});
+
 test('validate, ready, filters', () => {
   assert.deepEqual(imap.validate({}), { account: '', days: 90, folders: ['INBOX', '\\Sent'], aliases: [] });
   assert.equal(imap.validate({ days: 99999 }).days, 3650);

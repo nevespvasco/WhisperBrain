@@ -76,3 +76,75 @@ test('over HTTP: locked means nothing is served, the hash never leaves, and the 
   assert.equal((await call('PUT', '/api/settings', { lock: { hash: '' } })).status >= 400, true, 'the settings API has no way to touch the lock');
   assert.equal((await call('POST', '/api/lock/disable', { passphrase: 'correct horse' })).body.enabled, false);
 });
+
+// ---- audit 2026-11-28 (P3 lock): idle locks by itself, audio does not count as use, MCP needs a live app ----
+test('the idle lock closes by itself on a timer, without waiting for a request, and the app keeps saying it is alive', async () => {
+  let t = 1_000_000;
+  const events = [];
+  const l = new AppLock({ db: open(':memory:'), now: () => t, bus: { publish: (type, data) => events.push([type, data]) }, tickMs: 10 });
+  try {
+    l.enable({ passphrase: 'correct horse', minutes: 1 });
+    t += 61_000;
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(l.isLocked, true, 'locked by the timer');
+    assert.equal(l.meta('state'), 'locked', 'and written where MCP reads it');
+    assert.deepEqual(events.at(-1), ['lock.changed', { locked: true }]);
+    assert.equal(Number(l.meta('seen')), t, 'the heartbeat MCP checks');
+  } finally { l.close(); }
+  assert.equal(l.timer, null, 'closing stops the timer');
+});
+
+test('MCP reads a passphrase-locked app as locked unless the app said "unlocked" recently (a crashed app is locked)', () => {
+  const { BrainReader } = require('../src/mcp/server');
+  const db = open(':memory:');
+  const r = new BrainReader(db);
+  const set = (k, v) => db.prepare('INSERT INTO index_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value').run(`lock:${k}`, String(v));
+  assert.equal(r.locked(), false, 'no passphrase: never locked');
+  set('hash', 'x'); set('state', 'unlocked');
+  assert.equal(r.locked(), true, 'unlocked but no heartbeat at all');
+  set('seen', Date.now());
+  assert.equal(r.locked(), false, 'unlocked and alive');
+  set('seen', Date.now() - 10 * 60_000);
+  assert.equal(r.locked(), true, 'the app stopped saying it is alive (crashed): locked');
+  set('seen', Date.now()); set('state', 'locked');
+  assert.equal(r.locked(), true);
+});
+
+test('over HTTP: streaming audio does not keep the app unlocked, and live events close when it locks', async (t) => {
+  const dataDir = tmpDir('wb-lock-');
+  const app = createApp({ dataDir, version: 'test', platform: { id: 'fake', session: 'test', capture: { mic: 'renderer', system: 'renderer' }, async capabilities() { return { platform: 'fake', notes: [] }; }, async listMics() { return []; }, createMicSource() { return null; }, async createSystemSource() { return null; }, async micActivity() { return { supported: false, active: false, apps: [] }; }, async paste() { return { ok: false }; }, clipboard: null } });
+  const srv = createServer(app, { uiDir: path.join(ROOT, 'ui') });
+  const { port, token } = await srv.listen(0);
+  t.after(async () => { await srv.close(); app.close(); fs.rmSync(dataDir, { recursive: true, force: true }); });
+  await app.ready;
+  const url = (p) => `http://127.0.0.1:${port}${p}`;
+  const headers = { Cookie: `wb_token=${token}` };
+  app.lock.enable({ passphrase: 'correct horse', minutes: 5 });
+  const before = app.lock.lastUse = Date.now() - 60_000;
+  await fetch(url('/api/recording/pcm?ch=mic'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(320) }).then((r) => r.arrayBuffer());
+  await fetch(url('/api/dictation/pcm'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/octet-stream' }, body: Buffer.alloc(320) }).then((r) => r.arrayBuffer());
+  assert.equal(app.lock.lastUse, before, 'audio chunks are not somebody using the app');
+  await fetch(url('/api/notes'), { headers }).then((r) => r.arrayBuffer());
+  assert.ok(app.lock.lastUse > before, 'a real request is');
+
+  const res = await fetch(url('/api/events'), { headers });
+  const reader = res.body.getReader();
+  await reader.read();   // ': ok'
+  app.lock.lock();
+  let text = '';
+  for (;;) { const { done, value } = await reader.read(); if (done) break; text += Buffer.from(value).toString(); }
+  assert.match(text, /event: lock\.changed/, 'the page is told, then the stream ends');
+});
+
+test('a running recording keeps the app from locking by idle time; the idle time starts when it ends', () => {
+  let t = 1_000_000, recording = true;
+  const l = new AppLock({ db: open(':memory:'), now: () => t, busy: () => recording, tickMs: 0 });
+  l.enable({ passphrase: 'correct horse', minutes: 10 });
+  t += 3 * 60 * 60_000;   // a three-hour meeting, nobody at the keyboard
+  assert.equal(l.locked(), false, 'recording: not locked');
+  recording = false;
+  t += 9 * 60_000;
+  assert.equal(l.locked(), false, 'the idle time started when the recording ended');
+  t += 2 * 60_000;
+  assert.equal(l.locked(), true, 'ten idle minutes after it: locked');
+});

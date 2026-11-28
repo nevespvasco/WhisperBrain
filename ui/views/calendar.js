@@ -1,16 +1,17 @@
 // Upcoming meetings from Google Calendar and iCal feeds, with per-meeting "record automatically" switches.
-import { S, $, api, t, esc, icon, fail, done, dayStart, fmtHour, relDay, groupBy, switchEl, empty, avatarStack, menu } from '../lib.js';
+import { S, $, api, t, esc, safeUrl, icon, fail, done, dayStart, fmtHour, relDay, groupBy, switchEl, empty, avatarStack, menu } from '../lib.js';
 import { takeNotesFor } from '../recording.js';
 
 let offset = 0; // weeks from now
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const from = dayStart() + offset * 7 * 86400000, to = from + 7 * 86400000;
   const [cal, prefs, past] = await Promise.all([
     api('GET', `/api/calendar/events?from=${from}&to=${to}&refresh=${offset === 0 ? '0' : '0'}`).catch((e) => ({ events: [], errors: [{ source: 'Calendar', error: e.message }] })),
     api('GET', '/api/calendar/prefs').catch(() => ({})),
     api('GET', '/api/meetings?limit=300').catch(() => []),
   ]);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const byEvent = new Map(past.filter((n) => n.eventUid).map((n) => [`${n.eventUid}:${n.eventStart}`, n]));
   const connected = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   const mode = S.settings.captureCalendar;
@@ -61,7 +62,7 @@ function row(e, prefs, mode, byEvent) {
     <div style="width:96px;flex:none" class="small"><b>${fmtHour(e.start)}</b><div class="xsmall muted">${fmtHour(e.end)}</div></div>
     <div class="main-t"><div class="t">${live ? '<span class="dot-rec" style="margin-right:8px"></span>' : ''}${esc(e.summary || t('Untitled event'))}</div><div class="s">${esc([e.source, e.location].filter(Boolean).join(' · '))}</div></div>
     <div class="side">${avatarStack(people, 3)}
-      ${e.url ? `<a class="btn xs ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}<span class="hide-sm">${t('Join')}</span></a>` : ''}
+      ${e.url ? `<a class="btn xs ghost" href="${esc(safeUrl(e.url))}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}<span class="hide-sm">${t('Join')}</span></a>` : ''}
       ${note ? `<a class="btn xs soft" href="#/note/${note.id}">${icon('file', 'sm')} ${t('Notes')}</a>` : pastEv ? '' : `<button class="btn xs ${live ? 'primary' : ''}" data-act="notes" ${live ? 'data-rec="1"' : ''}>${live ? t('Record') : t('Prepare notes')}</button>`}
       ${pastEv ? '' : mode === 'all' ? `<span class="badge accent" title="${t('Will be recorded automatically')}">${icon('mic', 'sm')}</span>` : switchEl('', mode === 'selected' && prefs[e.id], t('Record automatically')).replace('id=""', `data-cap="${esc(e.id)}"`)}
     </div></div>`;

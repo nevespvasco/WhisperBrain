@@ -90,7 +90,7 @@ async function narrate(llm, brief, { signal, mayShare = null } = {}) {
   const facts = factsOf(brief).filter((x) => !mayShare || !x.ref || mayShare(x.ref.kind === 'meeting' ? 'note' : x.ref.kind, x.ref.id));
   if (!facts.length) return null;
   const body = facts.map((x) => `[${x.n}] ${neutralizeTags(x.text)}`).join('\n');
-  const reply = (await llm.complete([{ role: 'system', content: NARRATE }, { role: 'user', content: `<facts>\n${body}\n</facts>` }], { signal, temperature: 0.2, maxTokens: 400 })).trim();
+  const reply = (await llm.complete([{ role: 'system', content: NARRATE }, { role: 'user', content: `<facts>\n${body}\n</facts>` }], { signal, temperature: 0.2, maxTokens: 400, reasoning: 'off' })).trim();
   let used = 0;
   const text = reply.replace(/\s?\[(\d{1,3})\]/g, (m, d) => (facts.some((x) => x.n === Number(d)) ? (used++, m) : ''));
   if (!used) return null;

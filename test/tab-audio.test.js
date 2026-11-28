@@ -5,9 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
+const { tmpDir } = require('./helpers');
 const { EventEmitter } = require('node:events');
 const { open } = require('../src/core/db');
 const { Bus } = require('../src/core/events');
@@ -67,7 +65,7 @@ function rig(t, { settings = {} } = {}) {
   sets.update({ speakerRefine: false, echoDedupe: true, speakerDiarize: false, speakerDetection: false, ...settings });
   const engine = new FakeEngine();
   const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk', segmentationInstalled: () => true, segmentationPath: () => '/seg' };
-  const mgr = new RecordingManager({ notes, engine, models, settings: sets, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, evidence, spoolDir: fs.mkdtempSync(path.join(os.tmpdir(), 'wb-tab-')), meet: new SignalHub() });
+  const mgr = new RecordingManager({ notes, engine, models, settings: sets, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, evidence, spoolDir: tmpDir('wb-tab-', t), meet: new SignalHub() });
   const events = [];
   bus.subscribe((e) => events.push(e));
   const n = notes.create({});

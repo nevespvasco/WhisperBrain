@@ -3,6 +3,7 @@
 // computer, ask each time, any AI), live search, the actions allowed, how long a live copy is kept, and an optional end date.
 // openAccessSheet({ provider, current, mode, accounts }) -> Promise<{ grant, config, account } | undefined>
 import { S, $, api, t, esc, icon, modal, fail } from './lib.js';
+import { isThisComputer } from './locality.js';
 
 const GMAIL_ACTIONS = [
   ['gmail.draft', 'Write drafts of replies', 'Saved in Gmail’s Drafts: you send them from Gmail.'],
@@ -47,8 +48,8 @@ const chk = (d, id) => !!d.querySelector(`#${id}`)?.checked;
 function reachNote() {
   const url = S.settings?.llm?.baseUrl || '';
   let host = ''; try { host = new URL(url).hostname; } catch { /* none set */ }
-  const local = !host || /^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|\[?::1\]?$)/.test(host) || host.endsWith('.local') || host.endsWith('.lan');
-  return local ? t('Your AI server ({host}) is on this computer or your network.', { host: host || t('none set') })
+  const local = isThisComputer(url);   // a server elsewhere on the network is another computer (src/core/policy.js)
+  return local ? t('Your AI server ({host}) is on this computer.', { host: host || t('none set') })
     : t('Your AI server ({host}) is NOT on this computer. “Any AI server” would let this go there, with e-mail addresses, phone numbers, bank numbers and codes replaced by placeholders first.', { host });
 }
 

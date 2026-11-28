@@ -164,6 +164,8 @@ Then:
    | **Windows** | `winget install Ollama.Ollama` (it runs from the tray) | `ollama pull llama3.2` |
 
    Then open **Settings → AI** and press test. Any other OpenAI-compatible server (LM Studio, a hosted API) works too: put its address and key there. The live assistant only talks to a server on this computer unless you allow another one (Settings → Assistant).
+
+   **Ollama's context window.** Ollama runs every model with its own context size (often 4,096 tokens), whatever the model could take, and cuts a longer prompt from the start. WhisperBrain asks Ollama what context the loaded model runs with (`/api/ps`, or a `num_ctx` in the model's parameters) and keeps each prompt within it, less the instructions and room for the reply; a long meeting is then summarised in more parts. For fuller notes and answers, give Ollama a larger context: start it with `OLLAMA_CONTEXT_LENGTH=16384 ollama serve` (or set that variable for the Ollama service), or make a model with `PARAMETER num_ctx 16384` in its Modelfile. A larger context needs more memory. With other servers, and before Ollama has loaded the model, the budget in Settings → AI (24,000 characters) is used as it is.
 3. Check **Settings → Setup check** whenever something does not work: it tests each item above and shows the fix.
 
 <details>
@@ -305,16 +307,17 @@ Only three things differ per OS; everything else is shared code.
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
 | [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |
-| [Testing](docs/testing.md) | What the 700+ tests cover |
+| [Testing](docs/testing.md) | What the tests cover, and what skips where |
 
 ## Development
 
 ```bash
-npm test                        # 700+ tests, using real models and devices when present
+npm test                        # about 1,200 tests, using real models and devices when present
+npm run lint                    # undefined names (errors) and unused variables (warnings)
 node scripts/fetch-models.js    # fetch the test models into ./.models
 ```
 
-Tests that need a model or a device skip themselves when it is missing. [docs/testing.md](docs/testing.md) lists what is covered.
+Tests that need a model or a device skip themselves when it is missing. [docs/testing.md](docs/testing.md) lists what is covered. See [CONTRIBUTING.md](CONTRIBUTING.md) to work on it, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Acknowledgements
 

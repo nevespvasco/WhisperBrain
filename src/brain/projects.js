@@ -40,8 +40,9 @@ class Projects {
   get(id) { return row(this.db.prepare('SELECT * FROM projects WHERE id = ?').get(id)); }
   rows(archived = false) { return this.db.prepare('SELECT * FROM projects WHERE archived = ? ORDER BY name COLLATE NOCASE').all(archived ? 1 : 0).map(row); }
 
-  // What belongs to a project right now.
-  members(p) {
+  // What belongs to a project right now. shared: one object passed for several projects, so the accepted decisions and promises are
+  // read once for all of them (the Inbox checks every project on each load), not twice per project.
+  members(p, shared = {}) {
     const q = p.keywords.join(' ');
     const meetings = new Map();
     for (const h of this.notes.search(q, 100, { any: true })) meetings.set(h.note.id, h.note);
@@ -52,8 +53,10 @@ class Projects {
     const docs = [...seen.values()].sort((a, b) => b.occurredAt - a.occurredAt).slice(0, 30);
     const ids = new Set(list.map((n) => n.id));
     const fromHere = (a) => ids.has(a.noteId);
-    const decisions = this.assertions.list({ state: ['accepted', 'superseded'], kind: 'decision', limit: 300 }).filter(fromHere);
-    const promises = this.assertions.list({ state: 'accepted', kind: 'commitment', limit: 300 }).filter(fromHere);
+    shared.decisions ??= this.assertions.list({ state: ['accepted', 'superseded'], kind: 'decision', limit: 300 });
+    shared.promises ??= this.assertions.list({ state: 'accepted', kind: 'commitment', limit: 300 });
+    const decisions = shared.decisions.filter(fromHere);
+    const promises = shared.promises.filter(fromHere);
     const lastAt = Math.max(0, ...list.map((n) => n.startedAt || n.createdAt), ...docs.map((d) => d.occurredAt));
     return { meetings: list, docs, decisions, promises, lastAt };
   }
@@ -65,14 +68,15 @@ class Projects {
   }
 
   summary() {
-    return this.rows().map((p) => { const m = this.members(p); return { ...p, meetings: m.meetings.length, docs: m.docs.length, openPromises: m.promises.length, lastAt: m.lastAt }; });
+    const shared = {};
+    return this.rows().map((p) => { const m = this.members(p, shared); return { ...p, meetings: m.meetings.length, docs: m.docs.length, openPromises: m.promises.length, lastAt: m.lastAt }; });
   }
 
   // projects with open promises and no activity for 3 weeks
   idle(dismissed = () => false) {
-    const out = [];
+    const out = [], shared = {};
     for (const p of this.rows()) {
-      const m = this.members(p);
+      const m = this.members(p, shared);
       if (!m.promises.length || !m.lastAt) continue;
       const days = Math.floor((this.now() - m.lastAt) / DAY);
       if (days < IDLE_DAYS || dismissed(p, m.lastAt)) continue;

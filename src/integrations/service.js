@@ -7,6 +7,7 @@ const { ObsidianVault } = require('./obsidian');
 const { postWebhook } = require('./webhook');
 const { isLanguage } = require('../llm/languages');
 const { toMarkdown } = require('../knowledge/meeting');
+const { can } = require('../access/grants');
 
 const err = (message, status = 400, code) => Object.assign(new Error(message), { status, code });
 
@@ -57,6 +58,10 @@ class Integrations {
     const { app } = this;
     const m = app.meeting(noteId, lang && ['translation', 'both'].includes(translation) && isLanguage(lang) ? { lang, mode: translation } : undefined);   // with its translation, when asked
     if (!m) throw err('note not found', 404);
+    // a meeting whose source keeps it on this computer is not sent to another service (the 'export' grant). The Obsidian vault too:
+    // it is a folder here, but vaults are often synced elsewhere
+    const src = app.items?.sourceOfNote?.(noteId);
+    if (src && !can(src, 'export', { item: app.items.forNote?.(noteId) })) throw err('This meeting comes from a source you keep on this computer, so it is not sent to other services. Change what that source allows in Access.', 403, 'local-only');
     const link = (l) => app.knowledge.addLink(noteId, l);
     if (target === 'notion') {
       const c = this.settings.get('notion');

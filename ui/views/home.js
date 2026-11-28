@@ -1,6 +1,6 @@
 // Home: start a meeting (online / in person / upload), recent meetings, today's calendar with auto-capture
 // toggles, and open action items.
-import { S, $, $$, api, t, esc, icon, fail, go, meetingCard, fmtHour, dayStart, relDay, switchEl, menu, done, empty, PLATFORMS, callLabel, loc } from '../lib.js';
+import { S, $, $$, api, t, esc, safeUrl, icon, fail, go, meetingCard, fmtHour, dayStart, relDay, switchEl, menu, done, empty, PLATFORMS, callLabel, loc } from '../lib.js';
 import { startRecording, takeNotesFor, recordDetected } from '../recording.js';
 import { openImport } from './transfer.js';
 import { openBrief } from '../brief.js';
@@ -8,7 +8,7 @@ import { openBrief } from '../brief.js';
 const platformFromUrl = (u) => (/meet\.google/.test(u) ? 'meet' : /zoom\.us/.test(u) ? 'zoom' : /teams\.(microsoft|live)/.test(u) ? 'teams' : /webex/.test(u) ? 'webex' : /whereby/.test(u) ? 'whereby' : /jit\.si|jitsi/.test(u) ? 'jitsi' : null);
 let mode = 'online';
 
-export async function render(main) {
+export async function render(main, { alive = () => true } = {}) {
   const hour = new Date().getHours();
   const greet = hour < 5 ? t('Good evening') : hour < 12 ? t('Good morning') : hour < 18 ? t('Good afternoon') : t('Good evening');
   const now = Date.now();
@@ -23,6 +23,7 @@ export async function render(main) {
   const needModel = !S.models.some((m) => m.installed);
   const needLlm = !S.state?.llmConfigured;
   const [needs, open] = await Promise.all([api('GET', '/api/inbox').then((r) => r.counts).catch(() => null), api('GET', '/api/commitments').catch(() => null)]);
+  if (!alive()) return;   // the user moved on meanwhile (app.js route())
   const hasCal = (S.settings.calendar?.sources?.length || 0) > 0 || !!S.settings.google?.refreshToken;
   main.innerHTML = `<div class="page">
     <div class="page-head hello"><div><h1>${greet}${S.settings.userName ? `, ${esc(S.settings.userName.split(' ')[0])}` : ''}</h1><div class="sub">${new Date().toLocaleDateString(loc(), { weekday: 'long', day: 'numeric', month: 'long' })}</div></div></div>
@@ -139,7 +140,7 @@ function eventCard(e, prefs, now) {
     <div class="t ellipsis">${esc(e.summary || t('Untitled event'))}</div>
     ${S.settings.captureCalendar === 'all' ? `<span class="badge accent" title="${t('Will be recorded automatically')}">${icon('mic', 'sm')}</span>` : switchEl('', capture, t('Record automatically')).replace('id=""', `data-cap="${esc(e.id)}"`)}
     <div class="when">${icon('clock', 'sm')}${relDay(e.start) !== t('Today') ? relDay(e.start) + ' ' : ''}${fmtHour(e.start)} – ${fmtHour(e.end)}${people.length ? ` · ${esc(people.slice(0, 2).join(', '))}${people.length > 2 ? ` +${people.length - 2}` : ''}` : ''}</div>
-    <div class="row" style="gap:4px"><button class="btn xs ghost" data-act="brief" title="${t('What you know before this meeting')}">${icon('sparkles', 'sm')} ${t('Prepare')}</button>${e.url ? `<a class="btn xs ghost" href="${esc(e.url)}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}</a>` : ''}<button class="btn xs ${live ? 'primary' : 'soft'}" data-act="notes-for" ${live ? 'data-rec="1"' : ''}>${live ? t('Record') : t('Notes')}</button></div>
+    <div class="row" style="gap:4px"><button class="btn xs ghost" data-act="brief" title="${t('What you know before this meeting')}">${icon('sparkles', 'sm')} ${t('Prepare')}</button>${e.url ? `<a class="btn xs ghost" href="${esc(safeUrl(e.url))}" target="_blank" rel="noopener noreferrer" title="${t('Join')}">${icon('external', 'sm')}</a>` : ''}<button class="btn xs ${live ? 'primary' : 'soft'}" data-act="notes-for" ${live ? 'data-rec="1"' : ''}>${live ? t('Record') : t('Notes')}</button></div>
   </div>`;
 }
 

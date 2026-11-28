@@ -9,7 +9,7 @@
 // ai_reach says who may see the content: 'local' (only an AI server on this computer), 'ask' (confirm each time; any automatic path
 // treats it as local), 'any' (a server the person chose; it is redacted first where the caller supports it).
 // An item may override its source's ai_reach (items.ai_reach) to keep one thread local while it stays searchable.
-const { isLocalUrl } = require('../core/policy');
+const { isThisComputer } = require('../core/policy');
 
 const READ_LEVELS = ['none', 'metadata', 'part', 'all'];
 const AI_REACH = ['local', 'ask', 'any'];
@@ -60,7 +60,7 @@ function can(source, op, { item = null, llmConfig = null, confirmed = false, now
     case 'read.body': return g.readLevel === 'part' || g.readLevel === 'all';
     case 'search.live': return g.liveSearch && (g.readLevel === 'part' || g.readLevel === 'all');
     case 'ai.remote': {
-      if (llmConfig && isLocalUrl(llmConfig.baseUrl)) return true;            // never leaves this computer
+      if (llmConfig && isThisComputer(llmConfig.baseUrl)) return true;            // never leaves this computer
       const reach = reachOf(g, item);
       return reach === 'any' || (reach === 'ask' && confirmed);
     }

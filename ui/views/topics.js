@@ -2,7 +2,7 @@
 // discussed together are linked; by default only the links that hold the map together are drawn), themes
 // (clusters of topics that travel together), trends (rising, new, gone quiet, and a heatmap over time) and a
 // sortable list. The topic page has the meetings, who said what, related topics, activity and an AI synthesis.
-import { S, $, $$, api, t, esc, icon, fail, done, go, debounce, empty, fmtDate, fmtClock, avatar, menu, promptDialog, confirmDialog, safeSnippet, plural, seg } from '../lib.js';
+import { S, $, $$, api, t, esc, icon, fail, done, go, debounce, empty, fmtDate, fmtClock, avatar, menu, promptDialog, confirmDialog, safeSnippet, plural, seg, throttleFrame } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 
@@ -26,6 +26,7 @@ export async function render(main, ctx) {
   if (name === 'topic' && parts[1]) return topicPage(main, parts[1]);
   const days = PERIODS[period] ?? 0;
   const ov = await api('GET', `/api/topics/overview?since=${days ? Date.now() - days * DAY : 0}`);
+  if (ctx.alive && !ctx.alive()) return;   // the user moved on meanwhile (app.js route())
   const d = prepare(ov, days);
   const head = `<div class="page-head"><div><h1>${t('Topics')}</h1><div class="sub">${t('Subjects that come up across your meetings. Lines join topics discussed in the same meeting.')}</div></div>
     <div class="actions">${seg('mode', [['map', t('Map'), 'network'], ['themes', t('Themes'), 'layers'], ['trends', t('Trends'), 'graph'], ['list', t('List'), 'list']], mode)}</div></div>`;
@@ -465,7 +466,8 @@ async function topicPage(main, id) {
         const box = $('#brief', main), out = $('#brief-body', main);
         box.hidden = false; out.innerHTML = `<span class="muted">${t('Reading {n} meetings…', { n: tp.notes.length })}</span>`;
         let text = '';
-        await stream(`/api/topics/${id}/brief`, {}, { onDelta: (d) => { text += d; out.innerHTML = renderMarkdown(text); } });
+        const draw = throttleFrame(() => { out.innerHTML = renderMarkdown(text); });
+        await stream(`/api/topics/${id}/brief`, {}, { onDelta: (d) => { text += d; draw(); } }).finally(() => draw.flush());
         b.disabled = false;
       } else if (b.dataset.act === 'more') {
         menu(b, [

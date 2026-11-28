@@ -34,6 +34,7 @@ const { DiscordRpcSource } = require('../discord/rpc-source');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { nameFromTranscript, isLocalServer, LiveNames } = require('../speakers/transcript-names');
+const { isThisComputer } = require('../core/policy');
 const { Translator } = require('../llm/translate');
 const { LlmScheduler } = require('../llm/scheduler');
 const { Briefings } = require('../knowledge/briefings');
@@ -100,7 +101,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const scheduler = new LlmScheduler(llm, { onRun: (r) => aiRuns.record(r) });   // every AI call is noted (never its text): the egress log
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const briefings = new Briefings({ db: conn, bus });
-  const ai = new AiService({ notes, templates, settings, llm: scheduler.client('chat'), bus, knowledge });
+  const ai = new AiService({ notes, templates, settings, llm: scheduler, bus, knowledge });   // its own lanes: summary, background, chat
   const translator = new Translator({ notes, settings, llm: scheduler.client('translation'), bus });
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });
@@ -118,62 +119,77 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
   const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge, semantic });
 
-  // May the AI read a transcript to name voices? (the setting, and for 'auto' an AI server on this computer)
-  const namesFromTranscriptAllowed = () => ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)));
+  // May the AI read a transcript to name voices? (the setting, for 'auto' an AI server on this computer, and what the meeting's source allows)
+  const namesFromTranscriptAllowed = (noteId) => ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl))) && mayShare('note', noteId);
   // ...and the same while the meeting is still going, for the voices that have no name yet
-  new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: () => settings.get('speakerDetection') && namesFromTranscriptAllowed(), userName: () => settings.get('userName') }).attach();
+  new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: (noteId) => settings.get('speakerDetection') && namesFromTranscriptAllowed(noteId), userName: () => settings.get('userName') }).attach();
+  // May work nobody clicked send a transcript to the AI server? Always to one on this computer; elsewhere only with autoRemote (Settings → AI)
+  const autoSendAllowed = () => isThisComputer(settings.get('llm').baseUrl) || settings.get('autoRemote');
 
   // Background work lives in the jobs table (src/jobs), so quitting midway loses nothing: what was running is run again at the
   // next start. When a recording ends: names from the conversation → the summary (if auto-enhance is on) → topics, glossary
   // and action items. Each step is its own job and queues the next one; each is safe to run twice. Failures are reported as
   // before (a warning or a "failed" event) and the chain goes on, exactly like the in-memory version it replaces.
   const jobs = new JobQueue(conn, { bus });
-  const runner = new JobRunner({ queue: jobs, onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
+  // the AI jobs (the 'main' lane) wait while the live assistant holds the AI queue, and their deadline with them (src/jobs/runner.js)
+  const runner = new JobRunner({ queue: jobs, paused: (lane) => lane === 'main' && scheduler.isHeld(), onError: (job, err) => bus.publish('job.error', { id: job?.id ?? null, kind: job?.kind ?? null, message: err.message }) });
   const NEXT = { 'note.names': 'note.summarize', 'note.summarize': 'note.insights' };
   const chain = (step, noteId, payload, enqueue) => { if (NEXT[step]) enqueue(NEXT[step], { noteId, ...payload }, { key: noteId }); };
-  runner.register('note.names', async ({ noteId }, { enqueue }) => {
+  runner.register('note.names', async ({ noteId }, { enqueue, signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
-    if (namesFromTranscriptAllowed()) {
-      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
+    if (namesFromTranscriptAllowed(noteId)) {
+      try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(NAMES_TIMEOUT_MS)]) : AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
     chain('note.names', noteId, {}, enqueue);
     return null;
   });
-  runner.register('note.summarize', async ({ noteId }, { enqueue }) => {
+  runner.register('note.summarize', async ({ noteId }, { enqueue, signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
-    if (settings.get('autoSummarize')) {
+    const auto = settings.get('autoSummarize') && autoSendAllowed();
+    if (settings.get('autoSummarize') && !auto && ai.configured()) bus.publish('recording.warning', { message: 'Notes were not enhanced automatically: your AI server is not on this computer. Use Enhance on the meeting, or allow automatic sending in Settings → AI.' });
+    if (auto) {
       try {
         bus.publish('note.summarizing', { id: noteId });
-        await ai.summarize(noteId);
+        await ai.summarize(noteId, { signal });
       } catch (err) {
         bus.publish('note.summarize-failed', { id: noteId, message: err.message });
       }
     }
-    chain('note.summarize', noteId, { local: !settings.get('autoSummarize') || !ai.configured() }, enqueue);
+    chain('note.summarize', noteId, { local: !auto || !ai.configured() }, enqueue);
     return null;
   });
   runner.register('note.insights', async ({ noteId, local }, { enqueue }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
-    await analyze(noteId, { local: !!local });
-    if (settings.get('autoAssertions') && ai.configured()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
+    await analyze(noteId, { local: !!local || !autoSendAllowed() });
+    if (settings.get('autoAssertions') && ai.configured() && autoSendAllowed()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
     return null;
+  });
+  // A recording a crash, a quit or a dead speech engine left unfinished: its kept audio is transcribed and its speakers worked out
+  // (RecordingManager.recoverNote), then the usual chain runs when the note was never analysed or the recovery changed it.
+  runner.register('recording.recover', async ({ noteId, analyse }, { enqueue }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
+    const r = await recording.recoverNote(noteId);
+    if (analyse || r.transcribed || r.diarized) enqueue('note.names', { noteId }, { key: noteId });
+    return r;
   });
   bus.subscribe((e) => {
     if (e.type !== 'recording.stopped') return;
     if (!notes.get(e.data.noteId)) return;
-    runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
+    if (e.data.deferred) runner.enqueue('recording.recover', { noteId: e.data.noteId, analyse: true }, { key: e.data.noteId });
+    else runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
   });
+  for (const { noteId, interrupted } of recording.recoverInterrupted()) runner.enqueue('recording.recover', { noteId, analyse: interrupted }, { key: noteId });
 
   // Decisions, commitments, reminders, the brief before a meeting and the Inbox (src/brain). The AI only ever SUGGESTS: each finding
   // carries the exact words it rests on, checked in code against the transcript, and waits for a person.
   const reminders = new Reminders({ db: conn, bus });
   const assertions = new Assertions({ db: conn, notes, entities: knowledge.entities, settings, reminders, bus });
-  runner.register('note.assertions', async ({ noteId }) => {
+  runner.register('note.assertions', async ({ noteId }, { signal }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     if (!ai.configured()) return { skipped: 'no AI server' };
     if (!mayShare('note', noteId)) return { added: 0, dropped: 0, windows: 0, skipped: 'local-only' };   // kept on this computer
-    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId);
+    return extractAssertions({ notes, knowledge, llm: scheduler.client('background'), assertions, settings }, noteId, { signal });   // the job's deadline reaches the AI calls
   });
   // Items and sources (src/items, src/connectors): every meeting is also an item, and folders/vaults are sources. Their work runs
   // in its own lane, so a big vault being read never holds up the summary of a meeting.
@@ -186,7 +202,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
-  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel') });
+  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel'), onRun: (r) => aiRuns.record(r) });   // in the egress ledger too
   const chunkIndex = new ChunkIndex({ db: conn, notes, items, embedder });
   account.chunkIndex = chunkIndex; account.dbFile = path.join(dataDir, 'whisperbrain.sqlite');
   // What may be shown to the AI server in use (src/access/grants.js): an item by its own and its source's grant, a meeting by the
@@ -232,8 +248,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     const mine = String(settings.get('google').email || '').toLowerCase().split('@')[1];
     return !!mine && mail.endsWith(`@${mine}`);
   };
-  // Access was narrowed or revoked: what was read is forgotten from the search index now, not at the next scheduled pass.
-  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { for (let i = 0; i < 1000; i++) { const r = chunkIndex.syncBatch(200); if (!r.done) break; } } catch { /* the next index pass finishes it */ } });
+  // Access was narrowed or revoked: the triggers queued what was read (search leaves queued items out at once) and it is forgotten from
+  // the search index by a pass of its own, enqueued now rather than run for seconds inside this bus event.
+  bus.subscribe((e) => { if (e.type !== 'items.purged') return; try { runner.enqueue('index.sync', {}, { key: 'purge', maxAttempts: 2 }); } catch { /* closing */ } });
   const briefs = new Briefs({ notes, entities: knowledge.entities, assertions, index: chunkIndex, mayShare, items, live: liveSearch, visible: (sid) => { const s = items.source(sid); return !!s && s.enabled && s.readLevel !== 'none' && (s.expiresAt == null || s.expiresAt > Date.now()); } });
   const projects = new Projects({ db: conn, notes, items, assertions });
   // Ask AI reaches the whole workspace, not only meetings (src/llm/workspace.js)
@@ -244,9 +261,10 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   try { SERVICE_HANDLERS = require('../brain/actions-services').HANDLERS; } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }
   const ALL_HANDLERS = { ...ACTION_HANDLERS, ...require('../brain/actions-gmail').HANDLERS, ...SERVICE_HANDLERS };
   // may this source's grant do this? An action made for one source (args.sourceId) needs that source to allow it; one for a service with no
-  // source row (a token set up in Integrations, approved each time) keeps working as before.
+  // source row (a token set up in Integrations, approved each time; webhooks) keeps working as before. The service is the handler's
+  // provider, or the first part of its kind (slack.post -> slack), so every kind is checked, not only Gmail's.
   const actionAllowed = (kind, args) => {
-    const provider = ALL_HANDLERS[kind]?.provider;
+    const provider = ALL_HANDLERS[kind]?.provider || String(kind).split('.')[0];
     if (!provider) return true;
     if (args?.sourceId) { const s = items.source(args.sourceId); return !!s && can(s, `action.${kind}`); }
     const own = items.sources().filter((s) => s.kind === provider);
@@ -254,6 +272,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   };
   const actions = new Actions({ db: conn, bus, handlers: ALL_HANDLERS, allowed: actionAllowed, onRun: ({ kind, args, ok, error }) => accessLog.add({ sourceId: args?.sourceId || null, op: 'action.run', detail: `${kind} ${ok ? 'done' : `failed: ${String(error).slice(0, 100)}`}` }),
     deps: { settings, items, get googleAccounts() { return googleAccounts; }, fetchImpl: connectorOptions.fetchImpl, bases: connectorOptions.bases || {}, get integrations() { return integrations; } } });
+  actions.recoverInterrupted();   // nothing runs yet: what is still 'running' was cut off by a quit or a crash
   const timeline = new Timeline({ db: conn, notes, entities: knowledge.entities, items, projects, index: chunkIndex, allow: () => true });
   const rules = new Rules({ db: conn, assertions, actions, reminders, notes, bus });
   rules.attach();
@@ -266,7 +285,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
     let embedded = 0;
-    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
+    for (let i = 0, after = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, after, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (r.next == null || r.left < 0) break; after = r.next; await tick(); }
     return { indexed: total, embedded };
   }, { lane: 'sources' });
   // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the
@@ -288,7 +307,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   // Mail and messages linked to the people in them (item_mentions); picks up what changed since the last run
   runner.register('people.items', async () => {
     const key = 'mentions:after';
-    let cur = Number(conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value) || 0, n = 0;
+    let cur = conn.prepare('SELECT value FROM index_meta WHERE key = ?').get(key)?.value || '0', n = 0;
     for (;;) {
       const next = knowledge.entities.backfillItems(cur, 200);
       if (next == null) break;
@@ -345,7 +364,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     if (c.enabled && c.token) discord.login().catch((e) => bus.publish('discord.error', { message: e.message }));
     else if (discord.client && !recording.status().active) discord.logout().catch(() => {});
   };
-  const lock = new AppLock({ db: conn, bus });
+  const lock = new AppLock({ db: conn, bus, busy: () => recording.status().active });
   const ready = settings.init();
   // Work that reads secrets (the extension's pairing token, the Discord token) starts once they are opened.
   // Meetings older than the retention limit (set by an organisation's policy) are deleted at start and then every day

@@ -11,6 +11,7 @@
 // old (404), the listing starts again from scratch and anything no longer in it is tombstoned. Threads that are only in Trash or Spam
 // are tombstoned too. Mail is private by default: only an AI on this computer may read it.
 const { canReadBodies } = require('../access/gmail-scopes');
+const { mailHtmlToText } = require('../core/html-text');
 
 const every = 10 * 60_000;
 const MAX_THREADS = 400;          // threads read per run (the rest waits for the next run, from the saved cursor)
@@ -49,7 +50,8 @@ function compileQuery(config = {}, filter = {}) {
 
 const header = (msg, name) => (msg.payload?.headers || []).find((h) => h.name.toLowerCase() === name)?.value || '';
 const b64 = (s) => Buffer.from(String(s || ''), 'base64url').toString('utf8');
-const stripHtml = (h) => h.replace(/<(style|script)[\s\S]*?<\/\1>/gi, ' ').replace(/<br\s*\/?>|<\/p>|<\/div>|<\/li>/gi, '\n').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"');
+// the shared linear HTML pass, capped at 256 KB of HTML (a Gmail body had no size cap, and the old regexes were quadratic)
+const stripHtml = (h) => mailHtmlToText(h);
 
 // The readable text of a message: the text/plain part, else the text/html part without its tags; the quoted earlier mail is cut
 // (Gmail's "On … wrote:", the Portuguese "Em … escreveu:", Outlook's "From:/De: … Sent:/Enviado:" block, "-----Original Message", "> ").
@@ -158,13 +160,15 @@ async function fetchThread(google, id, metadataOnly) {
 }
 
 // The cursor: the plain historyId when nothing is half done (as before), else JSON with where the run stopped:
-//   { h: historyId fully read up to, hp: the history page to continue (same startHistoryId), lp: the listing page to continue, lh: the historyId from before the listing }
+//   { h: historyId fully read up to, hp: the history page to continue (same startHistoryId), lp: the listing page to continue, lh: the historyId from before the listing,
+//     ids: threads already listed but not read yet when a run failed (read first next time) }
 function readCursor(s) {
   if (!s) return {};
   if (/^\d+$/.test(s)) return { h: s };
   try { const c = JSON.parse(s); return c && typeof c === 'object' ? c : {}; } catch { return {}; }
 }
-const writeCursor = (c) => (c.h && !c.hp && !c.lp && !c.lh ? String(c.h) : JSON.stringify(c));
+const writeCursor = (c) => (c.h && !c.hp && !c.lp && !c.lh && !c.ids?.length ? String(c.h) : JSON.stringify(c));
+const MAX_PENDING = 5000;
 
 // the account's own addresses: the address and its send-as aliases (a reply sent from an alias is still "from me")
 async function myAddresses(google, email) {
@@ -211,50 +215,64 @@ async function sync({ source, items, budget = MAX_THREADS, ...ctx }) {
   const out = { created: 0, updated: 0, unchanged: 0, removed: 0, errors: 0 };
   const save = (item) => { if (!item) return; const r = items.upsert(source.id, item); out[r.action === 'revived' ? 'updated' : r.action]++; };
   let c = readCursor(source.cursor);
-  const ids = new Set();
+  const ids = new Set(Array.isArray(c.ids) ? c.ids.map(String) : []);      // left unread by a run that failed: first
+  delete c.ids;
+  const remaining = new Set(ids);
   let listing = !c.h || !!c.lp, listingDone = false;
+  // Progress is saved even when the run fails half way (a rate limit, a thread Google keeps refusing): the new history/listing
+  // position, plus the threads it listed but did not read yet, so they are neither lost nor listed again.
+  try {
 
-  if (!listing) {
-    try {
-      let page = c.hp, last = c.h;
-      do {
-        const j = await google.gmail('/users/me/history', { startHistoryId: c.h, historyTypes: HISTORY_TYPES, maxResults: 500, pageToken: page });
-        for (const h of j.history || []) for (const m of [...(h.messagesAdded || []), ...(h.messagesDeleted || []), ...(h.labelsAdded || []), ...(h.labelsRemoved || [])]) if (m.message?.threadId) ids.add(m.message.threadId);
-        page = j.nextPageToken;
-        if (j.historyId) last = String(j.historyId);
-      } while (page && ids.size < budget);
-      c = page ? { h: c.h, hp: page } : { h: last };                           // stopped early: the next run reads the next page
-    } catch (e) {
-      if (!/HTTP 404|not found/i.test(e.message)) throw e;
-      c = {}; listing = true;                                                   // the history is too old: list again from scratch
+    // threads a failed run left unread already fill this run's budget: they go first and nothing new is listed (the position stays)
+    const backlog = ids.size >= budget;
+    if (!listing && !backlog) {
+      try {
+        let page = c.hp, last = c.h;
+        do {
+          const j = await google.gmail('/users/me/history', { startHistoryId: c.h, historyTypes: HISTORY_TYPES, maxResults: 500, pageToken: page });
+          for (const h of j.history || []) for (const m of [...(h.messagesAdded || []), ...(h.messagesDeleted || []), ...(h.labelsAdded || []), ...(h.labelsRemoved || [])]) if (m.message?.threadId) ids.add(m.message.threadId);
+          page = j.nextPageToken;
+          if (j.historyId) last = String(j.historyId);
+        } while (page && ids.size < budget);
+        c = page ? { h: c.h, hp: page } : { h: last };                           // stopped early: the next run reads the next page
+      } catch (e) {
+        if (!/HTTP 404|not found/i.test(e.message)) throw e;
+        c = {}; listing = true;                                                   // the history is too old: list again from scratch
+      }
     }
+    const seen = new Set();
+    let wholeListing = false;
+    if (listing && !backlog) {
+      const lh = c.lh || String(profile.historyId || '');
+      let page = c.lp;
+      wholeListing = !c.lp;                                                       // started at the top: a complete listing may tombstone
+      do {
+        const j = await google.gmail('/users/me/threads', { q: metadataOnly ? undefined : compileQuery(source.config, filter), maxResults: 100, pageToken: page });
+        for (const t of j.threads || []) ids.add(t.id);
+        page = j.nextPageToken;
+      } while (page && ids.size < budget);
+      listingDone = !page;
+      if (!listingDone) wholeListing = false;
+      c = listingDone ? { h: lh } : { lp: page, lh };
+    }
+    for (const id of ids) remaining.add(id);
+    const readOne = async (id) => {
+      const t = await fetchThread(google, id, metadataOnly);
+      if (!t || gone(t)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; return; }
+      if (neverRead(t.messages || [], filter.never)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; return; }
+      if (metadataOnly && filter.labels?.length && !(t.messages || []).some((m) => (m.labelIds || []).some((l) => filter.labels.includes(l)))) return;   // metadata: Gmail cannot search, so the part is chosen here
+      const extraText = !metadataOnly && filter.attachmentText ? await attachmentText(google, t, ctx.pdfToText) : '';
+      save(threadItem(t, me, { metadataOnly, account, extraText }));
+      seen.add(`thread:${id}`);
+    };
+    for (const id of [...ids].slice(0, budget)) {   // the budget holds even for a long backlog; the rest stays in `remaining` for the next run
+      try { await readOne(id); } catch (e) { remaining.delete(id); remaining.add(id); throw e; }   // a thread that failed goes last next time
+      remaining.delete(id);
+    }
+    if (listing && wholeListing && listingDone) out.removed += items.tombstoneMissing(source.id, seen);   // a complete listing: what fell out of it is gone
+  } finally {
+    items.updateSource(source.id, { cursor: writeCursor({ ...c, ...(remaining.size ? { ids: [...remaining].slice(0, MAX_PENDING) } : {}) }) });
   }
-  const seen = new Set();
-  let wholeListing = false;
-  if (listing) {
-    const lh = c.lh || String(profile.historyId || '');
-    let page = c.lp;
-    wholeListing = !c.lp;                                                       // started at the top: a complete listing may tombstone
-    do {
-      const j = await google.gmail('/users/me/threads', { q: metadataOnly ? undefined : compileQuery(source.config, filter), maxResults: 100, pageToken: page });
-      for (const t of j.threads || []) ids.add(t.id);
-      page = j.nextPageToken;
-    } while (page && ids.size < budget);
-    listingDone = !page;
-    if (!listingDone) wholeListing = false;
-    c = listingDone ? { h: lh } : { lp: page, lh };
-  }
-  for (const id of ids) {
-    const t = await fetchThread(google, id, metadataOnly);
-    if (!t || gone(t)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; continue; }
-    if (neverRead(t.messages || [], filter.never)) { if (items.tombstone(source.id, `thread:${id}`)) out.removed++; continue; }
-    if (metadataOnly && filter.labels?.length && !(t.messages || []).some((m) => (m.labelIds || []).some((l) => filter.labels.includes(l)))) continue;   // metadata: Gmail cannot search, so the part is chosen here
-    const extraText = !metadataOnly && filter.attachmentText ? await attachmentText(google, t, ctx.pdfToText) : '';
-    save(threadItem(t, me, { metadataOnly, account, extraText }));
-    seen.add(`thread:${id}`);
-  }
-  if (listing && wholeListing && listingDone) out.removed += items.tombstoneMissing(source.id, seen);   // a complete listing: what fell out of it is gone
-  items.updateSource(source.id, { cursor: writeCursor(c) });
   return out;
 }
 
