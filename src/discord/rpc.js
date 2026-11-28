@@ -64,7 +64,8 @@ function socketPaths(platformId, env = process.env) {
   return out;
 }
 
-const person = (u, nick) => ({ id: String(u.id), name: nick || u.global_name || u.username || String(u.id), username: u.username || '' });
+// vs: the person's voice state ({ mute, self_mute, suppress, ... }): muted people cannot be speaking (rpc-source.js drops them)
+const person = (u, nick, vs) => ({ id: String(u.id), name: nick || u.global_name || u.username || String(u.id), username: u.username || '', muted: !!(vs && (vs.self_mute || vs.mute || vs.suppress)) });
 
 class DiscordRpc extends EventEmitter {
   // getConfig() -> { enabled, clientId, clientSecret, accessToken, refreshToken }. saveTokens({ accessToken, refreshToken }).
@@ -261,7 +262,7 @@ class DiscordRpc extends EventEmitter {
     this.people.clear();
     if (!id) { this.leaveCall(); this.set('connected', ''); return; }
     this.s.call = { id, name: channel.name || '', guildId: channel.guild_id ? String(channel.guild_id) : null, type: channel.type ?? null };
-    for (const vs of channel.voice_states || []) if (vs?.user) this.people.set(String(vs.user.id), person(vs.user, vs.nick));
+    for (const vs of channel.voice_states || []) if (vs?.user) this.people.set(String(vs.user.id), person(vs.user, vs.nick, vs.voice_state));
     for (const e of ['VOICE_STATE_CREATE', 'VOICE_STATE_UPDATE', 'VOICE_STATE_DELETE', 'SPEAKING_START', 'SPEAKING_STOP']) await this.sub(e, { channel_id: id });
     this.set('in-call', '');
     this.emit('call', { ...this.s.call });
@@ -287,7 +288,7 @@ class DiscordRpc extends EventEmitter {
     const call = this.s.call;
     if (!call) return;
     if (evt === 'VOICE_STATE_CREATE' || evt === 'VOICE_STATE_UPDATE') {
-      if (d.user) { this.people.set(String(d.user.id), person(d.user, d.nick)); this.emitRoster(); }
+      if (d.user) { this.people.set(String(d.user.id), person(d.user, d.nick, d.voice_state)); this.emitRoster(); }
     } else if (evt === 'VOICE_STATE_DELETE') {
       if (d.user && this.people.delete(String(d.user.id))) this.emitRoster();
     } else if (evt === 'SPEAKING_START' || evt === 'SPEAKING_STOP') {

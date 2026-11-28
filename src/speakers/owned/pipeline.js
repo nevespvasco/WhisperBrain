@@ -115,7 +115,8 @@ class DiarizationState {
   }
 
   // Global speaker per window and local speaker: [Int16Array(3)] (-2 = not active or no embedding).
-  cluster({ numSpeakers = 0 } = {}) {
+  // fallbackSpeakers: see ahc.js (used only when the free clustering collapses to one voice).
+  cluster({ numSpeakers = 0, fallbackSpeakers = 0 } = {}) {
     const o = this.o;
     const entries = [];
     this.windows.forEach((w, wi) => w.emb.forEach((e, k) => { if (e) entries.push({ wi, k, x: unit(e), raw: e, train: w.solo[k] >= o.minActiveRatio * FRAMES }); }));
@@ -126,6 +127,8 @@ class DiarizationState {
     if (train.length > o.maxTrain) { const stride = train.length / o.maxTrain; train = Array.from({ length: o.maxTrain }, (_, i) => train[Math.floor(i * stride)]); }
     let { centroids } = ahc(train.map((e) => e.x), { threshold: o.threshold, minClusterSize: o.minClusterSize, numSpeakers });
     if (o.plda && !numSpeakers && train.length > 2) centroids = vbxCentroids(train, o) || centroids;
+    // one voice where the recording is known to hold several: cut the dendrogram again for that many (VBx included: it collapses too)
+    if (!numSpeakers && fallbackSpeakers >= 2 && centroids.length < 2) ({ centroids } = ahc(train.map((e) => e.x), { threshold: o.threshold, minClusterSize: o.minClusterSize, fallbackSpeakers }));
     // every embedding goes to its closest centroid; within a window, two local speakers never share one (Hungarian)
     const byWindow = new Map();
     for (const e of entries) { if (!byWindow.has(e.wi)) byWindow.set(e.wi, []); byWindow.get(e.wi).push(e); }
@@ -181,8 +184,8 @@ class DiarizationState {
   }
 
   // Cluster and rebuild over everything added so far.
-  diarize(total, { numSpeakers = 0 } = {}) {
-    const { labels, centroids } = this.cluster({ numSpeakers });
+  diarize(total, { numSpeakers = 0, fallbackSpeakers = 0 } = {}) {
+    const { labels, centroids } = this.cluster({ numSpeakers, fallbackSpeakers });
     return { ...this.reconstruct(labels, total), labels, centroids };
   }
 }

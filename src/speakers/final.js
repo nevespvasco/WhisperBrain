@@ -55,11 +55,23 @@ function capVoices(res, max) {
   }
 }
 
+// How many voices the live labels of a channel found that hold real speech: each with at least minSeconds and minShare of the
+// channel's speech (the live tracker over-splits a little; fragments do not count). segments: [{ speakerId, startMs, endMs }].
+function liveVoiceCount(segments, { minSeconds = 15, minShare = 0.05 } = {}) {
+  const secs = new Map();
+  for (const s of segments) if (s.speakerId) secs.set(s.speakerId, (secs.get(s.speakerId) || 0) + Math.max(0, s.endMs - s.startMs) / 1000);
+  const total = [...secs.values()].reduce((a, b) => a + b, 0);
+  return [...secs.values()].filter((v) => v >= Math.max(minSeconds, minShare * total)).length;
+}
+
 // threshold: sherpa's clustering distance. 0.6 separates clean distinct voices (0.7 merged two of them in the real-voice test) and gave 25.4/24.9 WDER on AMI/libri-call; 0.7 was better on the AMI far-field mix (20.9) but merges people, see eval/README.md
 // expected: how many voices the roster or calendar says to expect on this channel (hint.js). An upper bound: the clustering is
 // free to find fewer (people invited do not always come), a voice that holds too little of the speech to be a person taking part
 // is folded into its nearest neighbour, and if there are still more voices than that, the smallest join the ones they sound like.
 // numSpeakers is the person's own count ("Others on the call"): forced on the clustering as it is.
+// fallbackSpeakers: how many voices the live labels heard (liveVoiceCount, capped by the call's list of people). When the
+// clustering still finds a single voice where that says two or more, the live labels are worth more than one voice: nothing is
+// relabelled and the result says `collapsed` (the caller warns). A 5-person Discord call came out as one voice before this.
 // exclusive: when the diarization says who dominates each moment (the owned pipeline does), words follow that rather
 // than the longest-covering of the overlapping turns.
 const DEFAULTS = { threshold: 0.6, windowShift: 0.1, tolerance: 200, minShare: 0.05, minSeconds: 8, exclusive: true };
@@ -76,8 +88,10 @@ async function diarizeChannel({ diarize = runWorker, notes, speakers, noteId, ch
   const ours = new Set(segIds);
   const segments = notes.segmentWords(noteId).filter((s) => ours.has(s.id) && s.speaker === channelSpeaker);
   if (!segments.length) return null;
-  let res = await diarize({ ...source, segmentation, embedding, altEmbedding: altEmbedding || undefined, threads, threshold: o.threshold, windowShift: o.windowShift, numSpeakers: o.numSpeakers || undefined });
+  const fallbackSpeakers = !o.numSpeakers && o.fallbackSpeakers >= 2 ? o.fallbackSpeakers : 0;
+  let res = await diarize({ ...source, segmentation, embedding, altEmbedding: altEmbedding || undefined, threads, threshold: o.threshold, windowShift: o.windowShift, numSpeakers: o.numSpeakers || undefined, fallbackSpeakers: fallbackSpeakers || undefined });
   if (!res?.turns?.length) return null;
+  if (fallbackSpeakers && new Set(res.turns.map((t) => t.speaker)).size < 2) return { collapsed: true, expected: fallbackSpeakers, changes: 0, born: 0, speakers: 1, splits: new Map(), stats: res.stats || null };
   if (!o.numSpeakers && o.expected) res = capVoices(foldStarved(res, o), o.expected);
   const turns = toTimeline(res.turns, stretches);
   const exclusive = o.exclusive && res.exclusive?.length ? toTimeline(res.exclusive, stretches) : null;
@@ -104,4 +118,4 @@ async function diarizeChannel({ diarize = runWorker, notes, speakers, noteId, ch
   return { changes: plan.changes.length, born: plan.born, speakers: voices.length, overlapped: plan.overlapped, words: plan.words, splits, overlaps: res.overlaps || null, stats: res.stats || null };
 }
 
-module.exports = { diarizeChannel, foldStarved, capVoices, DIARIZE_DEFAULTS: DEFAULTS };
+module.exports = { diarizeChannel, foldStarved, capVoices, liveVoiceCount, DIARIZE_DEFAULTS: DEFAULTS };

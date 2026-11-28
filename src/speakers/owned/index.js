@@ -35,7 +35,7 @@ function answer(child, timeoutMs, onOther) {
 function diarizeOwned(opts, { timeoutMs = 60 * 60 * 1000 } = {}) {
   const child = spawnWorker();
   const p = answer(child, timeoutMs);
-  child.send({ t: 'diarize', file: opts.file, pcm: opts.pcm, segmentation: opts.segmentation, embedding: opts.embedding, threads: opts.threads, numSpeakers: opts.numSpeakers || 0, threshold: opts.ownedThreshold, altEmbedding: opts.altEmbedding });
+  child.send({ t: 'diarize', file: opts.file, pcm: opts.pcm, segmentation: opts.segmentation, embedding: opts.embedding, threads: opts.threads, numSpeakers: opts.numSpeakers || 0, fallbackSpeakers: opts.fallbackSpeakers || 0, threshold: opts.ownedThreshold, altEmbedding: opts.altEmbedding });
   return p;
 }
 
@@ -60,11 +60,12 @@ class LiveDiarizer {
     this.child.send({ t: 'live', file, segmentation, embedding, threads, finishThreads, threshold: ownedThreshold, pollMs });
   }
 
-  // samples: how much of the spool belongs to the recording. numSpeakers: forced count (0 = free).
-  finish({ samples, numSpeakers = 0, altEmbedding = null, timeoutMs = 60 * 60 * 1000 } = {}) {
+  // samples: how much of the spool belongs to the recording. numSpeakers: forced count (0 = free). fallbackSpeakers: how many
+  // voices to cut for if the free clustering collapses to one (pipeline.js).
+  finish({ samples, numSpeakers = 0, fallbackSpeakers = 0, altEmbedding = null, timeoutMs = 60 * 60 * 1000 } = {}) {
     if (this.result) return this.result;
     this.result = answer(this.child, timeoutMs);
-    this.child.send({ t: 'finish', samples, numSpeakers, altEmbedding });
+    this.child.send({ t: 'finish', samples, numSpeakers, fallbackSpeakers, altEmbedding });
     return this.result;
   }
 

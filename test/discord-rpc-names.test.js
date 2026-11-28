@@ -135,3 +135,19 @@ test('the person themself is read from who authorised: marked in the roster, nev
   assert.equal(col.expectedVoices(), 2);
   assert.deepEqual(col.roster().map((p) => [p.name, p.self]), [['Dana', true], ['Ana Silva', false], ['Bruno Costa', false]]);
 });
+
+test('somebody who leaves or mutes mid-word stops counting as speaking, so one missed SPEAKING_STOP does not silence the names for the rest of the call', () => {
+  const seen = [];
+  const hub = new SignalHub();
+  hub.on('signal', (s) => { if (s.msg.type === 'speaker') seen.push(s.msg.name); });
+  const rpc = new FakeRpc();
+  new DiscordRpcSource({ hub, rpc, every: () => ({ stop() {} }) }).start();
+  rpc.join([ME, ANA, BRUNO, CARLA]);
+  rpc.speak('300');                       // Bruno speaks, then leaves: Discord never sends his SPEAKING_STOP
+  rpc.roster([ME, ANA, CARLA]);
+  rpc.speak('200'); rpc.speak('200', false);
+  rpc.speak('400');                       // Carla speaks, then mutes without a SPEAKING_STOP
+  rpc.roster([ME, ANA, { ...CARLA, muted: true }]);
+  rpc.speak('200');
+  assert.deepEqual(seen, ['Bruno Costa', null, 'Ana Silva', null, 'Carla Dias', null, 'Ana Silva']);
+});

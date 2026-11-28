@@ -81,7 +81,12 @@ const dot = (a, b) => { let s = 0; for (let d = 0; d < a.length; d++) s += a[d] 
 // X: [Float64Array] unit-length training embeddings. -> { labels: Int32Array (0..k-1), centroids: [Float64Array] }
 // threshold: Euclidean distance between unit vectors (pyannote 3.1: 0.7045654963945799, i.e. cosine ≈ 0.75).
 // numSpeakers > 0 forces the number of large clusters (as close as the dendrogram allows).
-function ahc(X, { threshold = 0.7045654963945799, minClusterSize = 12, numSpeakers = 0 } = {}) {
+// fallbackSpeakers: how many voices the recording is known to hold (the live labels, the call's list of people) when that is
+// at least 2. Used only when the cut at the threshold leaves fewer than two large clusters: on call audio where every voice
+// comes through the same chain (Discord: Opus, noise suppression) the prints of different people sit close together, one
+// cluster chains through most of them, every other cluster is small and is handed to it, and a call of five came out as one
+// voice. The dendrogram is then cut again for that many large clusters instead.
+function ahc(X, { threshold = 0.7045654963945799, minClusterSize = 12, numSpeakers = 0, fallbackSpeakers = 0 } = {}) {
   const n = X.length;
   if (!n) return { labels: new Int32Array(0), centroids: [] };
   if (n === 1) return { labels: new Int32Array(1), centroids: [Float64Array.from(X[0])] };
@@ -91,17 +96,19 @@ function ahc(X, { threshold = 0.7045654963945799, minClusterSize = 12, numSpeake
   while (m < merges.length && merges[m].height <= threshold) m++;
   let labels = cut(n, merges, m);
   const large = (lab) => [...counts(lab)].filter(([, c]) => c >= mcs).length;
-  if (numSpeakers > 0 && large(labels) !== numSpeakers) {
-    // the cut whose number of large clusters is closest to the target, preferring cuts near the threshold one
+  // the cut whose number of large clusters is closest to `target`, preferring cuts near the threshold one
+  const recut = (target) => {
     let best = m, bestGap = Infinity;
     const order = merges.map((_, i) => i + 1).concat([0]).sort((x, y) => Math.abs(x - m) - Math.abs(y - m));
     for (const mm of order) {
-      const g = Math.abs(large(cut(n, merges, mm)) - numSpeakers);
+      const g = Math.abs(large(cut(n, merges, mm)) - target);
       if (g < bestGap) { bestGap = g; best = mm; }
       if (!g) break;
     }
-    labels = cut(n, merges, best);
-  }
+    return cut(n, merges, best);
+  };
+  if (numSpeakers > 0 && large(labels) !== numSpeakers) labels = recut(numSpeakers);
+  else if (!(numSpeakers > 0) && fallbackSpeakers >= 2 && large(labels) < 2) labels = recut(fallbackSpeakers);
   const c = counts(labels);
   const bigIds = [...c].filter(([, k]) => k >= mcs).map(([l]) => l);
   if (!bigIds.length) return { labels: new Int32Array(n), centroids: centroids(X, new Int32Array(n), [0]) };

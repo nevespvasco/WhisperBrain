@@ -1,14 +1,14 @@
 'use strict';
 // Worker process for the owned diarization pipeline (pipeline.js). Two ways to use it:
 //   one shot (after Stop, or for a file):
-//     parent -> worker  diarize {file | pcm, segmentation, embedding, threads, numSpeakers, threshold}
+//     parent -> worker  diarize {file | pcm, segmentation, embedding, threads, numSpeakers, fallbackSpeakers, threshold}
 //     worker -> parent  diarized {turns, voices, exclusive, overlaps, stats} | error {message}
 //   live (while recording): it follows the channel's spool file as it grows and computes each 10 s window as soon as
 //   it is complete, so Stop only has to cluster and rebuild.
 //     parent -> worker  live {file, segmentation, embedding, threads, finishThreads, pollMs}
 //     worker -> parent  overlap {start, end} (seconds of spool; two or more people at once, from the newest window)
 //                       progress {windows, seconds}
-//     parent -> worker  finish {samples, numSpeakers, threshold}   (the spool is complete)
+//     parent -> worker  finish {samples, numSpeakers, fallbackSpeakers}   (the spool is complete)
 //     worker -> parent  diarized {...} | error {message}
 // Times are seconds of spooled audio (toTimeline maps them to the note).
 const fs = require('node:fs');
@@ -56,12 +56,12 @@ function fileReader(file) {
   };
 }
 
-async function finishAndCluster(state, { samples, numSpeakers, read, segmenter, embed, extractor, readAll, t0, altEmbedding = null }) {
+async function finishAndCluster(state, { samples, numSpeakers, fallbackSpeakers = 0, read, segmenter, embed, extractor, readAll, t0, altEmbedding = null }) {
   const rest = state.pending(samples, true);
   const tRest = Date.now();
   await state.add(rest, { read, segment: (w) => segmenter.run(w), embed });
   const tCluster = Date.now();
-  const out = state.diarize(samples, { numSpeakers });
+  const out = state.diarize(samples, { numSpeakers, fallbackSpeakers });
   const tVoices = Date.now();
   const alt = altEmbedding ? new (require('sherpa-onnx-node').SpeakerEmbeddingExtractor)({ model: altEmbedding, numThreads: 2, provider: 'cpu', debug: 0 }) : null; // an older voice model, for saved voices made with it
   const voices = voicesOf(readAll(), out.turns, extractor, alt);
@@ -78,7 +78,7 @@ async function oneShot(m) {
   const segmenter = await new Segmenter(m.segmentation, { threads }).open();
   const { embed, extractor } = makeEmbed(sherpa, m.embedding, threads);
   const state = new DiarizationState(stateOptions(m));
-  return finishAndCluster(state, { samples: all.length, numSpeakers: m.numSpeakers || 0, read: (a, b) => all.subarray(a, Math.min(b, all.length)), segmenter, embed, extractor, readAll: () => all, t0: Date.now(), altEmbedding: m.altEmbedding });
+  return finishAndCluster(state, { samples: all.length, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read: (a, b) => all.subarray(a, Math.min(b, all.length)), segmenter, embed, extractor, readAll: () => all, t0: Date.now(), altEmbedding: m.altEmbedding });
 }
 
 // ---- live ----
@@ -136,7 +136,7 @@ async function finishLive(m) {
     segmenter = await new Segmenter(live.m.segmentation, { threads: live.m.finishThreads }).open();
     ({ embed, extractor } = makeEmbed(sherpa, live.m.embedding, live.m.finishThreads));
   }
-  const out = await finishAndCluster(live.state, { samples, numSpeakers: m.numSpeakers || 0, read: live.src.read, segmenter, embed, extractor, readAll: () => live.src.read(0, samples), t0, altEmbedding: m.altEmbedding });
+  const out = await finishAndCluster(live.state, { samples, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read: live.src.read, segmenter, embed, extractor, readAll: () => live.src.read(0, samples), t0, altEmbedding: m.altEmbedding });
   live.src.close();
   return out;
 }

@@ -59,14 +59,25 @@ class DiscordRpcSource {
   onRoster(people) {
     if (!this.call) return;
     this.names = new Map(people.map((p) => [p.id, p.name]));
+    // somebody who left the call, or muted, is not speaking, whether or not Discord sent the SPEAKING_STOP: one stale id kept
+    // "two people at once" true for the rest of a call, and nobody was named after its first 23 seconds
+    const here = new Set(people.filter((p) => !p.muted).map((p) => p.id));
+    const before = this.speaking.size;
+    for (const id of this.speaking) if (!here.has(id)) this.speaking.delete(id);
     if (this.aside()) return;
     this.tell({ type: 'roster', participants: people.map((p) => ({ name: p.name, id: p.id, self: !!p.self })) });
+    if (this.speaking.size !== before) this.retell();
   }
 
   onSpeaking({ userId, speaking }) {
     if (!this.call) return;
     if (speaking) this.speaking.add(userId); else this.speaking.delete(userId);
     if (this.aside()) return;
+    this.retell();
+  }
+
+  // tell who speaks now, when it changed: one other person, or nobody
+  retell() {
     const me = this.rpc.status().user?.id;
     const others = [...this.speaking].filter((id) => id !== me);
     const id = others.length === 1 ? others[0] : null;

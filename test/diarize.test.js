@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { hungarian } = require('../src/speakers/hungarian');
 const { toTimeline, assignWords, mapSpeakers, splitByWords, planChannel, soloStretches } = require('../src/speakers/diarize');
-const { diarizeChannel, foldStarved } = require('../src/speakers/final');
+const { diarizeChannel, foldStarved, liveVoiceCount } = require('../src/speakers/final');
 const { expectedSpeakers, headCount } = require('../src/speakers/hint');
 const { score, wder, normalize } = require('../eval/metrics');
 const { open } = require('../src/core/db');
@@ -301,4 +301,61 @@ test('forced: the count the person gave ("Others on the call") is still passed t
   const r = boundRig(4, { numSpeakers: 3 });
   await r.run();
   assert.deepEqual(r.seen, [3]);
+});
+
+// ---- a clustering that collapses a call of several people into one voice ----
+test('liveVoiceCount: the live voices that hold real speech; fragments do not count', () => {
+  const seg = (speakerId, s) => ({ speakerId, startMs: 0, endMs: s * 1000 });
+  assert.equal(liveVoiceCount([seg('s1', 100), seg('s2', 40), seg('s3', 20), seg('s4', 3), seg(null, 50)]), 3, 's4 says 3 s: a fragment');
+  assert.equal(liveVoiceCount([seg('s1', 300), seg('s2', 10)]), 1);
+  assert.equal(liveVoiceCount([]), 0);
+});
+
+test('diarizeChannel: one voice where the live labels heard several asks for that many, and if it is still one the live labels stand', async () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, new Bus()), speakers = new Speakers(db, new Bus());
+  const n = notes.create({});
+  const made = notes.addSegments(n.id, ['s1', 's2', 's3'].map((id, k) => ({ speaker: 'them', speakerId: id, startMs: k * 30000, endMs: k * 30000 + 20000, text: 'hello there', words: [['hello', 0, 400], ['there', 500, 900]] })));
+  for (const id of ['s1', 's2', 's3']) speakers.save(n.id, { speakerId: id, channel: 'system', centroid: Float32Array.from([1, 0, 0, 0]), count: 1 });
+  const seen = [];
+  const one = async (o) => { seen.push(o.fallbackSpeakers); return { turns: [{ start: 0, end: 80, speaker: 0 }], voices: [{ speaker: 0, centroid: Float32Array.from([1, 0, 0, 0]), pitch: 120, ms: 80000 }] }; };
+  const args = { notes, speakers, noteId: n.id, channel: 'system', source: { file: '/x' }, stretches: [{ at: 0, ms: 0 }], segIds: made.map((m) => m.id), segmentation: '/s', embedding: '/e' };
+  const out = await diarizeChannel({ ...args, diarize: one, options: { fallbackSpeakers: 3 } });
+  assert.deepEqual(seen, [3], 'the clustering is told how many voices to cut for if it collapses');
+  assert.equal(out.collapsed, true);
+  assert.deepEqual(notes.segmentWords(n.id).map((s) => s.speakerId), ['s1', 's2', 's3'], 'nothing relabelled');
+  // without the live evidence a single voice is believed, as before
+  await diarizeChannel({ ...args, diarize: one });
+  assert.deepEqual([...new Set(notes.segmentWords(n.id).map((s) => s.speakerId))].length, 1);
+});
+
+test('recording: a Discord-like call the clustering hears as one voice keeps the voices told apart while recording, and says so', async () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const { EventEmitter } = require('node:events');
+  const { Settings } = require('../src/core/settings');
+  const { RecordingManager } = require('../src/recording/manager');
+  class FakeEngine extends EventEmitter { async start() {} feed() {} async flush() {} reset() {} }
+  const db = open(':memory:');
+  const bus = new Bus();
+  const warnings = [];
+  bus.subscribe((e) => { if (e.type === 'recording.warning') warnings.push(e.data.message); });
+  const notes = new Notes(db, bus), settings = new Settings(db, bus), speakers = new Speakers(db, bus);
+  settings.update({ speakerRefine: false, echoDedupe: false });
+  const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-dz-'));
+  const engine = new FakeEngine();
+  const models = { resolve: () => ({ id: 'm' }), vadInstalled: () => true, vadPath: () => '/vad', speakerInstalled: () => true, speakerPath: () => '/spk', segmentationInstalled: () => true, segmentationPath: () => '/seg' };
+  const asked = [];
+  const run = async (o) => { asked.push(o.fallbackSpeakers); return { turns: [{ start: 0, end: 60, speaker: 0 }], voices: [{ speaker: 0, centroid: null, pitch: 120, ms: 60000 }] }; };
+  const mgr = new RecordingManager({ notes, engine, models, settings, platform: { capture: { mic: 'renderer', system: 'renderer' } }, bus, speakers, spoolDir, diarization: { run } });
+  const n = notes.create({});
+  await mgr.start(n.id, { mic: false, system: true });
+  mgr.pushPcm(n.id, 'system', Buffer.alloc(32000 * 60));
+  for (const k of [0, 1, 2]) engine.emit('segment', { ch: 'system', startMs: k * 20000, endMs: k * 20000 + 19000, text: `person ${k}`, words: [['person', 100, 600]], embedding: null });
+  notes.segments(n.id).forEach((s, k) => speakers.reassignSegment(n.id, s.id, `s${k + 1}`));
+  await mgr.stop();
+  assert.deepEqual(asked, [3], 'three live voices with real speech');
+  assert.deepEqual(notes.segments(n.id).map((s) => s.speakerId), ['s1', 's2', 's3']);
+  assert.match(warnings.join(), /single voice where the recording had 3/);
+  fs.rmSync(spoolDir, { recursive: true, force: true });
 });

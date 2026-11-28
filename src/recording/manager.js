@@ -5,7 +5,7 @@ const { isEcho, micSegmentIsEnergyEcho } = require('../audio/echo');
 const { EnergyEnvelope } = require('../audio/envelope');
 const { SpeakerTracker } = require('../speakers/cluster');
 const { refineNote, describeUtterance } = require('../speakers/refine');
-const { diarizeChannel } = require('../speakers/final');
+const { diarizeChannel, liveVoiceCount } = require('../speakers/final');
 const { expectedSpeakers } = require('../speakers/hint');
 const { describe } = require('../speakers/display');
 const { MeetingCollector } = require('../meet/collector');
@@ -643,7 +643,7 @@ class RecordingManager {
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
-      try { const open = ['mic', 'system'].filter((ch) => !diarized.includes(ch)); this.speakers.consolidate(a.noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(a.noteId, threshold, { channels: open }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+      try { const open = ['mic', 'system'].filter((ch) => !diarized.includes(ch)); this.speakers.consolidate(a.noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(a.noteId, threshold, { channels: [...open, ...(a.keptLive || [])] }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
       if (a.meet) this.nameFromMeeting(a, s); // last: it must not overrule a saved voice the speaker was just matched to
     }
     this.closeSpools(a);
@@ -688,14 +688,17 @@ class RecordingManager {
       const joined = !told && ch === 'system' && s.meet.headcount ? a.meet?.expectedVoices() : null;
       const expected = told ? null : (joined || expectedSpeakers({ attendees, channel: ch }));
       if (told || expected) a.settled.add(ch); // the head count is known: the acoustic pass must not change how many speakers there are
+      // how many voices the live labels heard on the system audio (never more than the call's list of people): if the clustering
+      // collapses to one voice it cuts for this many instead, and if it still finds one the live labels stand (final.js)
+      const fallback = ch === 'system' && !told ? this.liveVoices(a, refs, ch) : 0;
       try {
         const live = a.live?.[ch]?.failed ? null : a.live?.[ch]; // a follower that failed to start: the one-shot below does the whole spool
-        const run = live ? (o) => live.finish({ samples: spool.samples, numSpeakers: o.numSpeakers || 0, altEmbedding: o.altEmbedding || null })
+        const run = live ? (o) => live.finish({ samples: spool.samples, numSpeakers: o.numSpeakers || 0, fallbackSpeakers: o.fallbackSpeakers || 0, altEmbedding: o.altEmbedding || null })
           : s.speakerPipeline === 'owned' && !this.diarization.run ? diarizeOwned : this.diarization.run;
         const out = await diarizeChannel({
           diarize: run, notes: this.notes, speakers: this.speakers, noteId: a.noteId, channel: ch,
           source: { file: spool.file }, stretches: a.stretches[ch], segIds: refs.map((r) => r.segId),
-          segmentation: m.segmentationPath(), embedding: m.speakerPath(), altEmbedding: alt?.path, altModel: alt?.id, threads: s.asrThreads, options: { ...(expected ? { expected } : {}), ...told, ...this.diarization },
+          segmentation: m.segmentationPath(), embedding: m.speakerPath(), altEmbedding: alt?.path, altModel: alt?.id, threads: s.asrThreads, options: { ...(expected ? { expected } : {}), ...(fallback >= 2 ? { fallbackSpeakers: fallback } : {}), ...told, ...this.diarization },
         });
         // utterances that were cut keep pointing at their own audio, for the acoustic pass that may follow
         for (const [id, parts] of out?.splits || []) {
@@ -704,10 +707,25 @@ class RecordingManager {
           if (!ref) continue;
           a.refs = a.refs.filter((r) => r !== ref).concat(parts.map((p) => ({ segId: p.id, ch, from: ref.from + Math.round((p.startMs - origin) * 16), to: ref.from + Math.round((p.endMs - origin) * 16) })));
         }
+        if (out?.collapsed) {
+          a.keptLive = [...(a.keptLive || []), ch];
+          this.bus.publish('recording.warning', { message: `Speaker analysis heard a single voice where the recording had ${out.expected}: the voices told apart while recording are kept.` });
+        }
         if (out) done.push(ch);
       } catch (e) { this.bus.publish('recording.warning', { message: `speaker diarization (${ch}): ${e.message}` }); }
     }
     return done;
+  }
+
+  // How many voices with real speech the live labels gave this recording's utterances on a channel (final.js liveVoiceCount),
+  // capped by the call's list of people when it has one: the people in a channel bound who can have spoken. 0 when under two.
+  liveVoices(a, refs, ch) {
+    const ids = new Set(refs.map((r) => r.segId));
+    const mine = this.notes.segmentWords(a.noteId).filter((s) => ids.has(s.id) && s.speaker === (ch === 'mic' ? 'me' : 'them'));
+    let n = Math.min(liveVoiceCount(mine), 10);
+    const heads = a.meet?.expectedVoices?.({ max: 100 });
+    if (heads) n = Math.min(n, heads);
+    return n >= 2 ? n : 0;
   }
 
   // Names for the voices of the system audio from who the meeting window highlighted while each spoke. Best effort and

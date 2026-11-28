@@ -44,6 +44,20 @@ test('ahc can be forced to a number of speakers', () => {
   assert.equal(ahc(pts, { threshold: 1.5, minClusterSize: 5, numSpeakers: 3 }).centroids.length, 3);
 });
 
+test('ahc: when the cut collapses to one voice but the recording is known to hold several, it cuts again for that many', () => {
+  const r = rng(5);
+  const pts = [...blob([1, 0, 0], 20, 0.2, r), ...blob([0.8, 0.6, 0], 20, 0.2, r), ...blob([0, 0, 1], 20, 0.2, r)];
+  assert.equal(ahc(pts, { threshold: 1.5, minClusterSize: 5 }).centroids.length, 1, 'voices close together: one chain swallows them');
+  assert.equal(ahc(pts, { threshold: 1.5, minClusterSize: 5, fallbackSpeakers: 3 }).centroids.length, 3);
+  // every cluster too small to count (the other way to end up with one voice)
+  assert.equal(ahc(pts, { threshold: 0.01, minClusterSize: 12 }).centroids.length, 1);
+  assert.equal(ahc(pts, { threshold: 0.01, minClusterSize: 12, fallbackSpeakers: 3 }).centroids.length, 3);
+  // a clustering that already found two or more voices is left alone: the fallback is not a forced count
+  const free = ahc(pts, { threshold: 0.5, minClusterSize: 5 }).centroids.length;
+  assert.ok(free >= 2);
+  assert.equal(ahc(pts, { threshold: 0.5, minClusterSize: 5, fallbackSpeakers: 6 }).centroids.length, free);
+});
+
 test('windowStarts covers the whole recording with one padded window at the end', () => {
   assert.deepEqual(windowStarts(5 * RATE), [0]);
   assert.deepEqual(windowStarts(WINDOW), [0]);
