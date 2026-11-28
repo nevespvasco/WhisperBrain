@@ -26,6 +26,15 @@ async function boot(t) {
   return { app, b, base: `http://127.0.0.1:${port}` };
 }
 // opens a modal from the app's own lib.js (the same module instance the page uses)
+// waits until a control stops moving (a dialog's opening animation): a click while it still slides lands beside it, which on a slow CI machine it often did
+const settled = async (b, sel) => {
+  let last = '';
+  for (let i = 0; i < 60; i++) {
+    const r = await b.evaluate(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return ''; const r = e.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round).join(','); })()`);
+    if (r && r === last) return;
+    last = r; await sleep(80);
+  }
+};
 const openModal = (b, body) => b.evaluate(`import('/lib.js').then((L) => { L.modal({ title: 'Test', body: ${JSON.stringify(body)} }); return true; })`);
 
 test('pickers: a select inside a modal dialog can be picked from with the mouse', { skip, timeout: 60000 }, async (t) => {
@@ -57,7 +66,7 @@ test('pickers: a date field opens the calendar with a click, on the page and ins
   assert.equal(await b.evaluate(`document.querySelector('#d1').value`), day);
   // inside a dialog
   await openModal(b, '<input type="date" id="d2">');
-  await sleep(250);
+  await settled(b, '#d2');
   await b.clickOn('#d2');
   await b.waitFor(`!!document.querySelector('dialog .menu.datepick')`);
   await sleep(50);

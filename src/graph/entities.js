@@ -108,7 +108,7 @@ class Entities {
   // The cursor is 'updated_at:rowid' (updated_at alone is not unique: a sync stamps many items with the same time, and a page that
   // ended inside them skipped the rest). A bare number (the old cursor) means that time, from its first row.
   backfillItems(after = 0, size = 200) {
-    const [t, r] = String(after ?? 0).split(':').map((x) => Number(x) || 0);
+    const [t, r = 0] = String(after ?? 0).split(':').map((x) => Number(x) || 0);
     const rows = this.db.prepare("SELECT rowid AS r, id, updated_at FROM items WHERE kind = 'email' AND (updated_at > ? OR (updated_at = ? AND rowid > ?)) ORDER BY updated_at, rowid LIMIT ?").all(t, t, r, size);
     if (!rows.length) return null;
     this.tx(() => { for (const x of rows) this.syncItem(x.id); });

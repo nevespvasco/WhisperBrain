@@ -70,7 +70,7 @@ function sweep(root) {
     const compact = !!el.closest('.panel, aside, dialog, .tabbody, .note-aside, .int-card');
     if (compact) {
       // a panel's list: a fixed height with its own scroll, once it has more rows than fit comfortably
-      const on = n > SCROLL_AFTER && !scrolls(el);
+      const on = n > SCROLL_AFTER && (el.classList.contains('scroll-list') || !scrolls(el));   // our own class makes it scroll: that is not "already scrolls" (it would flip off and on at every pass)
       el.classList.toggle('scroll-list', on);
       if (state.has(el)) release(el);
       continue;
