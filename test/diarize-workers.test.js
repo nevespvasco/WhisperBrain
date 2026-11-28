@@ -42,3 +42,21 @@ test('one-shot workers: a process that cannot start or dies rejects instead of t
   await assert.rejects(diarizeOwned({ file, segmentation: '/nope.onnx', embedding: '/nope.onnx' }), /./);
   await assert.rejects(diarize({ file, segmentation: '/nope.onnx', embedding: '/nope.onnx' }), /./);
 });
+
+// ---- the voice prints at the end of a diarization read only what they need ----
+const { voicesOf, noiseFloor } = require('../src/speakers/voices-of');
+test('voice prints and the noise floor from a reader give exactly what the whole channel in memory gives, without reading it in one piece', () => {
+  const RATE = 16000;
+  const n = RATE * 150 + 123; // 2.5 minutes and a bit
+  const all = new Float32Array(n);
+  let seed = 7;
+  for (let i = 0; i < n; i++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; all[i] = ((seed / 0x7fffffff) - 0.5) * (i % 48000 < 24000 ? 0.4 : 0.01); }
+  const reads = [];
+  const reader = { length: n, read: (a, b) => { reads.push(b - a); return all.slice(a, Math.min(b, n)); } };
+  const extractor = { createStream: () => { const st = { n: 0, acceptWaveform: ({ samples }) => { st.n += samples.length; st.sum = samples.reduce((x, y) => x + y, 0); }, inputFinished() {} }; return st; }, isReady: () => true, compute: (st) => [st.n, st.sum] };
+  const turns = [{ start: 0, end: 40, speaker: 0 }, { start: 40, end: 100, speaker: 1 }, { start: 100, end: 150, speaker: 0 }];
+  assert.equal(noiseFloor(reader), noiseFloor(all));
+  const a = voicesOf(all, turns, extractor), b = voicesOf(reader, turns, extractor);
+  assert.deepEqual(b.map((v) => ({ ...v, centroid: [...v.centroid] })), a.map((v) => ({ ...v, centroid: [...v.centroid] })));
+  assert.ok(Math.max(...reads) <= 61 * RATE, `largest read ${Math.max(...reads) / RATE} s`);
+});

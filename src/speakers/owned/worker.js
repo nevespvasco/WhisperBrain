@@ -56,7 +56,8 @@ function fileReader(file) {
   };
 }
 
-async function finishAndCluster(state, { samples, numSpeakers, fallbackSpeakers = 0, read, segmenter, embed, extractor, readAll, t0, altEmbedding = null }) {
+// source: the channel for the voice prints, a Float32Array or a reader { length, read } (voices-of.js): ranges, never all of it.
+async function finishAndCluster(state, { samples, numSpeakers, fallbackSpeakers = 0, read, segmenter, embed, extractor, source, t0, altEmbedding = null }) {
   const rest = state.pending(samples, true);
   const tRest = Date.now();
   await state.add(rest, { read, segment: (w) => segmenter.run(w), embed });
@@ -64,21 +65,27 @@ async function finishAndCluster(state, { samples, numSpeakers, fallbackSpeakers 
   const out = state.diarize(samples, { numSpeakers, fallbackSpeakers });
   const tVoices = Date.now();
   const alt = altEmbedding ? new (require('sherpa-onnx-node').SpeakerEmbeddingExtractor)({ model: altEmbedding, numThreads: 2, provider: 'cpu', debug: 0 }) : null; // an older voice model, for saved voices made with it
-  const voices = voicesOf(readAll(), out.turns, extractor, alt);
+  const voices = voicesOf(source, out.turns, extractor, alt);
   return {
     turns: out.turns, exclusive: out.exclusive, overlaps: out.overlaps, voices,
     stats: { windows: state.windows.length, windowsAtFinish: rest.length, speakers: new Set(out.turns.map((t) => t.speaker)).size, msWindowsAtFinish: tCluster - tRest, msCluster: tVoices - tCluster, msVoices: Date.now() - tVoices, msTotal: t0 ? Date.now() - t0 : null },
   };
 }
 
+// A file is read window by window (and by solo stretch for the prints), never loaded whole as floats.
 async function oneShot(m) {
   const sherpa = require('sherpa-onnx-node');
-  const all = toFloat(m.pcm ? Buffer.from(m.pcm) : fs.readFileSync(m.file));
-  const threads = m.threads || 2;
-  const segmenter = await new Segmenter(m.segmentation, { threads }).open();
-  const { embed, extractor } = makeEmbed(sherpa, m.embedding, threads);
-  const state = new DiarizationState(stateOptions(m));
-  return finishAndCluster(state, { samples: all.length, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read: (a, b) => all.subarray(a, Math.min(b, all.length)), segmenter, embed, extractor, readAll: () => all, t0: Date.now(), altEmbedding: m.altEmbedding });
+  const all = m.pcm ? toFloat(Buffer.from(m.pcm)) : null;
+  const src = all ? null : fileReader(m.file);
+  try {
+    const samples = all ? all.length : src.size();
+    const read = all ? (a, b) => all.subarray(a, Math.min(b, all.length)) : (a, b) => src.read(a, Math.min(b, samples));
+    const threads = m.threads || 2;
+    const segmenter = await new Segmenter(m.segmentation, { threads }).open();
+    const { embed, extractor } = makeEmbed(sherpa, m.embedding, threads);
+    const state = new DiarizationState(stateOptions(m));
+    return await finishAndCluster(state, { samples, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read, segmenter, embed, extractor, source: all || { length: samples, read }, t0: Date.now(), altEmbedding: m.altEmbedding });
+  } finally { src?.close(); }
 }
 
 // ---- live ----
@@ -136,7 +143,7 @@ async function finishLive(m) {
     segmenter = await new Segmenter(live.m.segmentation, { threads: live.m.finishThreads }).open();
     ({ embed, extractor } = makeEmbed(sherpa, live.m.embedding, live.m.finishThreads));
   }
-  const out = await finishAndCluster(live.state, { samples, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read: live.src.read, segmenter, embed, extractor, readAll: () => live.src.read(0, samples), t0, altEmbedding: m.altEmbedding });
+  const out = await finishAndCluster(live.state, { samples, numSpeakers: m.numSpeakers || 0, fallbackSpeakers: m.fallbackSpeakers || 0, read: live.src.read, segmenter, embed, extractor, source: { length: samples, read: (a, b) => live.src.read(Math.min(a, samples), Math.min(b, samples)) }, t0, altEmbedding: m.altEmbedding });
   live.src.close();
   return out;
 }
