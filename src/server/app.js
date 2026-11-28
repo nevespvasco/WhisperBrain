@@ -249,9 +249,10 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   try { SERVICE_HANDLERS = require('../brain/actions-services').HANDLERS; } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }
   const ALL_HANDLERS = { ...ACTION_HANDLERS, ...require('../brain/actions-gmail').HANDLERS, ...SERVICE_HANDLERS };
   // may this source's grant do this? An action made for one source (args.sourceId) needs that source to allow it; one for a service with no
-  // source row (a token set up in Integrations, approved each time) keeps working as before.
+  // source row (a token set up in Integrations, approved each time; webhooks) keeps working as before. The service is the handler's
+  // provider, or the first part of its kind (slack.post -> slack), so every kind is checked, not only Gmail's.
   const actionAllowed = (kind, args) => {
-    const provider = ALL_HANDLERS[kind]?.provider;
+    const provider = ALL_HANDLERS[kind]?.provider || String(kind).split('.')[0];
     if (!provider) return true;
     if (args?.sourceId) { const s = items.source(args.sourceId); return !!s && can(s, `action.${kind}`); }
     const own = items.sources().filter((s) => s.kind === provider);
