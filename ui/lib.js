@@ -186,7 +186,21 @@ function settleWhenGone(m, host, finish) {
   obs.observe(host, { childList: true });
   if (host !== document.body) obs.observe(document.body, { childList: true });
 }
-export function closeMenu() { openMenu?.remove(); openAnchor?.removeAttribute('aria-expanded'); openMenu = null; openAnchor = null; }
+export function closeMenu() { openMenu?.remove(); openAnchor?.setAttribute('aria-expanded', 'false'); openAnchor?.removeAttribute('aria-controls'); openMenu = null; openAnchor = null; }
+// The open popover and the control it belongs to, told to assistive tech: what kind of popup, which element, open or not
+let popupN = 0;
+function claim(anchor, m, kind, label) {
+  m.id ||= `wb-pop-${++popupN}`;
+  if (label && !m.hasAttribute('aria-label')) m.setAttribute('aria-label', label);
+  anchor.setAttribute('aria-haspopup', kind); anchor.setAttribute('aria-controls', m.id); anchor.setAttribute('aria-expanded', 'true');
+  openMenu = m; openAnchor = anchor;
+}
+// a field's name as a screen reader would say it: its <label> (without the field's own text when the label wraps it), else aria-label or title
+const labelOf = (el) => {
+  const lb = el?.labels?.[0];
+  const own = lb ? [...lb.childNodes].filter((n) => n !== el && !n.contains?.(el)).map((n) => n.textContent).join('').trim() : '';
+  return (own || el?.getAttribute?.('aria-label') || el?.title || '').trim();
+};
 export const menuIsOpen = () => !!openMenu;
 // items: [{ label, icon, run, danger, disabled, selected, href } | 'sep' | { header }]
 export function menu(anchor, items, { align = 'start' } = {}) {
@@ -230,7 +244,7 @@ export function menu(anchor, items, { align = 'start' } = {}) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length]?.focus(); }
     else if (e.key === 'Escape') { closeMenu(); anchor.focus(); }
   });
-  openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+  claim(anchor, m, 'menu', labelOf(anchor));
   setTimeout(() => m.querySelector('button:not(:disabled), a')?.focus(), 0);
   return m;
 }
@@ -247,7 +261,7 @@ document.addEventListener('scroll', (e) => { if (!openMenu?.contains(e.target)) 
 // A list to pick one value from: people, languages, any <select>. A search box appears once the list is long (20 people
 // on a call), the current value is ticked, and with `custom` whatever is typed can be used as is.
 // items: [{ value, label, hint, avatar, header }]. Resolves with the chosen value, or undefined when dismissed.
-export function pickFrom(anchor, items, { current, placeholder, custom, search = items.length > 8, width } = {}) {
+export function pickFrom(anchor, items, { current, placeholder, custom, search = items.length > 8, width, label = labelOf(anchor) } = {}) {
   closeMenu();
   return new Promise((resolve) => {
     const m = document.createElement('div');
@@ -289,7 +303,7 @@ export function pickFrom(anchor, items, { current, placeholder, custom, search =
       else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(undefined); }
       else if (e.key === 'Tab') finish(undefined);
     });
-    openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+    claim(anchor, m, 'listbox', label);
     settleWhenGone(m, host, finish);
     setTimeout(() => (input || list.querySelector('.sel') || opts()[0])?.focus(), 0);
     list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
@@ -298,7 +312,7 @@ export function pickFrom(anchor, items, { current, placeholder, custom, search =
 
 // A calendar to pick one day from, drawn in the app's own style (the system one ignores the theme). Resolves to 'YYYY-MM-DD',
 // '' when the date is cleared, or undefined when it is dismissed. min: first day that can be picked.
-export function pickDate(anchor, { current = '', min = '', clearable = true } = {}) {
+export function pickDate(anchor, { current = '', min = '', clearable = true, label = labelOf(anchor) } = {}) {
   closeMenu();
   return new Promise((resolve) => {
     const iso = (d) => new Date(d - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
@@ -309,7 +323,7 @@ export function pickDate(anchor, { current = '', min = '', clearable = true } = 
     const m = document.createElement('div');
     m.className = 'menu datepick';
     m.setAttribute('role', 'dialog');
-    m.setAttribute('aria-label', t('Due date'));
+    m.setAttribute('aria-label', label || t('Due date'));
     const monthName = (d) => d.toLocaleDateString(loc(), { month: 'long', year: 'numeric' });
     // Monday first, in the user's language
     const wk = Array.from({ length: 7 }, (_, i) => new Date(2024, 0, 1 + i).toLocaleDateString(loc(), { weekday: 'narrow' }));
@@ -361,7 +375,7 @@ export function pickDate(anchor, { current = '', min = '', clearable = true } = 
       } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(undefined); }
       else if (e.key === 'Tab' && !m.contains(document.activeElement)) finish(undefined);
     });
-    openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
+    claim(anchor, m, 'dialog', label);
     settleWhenGone(m, host, finish);
     setTimeout(() => draw(true), 0);
   });

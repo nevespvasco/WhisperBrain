@@ -35,11 +35,12 @@ test('pickers: a select inside a modal dialog can be picked from with the mouse'
   await b.clickOn('#who');
   await b.waitFor(`!!document.querySelector('.menu.picker')`);
   assert.equal(await b.evaluate(`document.querySelector('.menu.picker').parentElement.tagName`), 'DIALOG', 'the list opens inside the dialog (the top layer), not under it');
-  assert.equal(await b.evaluate(`document.querySelector('#who').getAttribute('aria-expanded')`), 'true');
+  assert.deepEqual(await b.evaluate(`(() => { const a = document.querySelector('#who'), m = document.querySelector('.menu.picker'); return [a.getAttribute('aria-expanded'), a.getAttribute('aria-haspopup'), a.getAttribute('aria-controls') === m.id && !!m.id, m.getAttribute('aria-label')]; })()`), ['true', 'listbox', true, 'Who'], 'the field says it opens a list, which one, and the list is named after the field');
   await b.clickOn('.menu.picker [data-v="c"]');
   await sleep(100);
   assert.equal(await b.evaluate(`document.querySelector('#who').value`), 'c', 'the click reached the option');
   assert.equal(await b.evaluate(`!!document.querySelector('.menu.picker')`), false, 'and closed the list');
+  assert.equal(await b.evaluate(`document.querySelector('#who').getAttribute('aria-expanded')`), 'false');
   assert.equal(await b.evaluate(`!!document.querySelector('dialog[open]')`), true, 'without closing the dialog');
   assert.deepEqual(b.errors, []);
 });
