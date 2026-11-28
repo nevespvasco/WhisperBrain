@@ -229,3 +229,29 @@ test('delete everything also forgets sources, mail, the search index and the rec
   assert.equal(app.items.list({ q: 'SECRETMAIL7731' }).length, 0);
   assert.ok(!fs.existsSync(copy), 'the copy made before an update held the mail too');
 });
+
+// ---- audit 2026-11-28 (D1-1): a server elsewhere on the local network is not "this computer" ----
+test('a source kept on this computer does not go to an AI server on the local network, and the ledger says that run left', () => {
+  const { AiRuns } = require('../src/audit/ai-runs');
+  const src = { readLevel: 'all', aiReach: 'local', actions: [] };
+  for (const baseUrl of ['http://192.168.1.20:11434/v1', 'http://10.0.0.5:11434/v1', 'http://172.16.0.9/v1', 'http://gpu.lan:11434/v1', 'http://box.local/v1']) {
+    assert.equal(can(src, 'ai.remote', { llmConfig: { baseUrl } }), false, baseUrl);
+  }
+  assert.equal(can(src, 'ai.remote', { llmConfig: { baseUrl: 'http://127.0.0.2:8080/v1' } }), true, 'loopback is this computer');
+  const runs = new AiRuns(open(':memory:'));
+  runs.record({ lane: 'chat', config: { baseUrl: 'http://192.168.1.20:11434/v1' }, messages: [{ role: 'user', content: 'hi' }] });
+  runs.record({ lane: 'chat', config: { baseUrl: 'http://127.0.0.1:11434/v1' }, messages: [{ role: 'user', content: 'hi' }] });
+  assert.deepEqual(runs.list().map((r) => r.local), [true, false]);
+  assert.equal(runs.summary().remote, 1);
+});
+
+test('to an AI server on the local network, excerpts are redacted like for any server that is not this computer', async () => {
+  const { AiService } = require('../src/llm/service');
+  const { Settings } = require('../src/core/settings');
+  const settings = new Settings(open(':memory:'), null);
+  settings.update({ llm: { baseUrl: 'http://192.168.1.20:11434/v1', model: 'm' }, redactRemote: true });
+  const seen = [];
+  const svc = new AiService({ settings, llm: { complete: async (messages) => { seen.push(JSON.stringify(messages)); return '{"scores":[]}'; } } });
+  await svc.rerank('who wrote?', [{ text: 'mail from ana.secret@example.com about the plan' }, { text: 'second' }]);
+  assert.ok(seen.length && !seen[0].includes('ana.secret@example.com'), 'the address did not leave in the clear');
+});

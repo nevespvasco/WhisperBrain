@@ -2,7 +2,7 @@
 // The AI-run ledger (the egress log): every call to an AI server, which lane asked, which server, whether that server is on this
 // computer, how much text went in and came out, how long it took. Never the text itself. "What left this computer?" is answered
 // from here: a call to a server that is not local counts as having left it.
-const { isLocalUrl } = require('../core/policy');
+const { isThisComputer } = require('../core/policy');
 
 const hostOf = (url) => { try { return new URL(url).host; } catch { return String(url || '').slice(0, 80); } };
 const charsOf = (messages) => (messages || []).reduce((n, m) => n + (typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content || '').length), 0);
@@ -16,7 +16,7 @@ class AiRuns {
     const ids = Array.isArray(sources) ? [...new Set(sources.filter(Boolean).map(String))].slice(0, 30).join(',') : '';
     try {
       this.db.prepare('INSERT INTO ai_runs (at, lane, model, host, local, chars_in, chars_out, ms, ok, error, source_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(this.now(), String(lane), String(config?.model || ''), hostOf(url), isLocalUrl(url) ? 1 : 0, charsOf(messages), charsOut, Math.round(ms), ok ? 1 : 0, error ? String(error).slice(0, 300) : null, ids);
+        .run(this.now(), String(lane), String(config?.model || ''), hostOf(url), isThisComputer(url) ? 1 : 0, charsOf(messages), charsOut, Math.round(ms), ok ? 1 : 0, error ? String(error).slice(0, 300) : null, ids);
     } catch { /* the ledger must never break an AI call (a closed database, for one) */ }
   }
 

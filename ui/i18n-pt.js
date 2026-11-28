@@ -1615,7 +1615,7 @@ export const PT = {
   'Started with Qt accessibility on (not measured: Zoom may still show nothing)': 'Iniciado com a acessibilidade do Qt ligada (não medido: o Zoom pode continuar a não mostrar nada)',
   'You have your own launcher: start Zoom with QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1': 'Tem um lançador seu: inicie o Zoom com QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1',
   'Normal launcher (Zoom is a Qt app: its window is only readable with Qt accessibility on, which has not been measured yet)': 'Lançador normal (o Zoom é uma app Qt: a janela só é legível com a acessibilidade do Qt ligada, o que ainda não foi medido)',
-  'Your AI server ({host}) is on this computer or your network.': 'O teu servidor de IA ({host}) está neste computador ou na tua rede.',
+  'Your AI server ({host}) is on this computer.': 'O teu servidor de IA ({host}) está neste computador.',
   'none set': 'nenhum definido',
   'Your AI server ({host}) is NOT on this computer. “Any AI server” would let this go there, with e-mail addresses, phone numbers, bank numbers and codes replaced by placeholders first.': 'O teu servidor de IA ({host}) NÃO está neste computador. «Qualquer servidor de IA» deixaria isto ir para lá, com endereços de e-mail, telefones, números bancários e códigos trocados por marcadores antes.',
   'Which Google account': 'Que conta Google',

@@ -12,6 +12,7 @@ const { neutralizeTags, speakerNamesMessages } = require('../llm/prompts');
 const { fmtClock } = require('../core/notes');
 const { nameKey } = require('../meet/protocol');
 const { extractJson } = require('../llm/insights');
+const { isThisComputer } = require('../core/policy');
 
 const MAX_LINES = 400;     // the newest lines sent to the AI
 const REACH = 2;           // how far from the evidence line the named voice may speak: "Okay, Amos, thank you" comes right after Amos
@@ -159,13 +160,9 @@ async function nameFromTranscript({ notes, speakers, evidence, llm, userName = '
   return { named, refuted };
 }
 
-// Does the AI server run on this computer? (a transcript sent to it does not leave the machine)
-function isLocalServer(url) {
-  try {
-    const host = new URL(String(url || '')).hostname.toLowerCase();
-    return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
-  } catch { return false; }
-}
+// Does the AI server run on this computer? (a transcript sent to it does not leave the machine). The one rule of policy.js; no
+// server at all is not a server on this computer here.
+function isLocalServer(url) { return !!String(url || '').trim() && isThisComputer(url); }
 
 // While the meeting is still going: the same question, asked again every so often about the voices that have no name yet, so
 // "I'm Maria" at minute two puts a name on the screen at minute three. A pass costs one AI request, so it waits until there are

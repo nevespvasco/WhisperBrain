@@ -186,3 +186,22 @@ test('voice prints off: a name from the meeting links no saved voice, and a corr
   speakers.nameFromMeeting(second.id, 's1', 'Ana');
   assert.equal(speakers.forNote(second.id)[0].voiceId, null);
 });
+
+// ---- audit 2026-11-28 (D1-1): "this computer" is loopback only; the local network is a separate, organisation-only notion ----
+const LOOPBACK = ['http://localhost:11434/v1', 'http://LOCALHOST/v1', 'http://127.0.0.1:11434/v1', 'http://127.0.0.2:8080/v1', 'http://127.1/v1', 'http://[::1]:8080/v1', ''];
+const LAN = ['http://10.0.0.5:11434/v1', 'http://192.168.1.20:11434/v1', 'http://172.16.4.2/v1', 'http://172.31.0.1/v1', 'http://gpu.lan:11434/v1', 'http://office-box.local/v1'];
+const OUTSIDE = ['https://api.openai.com/v1', 'http://169.254.169.254/latest', 'http://localhost.evil.com/v1', 'http://127.0.0.1.evil.com/v1', 'http://172.32.0.1/v1', 'not a url'];
+
+test('isThisComputer: only loopback addresses (and no server at all) count as this computer; the local network does not', () => {
+  const { isThisComputer, isLocalUrl } = require('../src/core/policy');
+  for (const u of LOOPBACK) assert.equal(isThisComputer(u), true, u || '(none)');
+  for (const u of [...LAN, ...OUTSIDE]) assert.equal(isThisComputer(u), false, u);
+  for (const u of [...LOOPBACK, ...LAN]) assert.equal(isLocalUrl(u), true, `${u}: still allowed by the organisation's requireLocalLlm`);
+  for (const u of OUTSIDE) assert.equal(isLocalUrl(u), false, u);
+});
+
+test('the settings page decides "this computer" with the same rule as the server (ui/locality.js mirrors policy.js)', async () => {
+  const { isThisComputer } = require('../src/core/policy');
+  const ui = await import(path.join(__dirname, '..', 'ui', 'locality.js'));
+  for (const u of [...LOOPBACK, ...LAN, ...OUTSIDE, undefined, null, 'http://[::1]/', 'ftp://127.0.0.1/']) assert.equal(ui.isThisComputer(u), isThisComputer(u), String(u));
+});

@@ -6,6 +6,7 @@ import { openExport } from './transfer.js';
 import * as meetPanel from './meet-panel.js';
 import { openSetup } from './setup.js';
 import { SETTINGS_SECTIONS } from '../nav.js';
+import { isThisComputer } from '../locality.js';
 
 const SECTIONS = SETTINGS_SECTIONS;   // shared with the Setup door's panel (ui/nav.js)
 let modelListener = null; // the Audio section's download listener (see bind)
@@ -246,7 +247,7 @@ const SECTION = {
   async translation() {
     S.languages ||= await api('GET', '/api/languages');
     const tr = S.settings.translation, langs = S.languages, by = new Map(langs.map((l) => [l.code, l]));
-    const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
+    const local = isThisComputer(S.settings.llm?.baseUrl);
     const option = (l, sel) => `<option value="${l.code}" ${l.code === sel ? 'selected' : ''}>${esc(l.name)}${l.native !== l.name ? ` · ${esc(l.native)}` : ''}</option>`;
     const chosen = tr.targets.map((c, i) => `<span class="chip">${esc(by.get(c)?.name || c)}${i === 0 ? ` <span class="xsmall muted">${t('live')}</span>` : `<button class="btn xs ghost icon" data-tr-first="${esc(c)}" title="${esc(t('Use this one for live translation'))}" aria-label="${esc(t('Use this one for live translation'))}">${icon('chevleft', 'sm')}</button>`}<button class="btn xs ghost icon" data-tr-del="${esc(c)}" title="${esc(t('Remove'))}" aria-label="${esc(t('Remove'))}">${icon('x', 'sm')}</button></span>`).join('');
     return `<section class="panel"><div class="panel-head"><h3>${t('Translation')}</h3></div>
@@ -264,7 +265,7 @@ const SECTION = {
   async assistant() {
     const a = S.settings.assistant;
     S.languages ||= await api('GET', '/api/languages');
-    const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
+    const local = isThisComputer(S.settings.llm?.baseUrl);
     const sel = (id, value, opts) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     const tp = S.settings.teleprompter;
     const withValue = (list, v) => (list.includes(v) ? list : [...list, v].sort((x, y) => x - y)); // a value set with the mouse wheel over the teleprompter

@@ -13,7 +13,7 @@ const { TermSpotter } = require('./terms');
 const { liveSummaryMessages, parseLiveSummary, EMPTY } = require('./live-summary');
 const { assistantMessages, liveAskMessages, neutralizeTags, UNTRUSTED } = require('../llm/prompts');
 const { languageName } = require('../llm/languages');
-const { isLocalUrl } = require('../core/policy');
+const { isThisComputer } = require('../core/policy');
 
 const TAIL_LINES = 40;        // lines kept in memory for the context (the database has the rest)
 const HISTORY_PAIRS = 6;
@@ -65,7 +65,7 @@ class AssistantService {
     if (!this.enabledFor(noteId)) return 'off';
     const llm = this.settings.get('llm');
     if (!llm.baseUrl) return 'no-llm';
-    if (!isLocalUrl(llm.baseUrl) && !this.options().allowRemote) return 'remote';
+    if (!isThisComputer(llm.baseUrl) && !this.options().allowRemote) return 'remote';
     if (this.notes.get(noteId)?.consent === 'declined') return 'consent';
     return null;
   }
