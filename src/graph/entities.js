@@ -251,11 +251,12 @@ class Entities {
   }
 
   // "Ana" next to "Ana Silva": a one-word person whose name starts a longer name. A suggestion only, never a merge.
+  // The longer names are a range of the unique key index (keys from "ana " up to "ana!"), not a scan of every person for each one.
   proposeMerges() {
-    const rows = this.db.prepare('SELECT id, key FROM entities WHERE merged_into IS NULL').all();
-    const single = rows.filter((r) => !r.key.includes(' ') && !r.key.includes('~'));
+    const single = this.db.prepare("SELECT id, key FROM entities WHERE merged_into IS NULL AND instr(key, ' ') = 0 AND instr(key, '~') = 0").all();
+    const range = this.db.prepare('SELECT id FROM entities WHERE key >= ? AND key < ? AND merged_into IS NULL LIMIT 4');
     for (const s of single) {
-      const longer = rows.filter((r) => r.key.startsWith(`${s.key} `));
+      const longer = range.all(`${s.key} `, `${s.key}!`);
       if (longer.length && longer.length <= 3) for (const l of longer) this.propose(s.id, l.id, 'a first name that matches', 0.45);
     }
   }

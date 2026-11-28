@@ -317,3 +317,33 @@ test('item search hits still point at the right items after VACUUM (items_fts is
   db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the Inbox\'s quiet-project check reads the promises once for all projects, and note search loads its notes in one query', async (t) => {
+  const { app } = await boot(t);
+  for (const name of ['Atlas', 'Orion', 'Vega']) app.projects.create({ name, keywords: [name.toLowerCase()] });
+  const n = app.notes.create({ title: 'Atlas review' });
+  app.notes.reindex(n.id);
+  let calls = 0;
+  const list = app.assertions.list.bind(app.assertions);
+  app.assertions.list = (o) => { calls++; return list(o); };
+  app.projects.idle();
+  assert.equal(calls, 2, 'decisions and promises, once each, not per project');
+  calls = 0;
+  assert.equal(app.projects.summary().length, 3);
+  assert.equal(calls, 2);
+  let gets = 0;
+  const get = app.notes.get.bind(app.notes);
+  app.notes.get = (id) => { gets++; return get(id); };
+  assert.deepEqual(app.notes.search('atlas').map((h) => h.note.title), ['Atlas review']);
+  assert.equal(gets, 0, 'the hits\' notes come with one query');
+});
+
+test('"same person?" proposals: a first name next to up to three longer names that start with it, found by key range', () => {
+  const { Entities } = require('../src/graph/entities');
+  const db = open(':memory:');
+  const add = db.prepare("INSERT INTO entities (id, name, key, created_at, updated_at) VALUES (?, ?, ?, 1, 1)");
+  for (const k of ['ana', 'ana silva', 'ana costa', 'anabela reis', 'bob', 'bob a', 'bob b', 'bob c', 'bob d', 'zé~2', 'zé~2 x']) add.run(`e:${k}`, k, k);
+  new Entities({ db }).proposeMerges();
+  const got = db.prepare('SELECT a_id, b_id FROM entity_proposals ORDER BY a_id, b_id').all().map((r) => `${r.a_id}|${r.b_id}`);
+  assert.deepEqual(got, ['e:ana costa|e:ana', 'e:ana silva|e:ana'].map((x) => x.split('|').sort().join('|')).sort());
+});

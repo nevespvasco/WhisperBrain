@@ -118,12 +118,13 @@ class Notes {
   search(q, limit = 20, opts = {}) {
     const fts = ftsQuery(q, opts);
     if (!fts) return [];
-    return this.db.prepare(`
+    const rows = this.db.prepare(`
       SELECT note_id, bm25(search, 0, 8, 3, 2, 1) AS rank,
              snippet(search, -1, '<mark>', '</mark>', '…', 14) AS snippet
-      FROM search WHERE search MATCH ? ORDER BY rank LIMIT ?`).all(fts, limit)
-      .map((r) => ({ note: this.get(r.note_id), snippet: r.snippet, rank: r.rank }))
-      .filter((r) => r.note);
+      FROM search WHERE search MATCH ? ORDER BY rank LIMIT ?`).all(fts, limit);
+    const ids = [...new Set(rows.map((r) => r.note_id))];
+    const byId = new Map(ids.length ? this.db.prepare(`SELECT ${NOTE_COLS} FROM notes WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids).map((r) => [r.id, rowToNote(r)]) : []);   // one query, not one per hit
+    return rows.map((r) => ({ note: byId.get(r.note_id) || null, snippet: r.snippet, rank: r.rank })).filter((r) => r.note);
   }
 
   // Advanced search: free text limited to one part of the note, plus filters. Every filter is optional.
