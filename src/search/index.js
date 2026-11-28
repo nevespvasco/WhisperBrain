@@ -258,8 +258,10 @@ class ChunkIndex {
     const noteIds = of('note'), itemIds = of('item');
     const notes = new Map(noteIds.length ? this.db.prepare(`SELECT id, title, started_at AS startedAt, created_at AS createdAt FROM notes WHERE id IN (${inList(noteIds.length)})`).all(...noteIds).map((n) => [n.id, n]) : []);
     // an item waiting in the change queue is left out until it is indexed again: its body may just have been dropped (a narrowed grant)
+    // (the MCP reader may open a database the app has not migrated to the queue yet: then there is nothing queued to leave out)
+    this.hasQueue ??= !!this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'dirty_owners'").get();
     const items = new Map(itemIds.length ? this.db.prepare(`SELECT i.id, i.title, i.occurred_at AS occurredAt, i.source_id AS sourceId, i.uri FROM items i WHERE i.id IN (${inList(itemIds.length)}) AND i.deleted_at IS NULL
-      AND NOT EXISTS (SELECT 1 FROM dirty_owners d WHERE d.owner_kind = 'item' AND d.owner_id = i.id)`).all(...itemIds).map((i) => [i.id, i]) : []);
+      ${this.hasQueue ? "AND NOT EXISTS (SELECT 1 FROM dirty_owners d WHERE d.owner_kind = 'item' AND d.owner_id = i.id)" : ''}`).all(...itemIds).map((i) => [i.id, i]) : []);
     const out = [];
     for (const f of fused) {
       const c = chunks.get(f.id);
