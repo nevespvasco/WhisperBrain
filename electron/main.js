@@ -610,7 +610,8 @@ async function shutdown() {
   globalShortcut.unregisterAll();
   hideFloat();
   hidePrompter();
-  try { if (core?.recording.status().active) await Promise.race([core.recording.stop(), new Promise((r) => setTimeout(r, 15000))]); } catch { /* best effort */ }
+  // quick: the note is finished before the database closes; the long speaker pass is left to a job at the next start
+  try { if (core?.recording.status().active) await Promise.race([core.recording.stop({ quick: true }), new Promise((r) => setTimeout(r, 15000))]); } catch { /* best effort */ }
   try { await server?.close(); core?.close(); await core?.settled; } catch { /* best effort */ }
 }
 

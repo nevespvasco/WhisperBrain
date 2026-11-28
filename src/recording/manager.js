@@ -16,6 +16,7 @@ const { Spool } = require('./spool');
 const { SpeakerTestRecorder } = require('./speaker-test');
 const nodePath = require('node:path');
 const { LiveDiarizer, diarizeOwned } = require('../speakers/owned');
+const { transcribePcm } = require('./import');
 const { toTimeline } = require('../speakers/diarize');
 const { LEGACY: { id: LEGACY_MODEL_ID }, sameVoiceThreshold } = require('../speakers/voice-models');
 const { pickTargetApp } = require('../platform/apps');
@@ -37,6 +38,11 @@ const TAB_SLACK_MS = 250, TAB_MAX_PAD_MS = 10000, TAB_LOST_MS = 3000, TAB_RING_M
 const LEARN_MS = 10000;          // a voice is remembered from the call's names only when one name was highlighted this long over it...
 const LEARN_SHARE = 0.85;        // ...and held this share of everything highlighted over it
 const REMOTE_RESET_MS = 3000;    // ...and past this the channel is closed and reopened instead (an hour of silence is not fed to the recognizer)
+// A speech engine that dies mid-meeting (it holds ~1 GB, the OOM killer's natural choice) is started again after these waits; past
+// MAX_RESTARTS deaths in one recording it is left down and the audio, still saved, is transcribed after Stop.
+const RESTART_BACKOFF_MS = [500, 2000, 5000];
+const MAX_RESTARTS = 5;
+const QUIT_FLUSH_MS = 5000;      // quitting: the flush may take this long; what it did not finish is transcribed at the next start
 
 class RecordingError extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -53,13 +59,15 @@ class RecordingManager {
   // meet: the SignalHub (src/meet/hub.js) the meeting window's readers report to: who is speaking and who is on the call.
   constructor({ notes, engine, models, settings, platform, bus, speakers = null, spoolDir = null, vocabulary = null, diarization = {}, discord = null, meet = null, evidence = null }) {
     Object.assign(this, { notes, engine, models, settings, platform, bus, speakers, spoolDir, vocabulary, diarization, discord, meet, evidence });
-    if (spoolDir) Spool.sweep(spoolDir);
+    // spools a crash or a quit left behind stay (a few days) while their note exists: recoverInterrupted / recoverNote finish them
+    if (spoolDir) Spool.sweep(spoolDir, { keep: (m) => !!m?.noteId && !!this.notes.get(m.noteId) });
     this.active = null;
+    this.restartBackoff = RESTART_BACKOFF_MS;
     this.engine.on('segment', (s) => this.onSegment(s));
     this.engine.on('partial', (p) => this.onPartial(p));
     this.engine.on('draft-off', (e) => { if (this.active) { this.active.draft = { requested: false, on: false, reason: e.reason }; this.bus.publish('recording.warning', { message: `Live draft captions were switched off for this recording: ${e.reason}` }); } });
     this.engine.on('error', (e) => this.bus.publish('recording.warning', { message: e.message }));
-    this.engine.on('exit', (e) => { if (this.active) this.bus.publish('recording.warning', { message: e.message }); });
+    this.engine.on('exit', (e) => this.onEngineExit(e));
     this.engine.on('warning', (e) => { if (this.active) this.bus.publish('recording.warning', { message: e.message }); });
     // The worker holds this recording's VAD buffers: nobody else (dictation, a settings change) may replace it while
     // the recording runs. Their options are kept and applied by the first start() after it stops.
@@ -117,9 +125,12 @@ class RecordingManager {
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
       noteId, chosenApps: apps?.length ? apps : null, reopen: {}, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
-      fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, this.sameVoiceThreshold()), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
+      fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 },
+      refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, this.sameVoiceThreshold()), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
+      done: {}, gapFrom: {}, gaps: {},     // per spooled channel: how far the speech engine got, and what it missed (onEngineExit)
+      restarts: 0, restarting: null,       // the speech engine's restarts in this recording, and the one in progress
       draft: null,                         // { requested, on, reason }: live draft captions for this recording (see applyDraft)
       drafts: { mic: null, system: null }, // the draft line on each channel right now: { startMs, text, shown, echo }. Never stored.
       acoustic: new Map(), describeQueue: [], describing: false, // utterance voice descriptions made while recording (describeSoon)
@@ -413,10 +424,20 @@ class RecordingManager {
     a.spool[ch] = null;
     const s = this.settings.all();
     if (this.spoolDir && this.speakers && s.speakerDetection && (s.speakerDiarize || s.speakerRefine)) {
-      try { a.spool[ch] = new Spool(this.spoolDir, a.noteId, ch); } catch { /* no disk: embeddings alone still work */ }
+      try { a.spool[ch] = new Spool(this.spoolDir, a.noteId, ch, { onError: (e) => this.spoolFailed(a, ch, e) }); } catch { /* no disk: embeddings alone still work */ }
     }
     if (a.spool[ch] && s.speakerDiarize && s.speakerPipeline === 'owned' && !this.diarization.run) this.followSpool(a, ch, s); // an injected diarizer (tests, eval) is the one used
     return a.spool[ch];
+  }
+
+  // The disk refused the saved audio (full, gone): the recording goes on, the person is told once what that costs.
+  spoolFailed(a, ch, e) {
+    if (a.spoolWarned || this.active !== a) return;
+    a.spoolWarned = true;
+    const why = e.code === 'ENOSPC' ? 'the disk is full' : e.code || e.message;
+    const message = `${ch}: the saved audio could not be written (${why}). Transcription goes on, but telling the voices apart after Stop, and recovering anything the speech engine misses, may be incomplete.`;
+    a.warnings.push(message);
+    this.bus.publish('recording.warning', { message });
   }
 
   // The owned diarization pipeline follows the spool while recording (a niced worker, one thread): each 10 s window is
@@ -454,6 +475,10 @@ class RecordingManager {
       a.epoch[ch] = Math.max(0, this.elapsed(a) - Math.round((buf.length / 2 / 16000) * 1000));
       a.base[ch] = spool ? spool.samples : 0; // where this stretch of audio starts in the spool
       a.stretches[ch].push({ at: a.base[ch], ms: a.epoch[ch] });
+      if (spool) {
+        if (a.gapFrom[ch] == null) a.done[ch] = a.base[ch]; // everything before was flushed
+        spool.writeMeta({ stretches: a.stretches[ch] });
+      }
       a.env[ch].begin(a.epoch[ch]);
     }
     a.env[ch].push(buf);
@@ -489,7 +514,7 @@ class RecordingManager {
   // The final text of an utterance: whatever happens to it (saved, dropped as an echo), its draft line is over.
   onSegment(seg) {
     const a = this.active;
-    if (!a) return;
+    if (!a || !(seg.ch in a.fed)) return; // not one of this recording's channels (a stretch transcribed again, an import sharing the worker)
     try { this.saveSegment(a, seg); } finally { this.clearDraft(a, seg.ch); }
   }
 
@@ -516,6 +541,7 @@ class RecordingManager {
     else if (embedding && !remote) a.last[ch] = null; // a voice nobody matched: the next line without a print must not be handed to the speaker before it
     const [saved] = this.notes.addSegments(a.noteId, [{ ...seg, channel: ch, embedding, words, logProbMean, logProbMin }]);
     const spool = a.spool[ch];
+    if (spool && a.gapFrom[ch] == null) a.done[ch] = Math.max(a.done[ch] ?? 0, a.base[ch] + Math.round(endMs * 16));
     if (spool && !spool.broken) {
       const ref = { segId: saved.id, ch, from: a.base[ch] + Math.round(startMs * 16), to: a.base[ch] + Math.round(endMs * 16) };
       a.refs.push(ref);
@@ -601,17 +627,99 @@ class RecordingManager {
 
   // Decode what each channel still holds and close it, so the next audio starts a new stretch. Resume and Stop wait for a
   // settle in progress (a.settling): audio fed into a channel that is about to be reset would be lost, and its times wrong.
-  settle(a) {
+  settle(a, opts = undefined) {
     if (a.settling) return a.settling;
     a.settling = (async () => {
       await Promise.all([...a.remote.values()].map((r) => r.chain)).catch(() => {}); // audio from Discord that is still queued goes in first
       await Promise.all([...Object.keys(a.channels), ...a.remote.keys()].map(async (ch) => {
-        try { await this.engine.flush(ch); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
+        try {
+          await this.engine.flush(ch, opts);
+          if (a.spool[ch] && a.gapFrom[ch] == null) a.done[ch] = a.spool[ch].samples; // all of it decoded
+        } catch (e) {
+          this.bus.publish('recording.warning', { message: e.message });
+          if (a.spool[ch] && a.done[ch] != null && a.gapFrom[ch] == null) a.gapFrom[ch] = a.done[ch]; // the rest is transcribed from the spool
+        }
         this.engine.reset(ch);
         a.fed[ch] = 0;
       }));
     })().finally(() => { a.settling = null; });
     return a.settling;
+  }
+
+  // ---- the speech engine dies mid-meeting ----
+  // Every spooled channel remembers where the worker's work ended (a.done: the end of its last line, or the last flush); from there
+  // to where a new worker takes over is a gap, transcribed from the spool at Stop. The worker is started again, and the channels
+  // start new stretches (their epoch is recomputed), as after a pause. Channels without a spool (Discord people, speaker passes off)
+  // lose what the dead worker held: there is no other copy of that audio.
+  onEngineExit(e) {
+    const a = this.active;
+    if (!a) return;
+    const kept = [];
+    for (const ch of Object.keys(a.spool)) if (a.spool[ch] && a.done[ch] != null && a.gapFrom[ch] == null) { a.gapFrom[ch] = a.done[ch]; kept.push(ch); }
+    for (const ch of ['mic', 'system']) this.clearDraft(a, ch);
+    if (a.finalizing || a.starting) { this.bus.publish('recording.warning', { message: e.message }); return; } // Stop starts it again for the gaps itself
+    a.restarts++;
+    const again = a.restarts <= MAX_RESTARTS;
+    this.bus.publish('recording.warning', { message: `${e.message}. ${again ? 'Restarting it' : 'It keeps stopping, so it is not started again'}${kept.length ? '; what it missed is transcribed from the saved audio after Stop.' : '; the last few seconds may be missing from the transcript.'}` });
+    if (again) this.restartEngine(a);
+  }
+
+  restartEngine(a) {
+    if (a.restarting) return a.restarting;
+    a.restarting = (async () => {
+      let last = null;
+      for (const ms of this.restartBackoff) {
+        if (ms) await new Promise((r) => setTimeout(r, ms));
+        if (this.active !== a || a.finalizing) return false;
+        try { await this.ensureEngine(); } catch (e) { last = e; continue; } // hotwords and drafts come back with it (engine.startLive)
+        if (this.active !== a || a.finalizing) return true; // Stop closes the gaps itself
+        for (const ch of Object.keys(a.fed)) {
+          if (a.gapFrom[ch] != null) this.closeGap(a, ch, a.spool[ch]?.samples ?? 0);
+          a.fed[ch] = 0; // the new worker counts each channel from sample 0: the next audio starts a new stretch
+        }
+        return true;
+      }
+      if (this.active === a) this.bus.publish('recording.warning', { message: `The speech engine could not be started again (${last?.message || 'unknown error'}). The audio is still being saved and is transcribed after Stop.` });
+      return false;
+    })().finally(() => { a.restarting = null; });
+    return a.restarting;
+  }
+
+  closeGap(a, ch, to) {
+    const from = a.gapFrom[ch];
+    a.gapFrom[ch] = null;
+    if (from == null || !(to > from)) return;
+    (a.gaps[ch] ||= []).push({ from, to });
+    a.spool[ch]?.writeMeta({ gaps: a.gaps[ch] });
+    a.done[ch] = to;
+  }
+
+  // The stretches the speech engine missed, transcribed from the spool (Stop, before the speaker pass, which then sees them).
+  // -> false when it could not be done now (the engine does not start): the spool is then kept for a background job.
+  async transcribeGaps(a) {
+    try { await this.ensureEngine(); } catch (e) { this.bus.publish('recording.warning', { message: `transcribing what the speech engine missed: ${e.message}` }); return false; }
+    for (const ch of Object.keys(a.gaps)) {
+      for (const g of a.gaps[ch]) {
+        if (g.done) continue;
+        try {
+          const segs = await transcribePcm(this.engine, a.spool[ch].read(g.from, g.to), { channel: `recover:${ch}` });
+          for (const x of segs) this.saveRecovered(a, ch, g.from, x);
+          g.done = true;
+        } catch (e) { this.bus.publish('recording.warning', { message: `transcribing what the speech engine missed: ${e.message}` }); return false; }
+      }
+    }
+    return true;
+  }
+
+  // One utterance found in a gap (times relative to the gap's start in the spool) -> a line of the transcript, like a live one.
+  saveRecovered(a, ch, from, x) {
+    const seg = placeOnTimeline(ch, from, x, a.stretches[ch]);
+    if (!seg) return;
+    seg.speakerId = this.identify(a, ch, seg, x.embedding);
+    const [saved] = this.notes.addSegments(a.noteId, [seg]);
+    if (a.spool[ch]) a.refs.push({ segId: saved.id, ch, from: from + Math.round(x.startMs * 16), to: from + Math.round(x.endMs * 16) });
+    const d = this.lineLabel(a, seg.speakerId, seg.speaker);
+    this.bus.publish('transcript.segment', { noteId: a.noteId, segment: { id: saved.id, speaker: seg.speaker, speakerId: seg.speakerId, label: d.label, labelKind: d.kind, displayNo: d.n, speakerName: d.kind === 'name' ? d.label : '', startMs: seg.startMs, endMs: seg.endMs, text: seg.text, recovered: true } });
   }
 
   // Stop recording what the user says, and start again, without stopping the meeting: the microphone's audio is replaced by silence
@@ -651,7 +759,9 @@ class RecordingManager {
     return this.status();
   }
 
-  async stop() {
+  // quick: the app is quitting. The note is finished at once (status, end time) and anything long (the speaker pass, stretches the
+  // speech engine missed) is left with its audio for a background job at the next start (recoverNote), instead of racing the quit.
+  async stop({ quick = false } = {}) {
     const a = this.active;
     if (!a) throw new RecordingError('idle', 'No recording in progress.');
     if (a.starting) { // still starting: cancel it (start() closes what it opened) and wait until it has
@@ -669,7 +779,14 @@ class RecordingManager {
     this.leaveDiscord(a);
     if (a.test) { try { const t = a.test.close(); this.bus.publish('recording.speaker-test', { noteId: a.noteId, ...t }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker test: ${e.message}` }); } }
     a.meet?.detach(); // nothing the meeting window shows after Stop belongs to this recording
-    try { await a.settling; await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
+    try { await a.settling; await this.settle(a, quick ? { timeoutMs: QUIT_FLUSH_MS } : undefined); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
+    if (!quick) await a.restarting; // (quitting does not wait out a restart's back-off: the gap is kept for the next start)
+    for (const ch of Object.keys(a.gapFrom)) if (a.gapFrom[ch] != null) this.closeGap(a, ch, a.spool[ch]?.samples ?? 0);
+    let deferred = false;
+    if (Object.values(a.gaps).some((g) => g.length)) {
+      deferred = quick || !(await this.transcribeGaps(a));
+      if (deferred && !quick) this.bus.publish('recording.warning', { message: 'Some of the audio could not be transcribed now: it is kept, and transcribed in the background.' });
+    }
     if (this.speakers) {
       const s = this.settings.all();
       const threshold = this.sameVoiceThreshold();
@@ -678,17 +795,18 @@ class RecordingManager {
       if (a.refs.length) {
         a.stage = 'speakers';
         this.bus.publish('recording.finalizing', { noteId: a.noteId, stage: a.stage });
-        if (s.speakerDiarize) diarized = await this.diarize(a, s);
+        if (s.speakerDiarize && quick && this.models.segmentationInstalled?.() && this.models.speakerInstalled?.()) deferred = true; // recoverNote runs it
+        else if (s.speakerDiarize) diarized = await this.diarize(a, s);
         // the owned pipeline does not over-split like sherpa's clustering, which the acoustic pass is there to repair; on AMI IS1009a it
         // joined two real people (WDER 17.3 -> 31.4, eval/README.md), so it is skipped for channels the owned pipeline diarized
-        if (s.speakerRefine && !(s.speakerPipeline === 'owned' && diarized.length)) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
+        if (s.speakerRefine && !quick && !(s.speakerPipeline === 'owned' && diarized.length)) { // acoustic second look (pitch, timbre): merges speakers the clustering over-split, see eval/README.md
           try { await refineNote({ speakers: this.speakers, noteId: a.noteId, refs: a.refs, read: (ch, from, to) => a.spool[ch]?.read(from, to) ?? null, threshold, settled: [...a.settled], described: a.acoustic }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker analysis: ${e.message}` }); }
         }
       }
       try { const open = ['mic', 'system'].filter((ch) => !diarized.includes(ch)); this.speakers.consolidate(a.noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(a.noteId, threshold, { channels: [...open, ...(a.keptLive || [])] }); this.speakers.autoMatch(a.noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
       if (a.meet) this.nameFromMeeting(a, s); // last: it must not overrule a saved voice the speaker was just matched to
     }
-    this.closeSpools(a);
+    this.closeSpools(a, { keep: deferred });
     this.active = null;
     this.bus.live?.delete(a.noteId); // the voices are final now: all of them are shown
     Promise.resolve(this.engine.releaseHotwords?.()).catch(() => {}); // the next recording brings its own words
@@ -697,8 +815,8 @@ class RecordingManager {
     this.notes.reindex(a.noteId);
     const call = a.meet?.call();
     if (call) this.bus.publish('recording.call', { noteId: a.noteId, ...call });   // which platform the call was on, for what is fetched from it afterwards
-    this.bus.publish('recording.stopped', { noteId: a.noteId, durationMs: a.accMs });
-    return { noteId: a.noteId, durationMs: a.accMs, note };
+    this.bus.publish('recording.stopped', { noteId: a.noteId, durationMs: a.accMs, ...(deferred ? { deferred: true } : {}) });
+    return { noteId: a.noteId, durationMs: a.accMs, note, ...(deferred ? { deferred: true } : {}) };
   }
 
   // The voice model before the current one, when saved voices made with it exist and it is still installed: the speakers' prints are
@@ -820,6 +938,88 @@ class RecordingManager {
     return out;
   }
 
+  // ---- after a crash or a quit ----
+  // Notes a crash left 'recording' become ordinary notes: done, ended at their last line, marked interrupted (an evidence row, so
+  // it is on record without a new status the rest of the app would not know). -> [{ noteId, interrupted }] for every note to hand
+  // to recoverNote: those, and those whose audio a quit or a failure kept on disk.
+  recoverInterrupted() {
+    const out = new Map();
+    const now = Date.now();
+    for (const { id } of this.notes.db.prepare("SELECT id FROM notes WHERE status = 'recording'").all()) {
+      if (this.active?.noteId === id) continue;
+      const note = this.notes.get(id);
+      const lastEnd = this.notes.segments(id).reduce((m, x) => Math.max(m, x.endMs), 0);
+      const t0 = note.startedAt || note.createdAt;
+      this.notes.update(id, { status: 'done', endedAt: Math.min(now, lastEnd ? t0 + lastEnd : (note.updatedAt || t0)) });
+      try { this.evidence?.add(id, [{ kind: 'stream', source: 'recorder', key: 'interrupted', name: '', t0: lastEnd, weight: 0, meta: { reason: 'the app stopped while recording (a crash or a forced quit); the note was finished at the next start' } }]); } catch { /* a record only */ }
+      out.set(id, { noteId: id, interrupted: true });
+    }
+    if (this.spoolDir) for (const l of Spool.leftovers(this.spoolDir)) if (!out.has(l.meta.noteId) && this.notes.get(l.meta.noteId) && this.active?.noteId !== l.meta.noteId) out.set(l.meta.noteId, { noteId: l.meta.noteId, interrupted: false });
+    return [...out.values()];
+  }
+
+  // Finish a recording from the audio left on disk (a background job): transcribe what the speech engine never decoded (the gaps it
+  // recorded, or after a crash everything after the channel's last line), then the speaker pass Stop would have run. A spool is
+  // deleted once done and kept (for the next start, within Spool's age limit) when the speech engine cannot run.
+  // -> { transcribed (lines added), diarized (channels), kept (spools left) }
+  async recoverNote(noteId) {
+    const out = { transcribed: 0, diarized: 0, kept: 0 };
+    if (!this.spoolDir || !this.notes.get(noteId)) return out;
+    const busy = new Set(Object.values(this.active?.spool || {}).filter(Boolean).map((sp) => sp.file));
+    const left = Spool.leftovers(this.spoolDir).filter((l) => l.meta.noteId === noteId && !busy.has(l.file));
+    if (!left.length) return out;
+    const s = this.settings.all();
+    const m = this.models;
+    const done = [];
+    for (const l of left) {
+      let sp;
+      try { sp = Spool.attach(l.file); } catch { continue; }
+      const ch = sp.meta.channel, stretches = sp.meta.stretches || [];
+      const speaker = SPEAKER[ch] || 'them';
+      const mine = () => this.notes.segments(noteId).filter((x) => x.channel === ch && stretches.length && x.startMs >= stretches[0].ms - 1);
+      const gaps = [...(sp.meta.gaps || [])];
+      if (sp.meta.state !== 'deferred') { // a crash: the engine got as far as the channel's last line, nobody knows more
+        const lastEnd = mine().reduce((x, y) => Math.max(x, y.endMs), -1);
+        const from = lastEnd < 0 ? (stretches[0]?.at ?? 0) : spoolAt(stretches, lastEnd);
+        if (sp.samples - from > 1600) gaps.push({ from, to: sp.samples });
+      }
+      let ok = true;
+      const remaining = [];
+      for (const g of gaps) {
+        if (!ok) { remaining.push(g); continue; }
+        try {
+          await this.ensureEngine('batch');
+          const segs = await transcribePcm(this.engine, sp.read(g.from, g.to), { channel: `recover:${ch}` });
+          const rows = segs.map((x) => placeOnTimeline(ch, g.from, x, stretches)).filter(Boolean).map((r) => ({ ...r, speaker }));
+          if (rows.length) this.notes.addSegments(noteId, rows);
+          out.transcribed += rows.length;
+        } catch (e) { ok = false; remaining.push(g); this.bus.publish('recording.warning', { message: `finishing an interrupted recording: ${e.message}` }); }
+      }
+      if (ok && this.speakers && s.speakerDetection && s.speakerDiarize && ['mic', 'system'].includes(ch) && m.segmentationInstalled?.() && m.speakerInstalled?.()) {
+        try {
+          const note = this.notes.get(noteId);
+          const told = ch === 'system' && note?.speakerCount ? { numSpeakers: note.speakerCount } : null;
+          const expected = told ? null : expectedSpeakers({ attendees: s.speakerCountHint ? note?.attendees : null, channel: ch });
+          const alt = this.altVoiceModel();
+          const r = await diarizeChannel({
+            diarize: s.speakerPipeline === 'owned' && !this.diarization.run ? diarizeOwned : this.diarization.run,
+            notes: this.notes, speakers: this.speakers, noteId, channel: ch, source: { file: sp.file }, stretches, segIds: mine().map((x) => x.id),
+            segmentation: m.segmentationPath(), embedding: m.speakerPath(), altEmbedding: alt?.path, altModel: alt?.id, threads: s.asrThreads,
+            options: { ...(expected ? { expected } : {}), ...told, ...this.diarization },
+          });
+          if (r && !r.collapsed) { out.diarized++; done.push(ch); }
+        } catch (e) { this.bus.publish('recording.warning', { message: `speaker diarization (${ch}): ${e.message}` }); }
+      }
+      if (ok) sp.close();
+      else { out.kept++; sp.keep({ gaps: remaining }); }
+    }
+    if (this.speakers && s.speakerDetection) {
+      try { const threshold = this.sameVoiceThreshold(); const open = ['mic', 'system'].filter((ch) => !done.includes(ch)); this.speakers.consolidate(noteId, threshold, { channels: open }); this.speakers.placeUnlabelled(noteId, threshold, { channels: ['mic', 'system'] }); this.speakers.autoMatch(noteId); } catch (e) { this.bus.publish('recording.warning', { message: `speaker identification: ${e.message}` }); }
+    }
+    if (out.transcribed || out.diarized) { this.notes.reindex(noteId); this.bus.publish('speakers.updated', { noteId }); }
+    return out;
+  }
+
   // ---- Discord ----
   // Joins the voice channel you are in, if the bot is set up and you are in one. Never stops a recording: when it cannot
   // join, the ordinary system audio carries the call as before. -> true when the bot is in the call.
@@ -890,9 +1090,12 @@ class RecordingManager {
     this.onPcm(a, ch, pcm);
   }
 
-  closeSpools(a) {
+  // keep: the audio is still needed (recoverNote): left on disk with what is known about it.
+  closeSpools(a, { keep = false } = {}) {
     for (const l of Object.values(a.live || {})) { try { l?.stop(); } catch { /* gone */ } }
-    for (const sp of Object.values(a.spool)) { try { sp?.close(); } catch { /* best effort */ } }
+    for (const [ch, sp] of Object.entries(a.spool)) {
+      try { if (keep && sp && !sp.broken) sp.keep({ stretches: a.stretches[ch] || [], gaps: (a.gaps[ch] || []).filter((g) => !g.done).map(({ from, to }) => ({ from, to })) }); else sp?.close(); } catch { /* best effort */ }
+    }
   }
 
   closeTab(a) {
@@ -904,6 +1107,23 @@ class RecordingManager {
   }
 
   teardown(a) { this.closeTab(a); for (const src of Object.values(a.channels)) { try { src.stop(); } catch { /* ignore */ } } this.leaveDiscord(a); try { a.test?.close(); } catch { /* best effort */ } a.meet?.detach(); this.closeSpools(a); }
+}
+
+// An utterance transcribed from a stretch of spool (x: times relative to `from`, in samples of the spool) -> a segment on the note's
+// timeline, through the stretches that say where each part of the spool sits on it. null when the spool has no stretches.
+function placeOnTimeline(ch, from, x, stretches) {
+  const pieces = toTimeline([{ start: (from + Math.round(x.startMs * 16)) / 16000, end: (from + Math.round(x.endMs * 16)) / 16000, speaker: 0 }], stretches || []);
+  if (!pieces.length) return null;
+  return { speaker: SPEAKER[ch] || 'them', startMs: pieces[0].startMs, endMs: pieces.at(-1).endMs, text: x.text, channel: ch, embedding: x.embedding || null, words: x.words || null, logProbMean: x.logProbMean ?? null, logProbMin: x.logProbMin ?? null };
+}
+
+// Where a moment of the timeline (ms) is in the spool: the inverse of toTimeline, clamped to its stretch.
+function spoolAt(stretches, ms) {
+  const st = [...stretches].sort((x, y) => x.at - y.at);
+  let k = 0;
+  for (let i = 0; i < st.length; i++) if (st[i].ms <= ms) k = i;
+  const end = k + 1 < st.length ? st[k + 1].at : Infinity;
+  return Math.min(end, st[k].at + Math.max(0, Math.round((ms - st[k].ms) * 16)));
 }
 
 module.exports = { RecordingManager, RecordingError };

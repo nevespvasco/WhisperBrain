@@ -159,11 +159,21 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     if (settings.get('autoAssertions') && ai.configured()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
     return null;
   });
+  // A recording a crash, a quit or a dead speech engine left unfinished: its kept audio is transcribed and its speakers worked out
+  // (RecordingManager.recoverNote), then the usual chain runs when the note was never analysed or the recovery changed it.
+  runner.register('recording.recover', async ({ noteId, analyse }, { enqueue }) => {
+    if (!notes.get(noteId)) return { skipped: 'deleted' };
+    const r = await recording.recoverNote(noteId);
+    if (analyse || r.transcribed || r.diarized) enqueue('note.names', { noteId }, { key: noteId });
+    return r;
+  });
   bus.subscribe((e) => {
     if (e.type !== 'recording.stopped') return;
     if (!notes.get(e.data.noteId)) return;
-    runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
+    if (e.data.deferred) runner.enqueue('recording.recover', { noteId: e.data.noteId, analyse: true }, { key: e.data.noteId });
+    else runner.enqueue('note.names', { noteId: e.data.noteId }, { key: e.data.noteId });
   });
+  for (const { noteId, interrupted } of recording.recoverInterrupted()) runner.enqueue('recording.recover', { noteId, analyse: interrupted }, { key: noteId });
 
   // Decisions, commitments, reminders, the brief before a meeting and the Inbox (src/brain). The AI only ever SUGGESTS: each finding
   // carries the exact words it rests on, checked in code against the transcript, and waits for a person.
