@@ -89,7 +89,7 @@ class Translator {
 
   async ask(rows, lang, before, signal) {
     const items = rows.map((r, i) => ({ n: i + 1, text: r.text }));
-    const reply = await this.oneAtATime(() => this.llm.complete(translateMessages({ language: lang, items, before }), { temperature: 0.1, signal }));
+    const reply = await this.oneAtATime(() => this.llm.complete(translateMessages({ language: lang, items, before }), { temperature: 0.1, signal, reasoning: 'off' }));
     const got = parseTranslations(reply, items.map((i) => i.n));
     return new Map(items.filter((i) => got.has(i.n)).map((i) => [rows[i.n - 1].id, got.get(i.n)]));
   }

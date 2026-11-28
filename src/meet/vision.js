@@ -68,7 +68,7 @@ class VisionSource {
       const text = await this.llm.complete([{ role: 'user', content: [
         { type: 'text', text: ASK(this.userName(), [...this.known]) },
         { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${frame.jpeg.toString('base64')}` } },
-      ] }], { temperature: 0, maxTokens: 300 });
+      ] }], { temperature: 0, maxTokens: 300, reasoning: 'off', live: true });   // live: the meeting in progress, read even while the assistant holds background work
       const a = parseAnswer(text);
       if (!a) {
         if (++this.failures >= this.maxFailures) { this.hub.report(SOURCE, { kind: 'vision', state: 'error', detail: 'The model does not answer as asked. Is it a model that can see pictures?' }); this.failures = 0; }

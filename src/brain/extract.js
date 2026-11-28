@@ -68,7 +68,7 @@ async function extractAssertions(deps, noteId, { signal } = {}) {
     n++;
     const body = win.map((l) => `[${l.id} ${clock(l.seg.startMs)}] ${neutralizeTags(l.label)}: ${neutralizeTags(l.text)}`).join('\n');
     let reply;
-    try { reply = await llm.complete([{ role: 'system', content: SYSTEM }, { role: 'user', content: `<transcript>\n${body}\n</transcript>` }], { signal, temperature: 0.1, maxTokens: 1200 }); } catch (e) { if (e.name === 'AbortError') throw e; dropped++; continue; }
+    try { reply = await llm.complete([{ role: 'system', content: SYSTEM }, { role: 'user', content: `<transcript>\n${body}\n</transcript>` }], { signal, temperature: 0.1, maxTokens: 1200, reasoning: 'off' }); } catch (e) { if (e.name === 'AbortError') throw e; dropped++; continue; }
     let items;
     try { items = extractJson(reply)?.items; } catch { items = null; }
     if (!Array.isArray(items)) { dropped++; continue; }
