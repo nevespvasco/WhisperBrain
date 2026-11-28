@@ -16,6 +16,17 @@ function testModels() {
   return m;
 }
 
-function tmpDir(prefix = 'wb-') { return fs.mkdtempSync(path.join(os.tmpdir(), prefix)); }
+// A fresh folder under the system temp dir. It is removed when the test passed as `t` ends, and in any case when this test
+// file's process exits (node --test runs each file in its own process), so test runs do not pile folders up in /tmp.
+// WB_KEEP_TMP=1 keeps them, to look at after a failure.
+const made = new Set();
+const rm = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* still in use on Windows: the OS cleans up */ } made.delete(d); };
+process.on('exit', () => { if (process.env.WB_KEEP_TMP !== '1') for (const d of made) rm(d); });
+function tmpDir(prefix = 'wb-', t = null) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  made.add(d);
+  if (t && process.env.WB_KEEP_TMP !== '1') t.after(() => rm(d));
+  return d;
+}
 
 module.exports = { ROOT, testModels, tmpDir, fixture: (n) => path.join(__dirname, 'fixtures', n) };

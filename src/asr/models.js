@@ -1,6 +1,7 @@
 'use strict';
-// Model catalog + installer. Models are public k2-fsa/sherpa-onnx release archives. Each archive is
-// verified against a pinned SHA-256 before it is extracted.
+// Model catalog + installer. Models are public k2-fsa/sherpa-onnx release archives. An archive with a pinned SHA-256 is
+// checked against it before it is extracted. The Whisper archives have none yet (sha256: null, see TODO(sha256) below): they
+// are installed unverified, with a warning in the log that gives the digest received so it can be pinned.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -194,6 +195,7 @@ class Models {
       const archive = path.join(tmp, 'model.tar.bz2');
       const sha = await download(m.url, archive, { signal: ctl.abort.signal, onProgress: report });
       if (m.sha256 && sha !== m.sha256) throw new Error(`checksum mismatch for ${id}: got ${sha}`);
+      if (!m.sha256) console.warn(`models: ${id} has no pinned checksum, so its archive was not verified (sha256 ${sha} from ${m.url})`);
       await untar(archive, tmp);
       fs.rmSync(archive);
       const root = fs.readdirSync(tmp).map((n) => path.join(tmp, n)).find((p) => fs.statSync(p).isDirectory());

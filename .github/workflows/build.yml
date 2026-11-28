@@ -3,13 +3,26 @@ on:
   push: { branches: [main] }
   pull_request:
   workflow_dispatch:
+    inputs:
+      ref: { description: 'Commit, branch or tag to test (empty: the branch picked above)', type: string, required: false, default: '' }
+      tests_only: { description: 'Run the tests only, not the native helpers and installers', type: boolean, required: false, default: false }
+  # The release workflow runs these tests on the tagged commit before it builds anything (tests_only skips the builds here).
+  workflow_call:
+    inputs:
+      ref: { description: 'Commit, branch or tag to test (empty: the one that triggered the run)', type: string, required: false, default: '' }
+      tests_only: { description: 'Run the tests only, not the native helpers and installers', type: boolean, required: false, default: false }
+
+# Read-only token everywhere: nothing here publishes. Third-party actions are pinned by commit (Dependabot proposes updates).
+permissions:
+  contents: read
 
 jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ inputs.ref }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: npm }
       # Ubuntu 24.04 blocks unprivileged user namespaces, which Chromium-based browsers need to start (the live browser tests)
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -17,13 +30,25 @@ jobs:
       - run: npm ci
       - run: npm run build:x11
       - run: npm run build:atspi
-      # Hardware/model integration tests skip themselves when PipeWire or a speech model is absent.
-      - run: node scripts/fetch-models.js parakeet-tdt-110m-en
+      # Minimal static check (undefined names fail, unused variables warn): pinned ESLint through npx, no devDependency.
+      - run: npm run lint
+      # Speech and speaker models, kept between runs. The key follows the catalog (URLs and pinned SHA-256 in src/asr/models.js):
+      # a changed model downloads again. Bump the -v suffix when the list fetched below changes.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .models
+          key: models-${{ runner.os }}-${{ hashFiles('src/asr/models.js') }}-v1
+      # Hardware/model integration tests skip themselves when PipeWire or a speech model is absent. parakeet-tdt-0.6b-v3 carries the
+      # sample voices (test_wavs) the speaker tests play: with it the owned diarization, overlap, real-voice speaker and import tests
+      # run here instead of skipping (about 1 min on a 32-core machine). The voice (CAM++) and segmentation models come with them.
+      - run: node scripts/fetch-models.js parakeet-tdt-110m-en parakeet-tdt-0.6b-v3
       # The live browser tests need a browser that can load an extension from the command line and expose its tree to AT-SPI.
       # Google's branded Chrome stopped loading --load-extension (version 137); Chrome for Testing is the build made for automation.
+      # Pinned (tool and browser), so a new Chrome cannot break CI unannounced. Dependabot does not see these two numbers: bump them
+      # by hand (googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json).
       - name: Chrome for Testing (for the live browser tests)
         run: |
-          npx --yes @puppeteer/browsers install chrome@stable --path "$RUNNER_TEMP/cft"
+          npx --yes @puppeteer/browsers@3.3.0 install chrome@158.0.8127.88 --path "$RUNNER_TEMP/cft"
           BIN="$(find "$RUNNER_TEMP/cft" -name chrome -type f | head -1)"
           echo "browser: $BIN"; "$BIN" --version
           echo "WB_BROWSER_BIN=$BIN" >> "$GITHUB_ENV"
@@ -33,8 +58,9 @@ jobs:
   test-macos:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ inputs.ref }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: npm }
       - run: npm ci
       - run: node --test --test-concurrency=1 test/assistant-*.test.js test/briefings.test.js test/llm-scheduler.test.js test/eval-assistant.test.js test/float.test.js test/llm.test.js
@@ -43,6 +69,7 @@ jobs:
   # compile (macOS) and load (Windows) them here, so a mistake shows up early. It runs beside the installers and does not
   # hold them back (the macOS installer job builds the helper too, so a mistake there still shows up in that job).
   native:
+    if: ${{ !inputs.tests_only }}
     strategy:
       fail-fast: false
       matrix:
@@ -51,8 +78,9 @@ jobs:
           - { os: windows-latest, run: 'powershell -NoProfile -ExecutionPolicy Bypass -File native/windows/whisperbrain-uia.ps1 -Mode selftest' }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ inputs.ref }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24 }
       - run: ${{ matrix.run }}
       - if: runner.os == 'macOS'
@@ -79,6 +107,7 @@ jobs:
           exit 0
 
   dist:
+    if: ${{ !inputs.tests_only }}
     needs: test
     strategy:
       fail-fast: false
@@ -90,23 +119,46 @@ jobs:
           - { os: windows-latest, script: dist:win, artifact: windows }
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { ref: '${{ inputs.ref }}', persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: 24, cache: npm }
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libxtst-dev libatspi2.0-dev xvfb
       - run: npm ci
       # Each OS builds its own installer so npm installs the matching sherpa-onnx native package.
       - run: npm run ${{ matrix.script }}
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"   # unsigned builds; set signing secrets to enable
-      # The built app must start, serve its UI (meeting assistant included) and open the floating window: WB_SMOKE=1 does that and exits
+      # A small speech model for the smoke test below: with WB_SMOKE_MODELS the packaged app also starts its speech worker
+      # (ELECTRON_RUN_AS_NODE from inside app.asar, with the Electron fuses flipped) and transcribes a sample. Not on Windows yet.
+      - if: runner.os != 'Windows'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .models
+          key: models-smoke-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src/asr/models.js') }}-v1
+      - if: runner.os != 'Windows'
+        run: node scripts/fetch-models.js parakeet-tdt-110m-en
+      # The built app must start, serve its UI (meeting assistant included) and open the floating window: WB_SMOKE=1 does that and exits.
+      # The sample is passed in: the packaged app does not carry test/.
+      - if: runner.os == 'Linux'
+        run: WB_SMOKE=1 WB_SMOKE_MODELS="$PWD/.models" WB_SMOKE_WAV="$PWD/test/fixtures/hello.wav" WB_USER_DATA="$RUNNER_TEMP/wb-smoke" xvfb-run -a dist/linux-unpacked/whisperbrain --no-sandbox --disable-gpu | tee smoke.log && grep -q SMOKE_OK smoke.log
       - if: runner.os == 'macOS'
         run: |
           APP="$(find dist -maxdepth 2 -name 'WhisperBrain.app' | head -1)"
-          WB_SMOKE=1 WB_USER_DATA="$RUNNER_TEMP/wb-smoke" "$APP/Contents/MacOS/WhisperBrain" | tee smoke.log
+          WB_SMOKE=1 WB_SMOKE_MODELS="$PWD/.models" WB_SMOKE_WAV="$PWD/test/fixtures/hello.wav" WB_USER_DATA="$RUNNER_TEMP/wb-smoke" "$APP/Contents/MacOS/WhisperBrain" | tee smoke.log
           grep -q SMOKE_OK smoke.log
-      - uses: actions/upload-artifact@v4
+      # Windows: a GUI program's console output does not reach the step, so the result is read from the app's own log.
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 10
+        run: |
+          $env:WB_SMOKE = '1'; $env:WB_USER_DATA = "$env:RUNNER_TEMP\wb-smoke"
+          Start-Process -FilePath 'dist\win-unpacked\WhisperBrain.exe' -ArgumentList '--disable-gpu' -Wait
+          $log = Get-Content "$env:WB_USER_DATA\logs\app.log" -Raw
+          $log
+          if ($log -notmatch 'SMOKE_OK') { throw 'smoke test failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: whisperbrain-${{ matrix.artifact }}
           path: |

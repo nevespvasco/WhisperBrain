@@ -305,16 +305,17 @@ Only three things differ per OS; everything else is shared code.
 | [Integrations](docs/integrations.md) | Google Calendar, Notion, Linear, Discord, Obsidian, webhooks |
 | [Packaging](docs/packaging.md) | Signing, notarization, database at rest |
 | [Plans](docs/plans.md) | Speaker-ID and translation plans and what was built |
-| [Testing](docs/testing.md) | What the 700+ tests cover |
+| [Testing](docs/testing.md) | What the tests cover, and what skips where |
 
 ## Development
 
 ```bash
-npm test                        # 700+ tests, using real models and devices when present
+npm test                        # about 1,200 tests, using real models and devices when present
+npm run lint                    # undefined names (errors) and unused variables (warnings)
 node scripts/fetch-models.js    # fetch the test models into ./.models
 ```
 
-Tests that need a model or a device skip themselves when it is missing. [docs/testing.md](docs/testing.md) lists what is covered.
+Tests that need a model or a device skip themselves when it is missing. [docs/testing.md](docs/testing.md) lists what is covered. See [CONTRIBUTING.md](CONTRIBUTING.md) to work on it, and [SECURITY.md](SECURITY.md) to report a vulnerability.
 
 ## Acknowledgements
 

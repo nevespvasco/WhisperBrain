@@ -1,0 +1,47 @@
+name: nightly
+# The speaker-attribution evaluation (eval/README.md) on public data, once a night and by hand: libri-call, a call built from
+# LibriSpeech dev-clean (CC BY 4.0), played through the real recording pipeline and scored with WDER / cpWER / tcpWER / DER.
+# It does not pass or fail on the scores yet: the repository has no machine-readable baseline (the tables in eval/README.md were
+# made with earlier defaults). The report is kept as an artifact so runs can be compared; add thresholds once a baseline is stored.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  speaker-eval:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { persist-credentials: false }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with: { node-version: 24, cache: npm }
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: npm ci
+      # the same cache as the test job in build.yml (speech, voice and segmentation models)
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .models
+          key: models-${{ runner.os }}-${{ hashFiles('src/asr/models.js') }}-v1
+      - run: node scripts/fetch-models.js parakeet-tdt-110m-en parakeet-tdt-0.6b-v3
+      # LibriSpeech dev-clean (337 MB) does not change: downloaded once, then kept
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: .eval/dl/dev-clean.tar.gz
+          key: librispeech-dev-clean-v1
+      - run: mkdir -p .eval/dl && node eval/prepare.js --ami ''
+      # online = the live pass alone; diarize+refine = sherpa's diarization; owned+refine = what the app ships (settings defaults)
+      - run: mkdir -p .eval/results && node eval/run.js --only libri-call --configs online,diarize+refine,owned+refine 2>&1 | tee .eval/results/run.log
+        shell: bash   # -o pipefail: a failed run fails the step despite tee
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: speaker-eval-${{ github.run_id }}
+          path: .eval/results/
+          if-no-files-found: warn
+          retention-days: 90
+

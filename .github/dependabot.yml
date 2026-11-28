@@ -1,0 +1,19 @@
+# Weekly update proposals (pull requests): npm packages, and the GitHub Actions pinned by commit in .github/workflows.
+# Electron and electron-builder come together, since a new Electron often needs a matching electron-builder.
+# Not covered: the Chrome for Testing and @puppeteer/browsers versions pinned in build.yml (bump by hand) and the ESLint
+# version in package.json's lint script.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      electron:
+        patterns: ['electron', 'electron-builder', 'electron-updater']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      actions:
+        patterns: ['*']

@@ -4,11 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
 const fs = require('node:fs');
-const os = require('node:os');
+const { tmpDir } = require('./helpers');
 const path = require('node:path');
 const { DiscordRpc, socketPaths, encode, Decoder, OP } = require('../src/discord/rpc');
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'wb-rpc-'));
+const tmp = () => tmpDir('wb-rpc-'); // removed when this file's tests end (test/helpers.js)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function until(fn, ms = 2000) { const t = Date.now(); while (Date.now() - t < ms) { const v = await fn(); if (v) return v; await wait(10); } throw new Error('timed out waiting'); }
 
