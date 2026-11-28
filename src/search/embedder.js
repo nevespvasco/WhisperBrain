@@ -7,7 +7,13 @@ const BATCH = 16;
 
 class LlmEmbedder {
   // getConfig: () => settings.llm ({ baseUrl, apiKey }); getModel: () => the embedding model name ('' = off)
-  constructor({ getConfig, getModel, fetchImpl = globalThis.fetch, timeoutMs = 60_000 }) { Object.assign(this, { getConfig, getModel, fetch: fetchImpl, timeoutMs }); }
+  // onRun: called after every request like the AI queue's (lane 'embedding'): the egress ledger, src/audit/ai-runs.js. Never the text.
+  constructor({ getConfig, getModel, fetchImpl = globalThis.fetch, timeoutMs = 60_000, onRun = null }) { Object.assign(this, { getConfig, getModel, fetch: fetchImpl, timeoutMs, onRun }); }
+
+  record(cfg, model, part, t0, error) {
+    if (!this.onRun) return;
+    try { this.onRun({ lane: 'embedding', config: { baseUrl: cfg.baseUrl, model }, messages: part.map((content) => ({ content: String(content ?? '') })), charsOut: 0, ms: Date.now() - t0, ok: !error, error: error ? error.message : null }); } catch { /* the ledger never breaks a request */ }
+  }
 
   model() { return String(this.getModel() || '').trim(); }
   configured() { return !!this.model() && !!String(this.getConfig()?.baseUrl || '').trim(); }
@@ -15,22 +21,27 @@ class LlmEmbedder {
   async embed(texts) {
     if (!this.configured()) throw new Error('No embedding model is set (Settings → AI).');
     const cfg = this.getConfig();
+    const model = this.model();
     const url = `${String(cfg.baseUrl).trim().replace(/\/+$/, '')}/embeddings`;
     const out = [];
     for (let i = 0; i < texts.length; i += BATCH) {
       const part = texts.slice(i, i + BATCH);
-      let res;
+      const t0 = Date.now();
       try {
-        res = await this.fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) }, body: JSON.stringify({ model: this.model(), input: part }), signal: AbortSignal.timeout(this.timeoutMs) });
-      } catch (e) { throw new Error(`Cannot reach the embedding server (${e.cause?.code || e.message}).`); }
-      if (!res.ok) {
-        let detail = ''; try { const j = await res.json(); detail = j.error?.message || j.error || ''; } catch { /* not json */ }
-        throw new Error(`Embedding request failed (${res.status})${detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
-      }
-      const json = await res.json();
-      const rows = (json.data || []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
-      if (rows.length !== part.length) throw new Error('The embedding server returned the wrong number of vectors.');
-      for (const r of rows) out.push(unit(r.embedding));
+        let res;
+        try {
+          res = await this.fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}) }, body: JSON.stringify({ model, input: part }), signal: AbortSignal.timeout(this.timeoutMs) });
+        } catch (e) { throw new Error(`Cannot reach the embedding server (${e.cause?.code || e.message}).`); }
+        if (!res.ok) {
+          let detail = ''; try { const j = await res.json(); detail = j.error?.message || j.error || ''; } catch { /* not json */ }
+          throw new Error(`Embedding request failed (${res.status})${detail ? `: ${typeof detail === 'string' ? detail : JSON.stringify(detail)}` : ''}`);
+        }
+        const json = await res.json();
+        const rows = (json.data || []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+        if (rows.length !== part.length) throw new Error('The embedding server returned the wrong number of vectors.');
+        for (const r of rows) out.push(unit(r.embedding));
+        this.record(cfg, model, part, t0, null);
+      } catch (e) { this.record(cfg, model, part, t0, e); throw e; }
     }
     return out;
   }

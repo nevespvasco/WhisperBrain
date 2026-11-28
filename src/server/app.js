@@ -187,7 +187,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const tick = () => new Promise((r) => setImmediate(r));
 
   // The search index over meetings and items (src/search/index.js): words always, meaning when an embedding model is set.
-  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel') });
+  const embedder = new LlmEmbedder({ getConfig: () => settings.get('llm'), getModel: () => settings.get('embeddingModel'), onRun: (r) => aiRuns.record(r) });   // in the egress ledger too
   const chunkIndex = new ChunkIndex({ db: conn, notes, items, embedder });
   account.chunkIndex = chunkIndex; account.dbFile = path.join(dataDir, 'whisperbrain.sqlite');
   // What may be shown to the AI server in use (src/access/grants.js): an item by its own and its source's grant, a meeting by the

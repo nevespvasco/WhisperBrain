@@ -97,11 +97,12 @@ class LlmClient {
   // idleMs / firstByteMs: see IDLE_MS. onStart(): the request is under way (the scheduler calls it when a slot is granted instead).
   // onProgress(): every chunk the server sends, thinking included, so a caller's own "has it started?" timer can tell a model that
   // thinks from one that is stuck. onFinish(reason): the server's finish_reason at the end ('length': the reply hit maxTokens, so
-  // JSON in it may be cut off).
-  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning, idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onStart, onProgress, onFinish } = {}) {
+  // JSON in it may be cut off). onModel(model): the model asked for, once resolved (the setting may be empty: the server's first).
+  async *stream(messages, { signal, temperature, maxTokens, frequencyPenalty, reasoning, idleMs = IDLE_MS, firstByteMs = FIRST_BYTE_MS, onStart, onProgress, onFinish, onModel } = {}) {
     onStart?.();
     const cfg = this.getConfig();
     const model = await this.resolveModel(cfg, { signal });
+    try { onModel?.(model); } catch { /* a caller's hook */ }
     const ollama = LlmClient.isOllama(cfg);
     // Always cap the reply: a small local model can fall into a repeat loop, and without a cap Ollama keeps
     // generating forever (it shifts the context), holding its single slot so every later request waits.

@@ -418,3 +418,16 @@ test('onStart is called when the slot is granted, not when the request is queued
   assert.equal(started, 1);
   assert.equal(llm.calls[1].opts.onStart, undefined, 'not handed on to the client as well');
 });
+
+test('the ledger records the server and the model a request went to, read when it got its slot (not at the end), with the model resolved', async () => {
+  const runs = [];
+  let cfg = { baseUrl: 'http://127.0.0.1:11434/v1', model: '' };
+  const llm = {
+    getConfig: () => cfg,
+    async *stream(messages, opts) { opts.onModel?.('llama3.2'); cfg = { baseUrl: 'https://elsewhere.example/v1', model: 'other' }; yield 'x'; },
+  };
+  const s = new LlmScheduler(llm, { concurrency: 1, onRun: (r) => runs.push(r) });
+  assert.equal(await s.client('chat').complete(ask('q')), 'x');
+  assert.equal(runs[0].config.baseUrl, 'http://127.0.0.1:11434/v1', 'the server it was sent to, though the setting changed meanwhile');
+  assert.equal(runs[0].config.model, 'llama3.2', 'the model the server was asked for, not an empty setting');
+});

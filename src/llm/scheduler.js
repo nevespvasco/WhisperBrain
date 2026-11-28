@@ -80,10 +80,13 @@ class LlmScheduler {
       for (let requeue = false; ; requeue = true) {
         const slot = await scheduler.acquire(priority, { signal, key, preemptible, live, requeue });
         try { onStart?.(); } catch { /* a caller's hook never breaks the request */ }
+        // the ledger: where the request goes, read now (the settings may change before it ends), and the model the client resolved
+        const config = llm.getConfig() || {};
+        let model = config.model || '';
         const t0 = Date.now();
         let charsOut = 0, ok = true, error = null, again = false;
         try {
-          for await (const d of llm.stream(messages, { ...opts, signal: slot.signal })) {
+          for await (const d of llm.stream(messages, { ...opts, signal: slot.signal, onModel: (m) => { model = m; } })) {
             if (!charsOut && !whole) {
               if (slot.preempted) throw abortError('Paused for the live assistant.', 'preempted');   // a chunk already on its way: not shown, asked again
               slot.pin();
@@ -99,7 +102,7 @@ class LlmScheduler {
           again = true;
         } finally {
           slot.release();
-          if (scheduler.onRun) { try { scheduler.onRun({ lane: priority, config: llm.getConfig(), messages, charsOut, ms: Date.now() - t0, ok, error, sources }); } catch { /* a ledger problem never breaks an AI call */ } }
+          if (scheduler.onRun) { try { scheduler.onRun({ lane: priority, config: { baseUrl: config.baseUrl, model }, messages, charsOut, ms: Date.now() - t0, ok, error, sources }); } catch { /* a ledger problem never breaks an AI call */ } }
         }
         if (!again) return;
       }
