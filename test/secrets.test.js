@@ -290,3 +290,61 @@ test('fileSecretBox: only a missing key file is created; any other read error st
   assert.ok(fs.statSync(file).isDirectory(), 'nothing was overwritten');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ---- audit 2026-11-28 (P1-2): with a keystore, partial updates in a row all reach the disk ----
+test('with a keystore, two partial updates of one group in a row both survive a restart (teleprompter speed, then text size)', async () => {
+  const db = open(':memory:');
+  const s = new Settings(db, null, fakeBox());
+  await s.init();
+  s.update({ teleprompter: { wpm: 100 } });
+  s.update({ teleprompter: { fontSize: 40 } });
+  await s.flush();
+  const again = new Settings(db, null, fakeBox());
+  await again.init();
+  assert.deepEqual([again.get('teleprompter').wpm, again.get('teleprompter').fontSize], [100, 40]);
+});
+
+test('with a keystore, an API key typed and then a model chosen separately: the key is still stored after a restart', async () => {
+  const db = open(':memory:');
+  const s = new Settings(db, null, fakeBox());
+  await s.init();
+  s.update({ llm: { apiKey: 'sk-test-partial' } });
+  s.update({ llm: { model: 'qwen' } });
+  await s.flush();
+  const again = new Settings(db, null, fakeBox());
+  await again.init();
+  assert.equal(again.get('llm').apiKey, 'sk-test-partial');
+  assert.equal(again.get('llm').model, 'qwen');
+});
+
+// ---- audit 2026-11-28 (D1-5): a masked secret is not carried to a different server ----
+test('a masked API key written back with a different server address is dropped, not sent to the new server', async () => {
+  const db = open(':memory:');
+  const s = new Settings(db, null, fakeBox());
+  await s.init();
+  s.update({ llm: { baseUrl: 'https://api.example.com/v1', apiKey: 'sk-bound' } });
+  s.update({ llm: { baseUrl: 'https://api.example.com/v2', apiKey: MASK, model: 'm' } });
+  assert.equal(s.get('llm').apiKey, 'sk-bound', 'the same server (another path) keeps it');
+  s.update({ llm: { baseUrl: 'https://evil.example.net/v1', apiKey: MASK } });
+  assert.equal(s.get('llm').apiKey, '', 'another server does not get the old key');
+  s.update({ llm: { baseUrl: 'https://evil.example.net/v1', apiKey: 'sk-typed-for-it' } });
+  assert.equal(s.get('llm').apiKey, 'sk-typed-for-it', 'a key typed for the new server is kept');
+});
+
+test('a masked IMAP password or webhook secret is dropped when the host or URL it belongs to changes', async () => {
+  const db = open(':memory:');
+  const s = new Settings(db, null, fakeBox());
+  await s.init();
+  s.update({ imapAccounts: [{ id: 'm1', host: 'imap.example.com', user: 'a', password: 'pw-imap', smtp: { host: 'smtp.example.com' } }], webhooks: [{ id: 'w1', url: 'https://hooks.example.com/a', secret: 'whsec_1' }] });
+  const view = s.publicView();
+  s.update({ imapAccounts: view.imapAccounts.map((m) => ({ ...m, label: 'Work' })), webhooks: view.webhooks.map((w) => ({ ...w, auto: true })) });
+  assert.equal(s.get('imapAccounts')[0].password, 'pw-imap', 'an unrelated edit keeps the password');
+  assert.equal(s.get('webhooks')[0].secret, 'whsec_1', 'and the webhook secret');
+  s.update({ imapAccounts: s.publicView().imapAccounts.map((m) => ({ ...m, host: 'imap.evil.example' })) });
+  assert.equal(s.get('imapAccounts')[0].password, '', 'a new IMAP host does not get the old password');
+  s.update({ imapAccounts: [{ id: 'm1', host: 'imap.example.com', user: 'a', password: 'pw-2', smtp: { host: 'smtp.example.com' } }] });
+  s.update({ imapAccounts: s.publicView().imapAccounts.map((m) => ({ ...m, smtp: { ...m.smtp, host: 'smtp.evil.example' } })) });
+  assert.equal(s.get('imapAccounts')[0].password, '', 'nor does a new SMTP host');
+  s.update({ webhooks: s.publicView().webhooks.map((w) => ({ ...w, url: 'https://evil.example/hook' })) });
+  assert.equal(s.get('webhooks')[0].secret, '', 'a new webhook URL does not get the old secret');
+});
