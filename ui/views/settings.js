@@ -90,7 +90,7 @@ export async function render(main, { parts, alive = () => true }) {
     const drawLock = async () => {
       const st = await api('GET', '/api/lock');
       $('#lk-state', main).textContent = st.enabled ? t('On') : t('Off');
-      const mins = `<select id="lk-min">${[[0, t('Never')], [5, '5 min'], [15, '15 min'], [60, '1 h']].map(([v, l]) => `<option value="${v}" ${st.minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
+      const mins = `<select id="lk-min">${[[0, t('Never')], [5, t('{n} min', { n: 5 })], [15, t('{n} min', { n: 15 })], [60, t('{n} h', { n: 1 })]].map(([v, l]) => `<option value="${v}" ${st.minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select>`;
       lockBody.innerHTML = st.enabled
         ? `<div class="stack">${field('lk-cur', t('Current passphrase'), '<input id="lk-cur" type="password" autocomplete="current-password">')}${field('lk-new', t('New passphrase (to change it)'), '<input id="lk-new" type="password" autocomplete="new-password">')}${field('lk-min', t('Lock after'), mins)}
           <div class="row"><button class="btn" data-lk="change">${t('Change')}</button><button class="btn" data-lk="now">${icon('lock', 'sm')} ${t('Lock now')}</button><button class="btn ghost" data-lk="off">${t('Turn off')}</button><span class="small" id="lk-msg"></span></div></div>`

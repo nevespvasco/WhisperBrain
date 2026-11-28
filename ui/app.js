@@ -369,7 +369,7 @@ async function boot() {
     setupOnFirstRun();   // the first launch only, and only if something needs attention
   } catch (e) {
     if (e instanceof ApiError && e.status === 423) { showLock(); return; }
-    main.innerHTML = `<div class="page"><div class="banner warn mt">${icon('alert')}<div class="grow">${esc(e.message)} — ${e instanceof ApiError && e.status === 401 ? 'open the app from its launcher or the printed login URL.' : 'is the server running?'}</div></div></div>`;
+    main.innerHTML = `<div class="page"><div class="banner warn mt">${icon('alert')}<div class="grow">${esc(e.message)} — ${e instanceof ApiError && e.status === 401 ? t('open the app from its launcher or the printed login URL.') : t('is the server running?')}</div></div></div>`;
   }
 }
 Object.assign(window, { wb: { openImport, openExport, openPalette, go, startRec: () => startRecording(null) } });

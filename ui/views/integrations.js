@@ -185,7 +185,7 @@ function bind(main, ints) {
         const token = $('#n-token').value.trim();
         await save({ notion: { token } });
         const r = await api('POST', '/api/integrations/notion/test');
-        status('#n-status', true, `${r.name || 'OK'}${r.workspace ? ' · ' + r.workspace : ''}`);
+        status('#n-status', true, `${r.name || t('OK')}${r.workspace ? ' · ' + r.workspace : ''}`);
         setTimeout(() => redraw(), 900);
       } else if (a === 'n-pick') await pickNotionParent(main, redraw);
       else if (a === 'n-remove') { await save({ notion: { token: '', parentId: '', parentTitle: '', autoExport: false } }); redraw(); }
