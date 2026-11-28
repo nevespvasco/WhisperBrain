@@ -1,6 +1,6 @@
 // ⌘K: one search over meetings, what people said, topics, people, glossary, tags and action items,
 // plus quick commands. Results are grouped by day; arrows + Enter navigate.
-import { S, $, $$, api, t, esc, icon, go, fmtClock, dateGroup, groupBy, debounce, safeSnippet, menu, fmtDate } from './lib.js';
+import { S, $, $$, api, t, tHtml, esc, safeUrl, icon, go, fmtClock, dateGroup, groupBy, debounce, safeSnippet, menu, fmtDate } from './lib.js';
 
 const KINDS = [['all', 'All'], ['meetings', 'Meetings'], ['quotes', 'Who said'], ['topics', 'Topics'], ['people', 'People'], ['glossary', 'Glossary'], ['tags', 'Tags'], ['actions', 'Actions'], ['docs', 'Notes & files']];
 const KIND_ICON = { live: 'mail', livemore: 'search', meeting: 'link', quote: 'quote', topic: 'hash', person: 'user', term: 'book', tag: 'tag', action: 'checksq', doc: 'file', cmd: 'bolt' };
@@ -127,10 +127,10 @@ export function openPalette(initial = '') {
   // ask the services; the answers replace the list, each one opens where it lives
   const liveSearch = async () => {
     const q = st.q;
-    box.innerHTML = `<div class="empty">${icon('search')}<p>${t('Asking {names}…', { names: st.live.map((x) => x.name).slice(0, 3).join(', ') })}</p></div>`;
+    box.innerHTML = `<div class="empty">${icon('search')}<p>${tHtml('Asking {names}…', { names: st.live.map((x) => x.name).slice(0, 3).join(', ') })}</p></div>`;
     try {
       const out = await api('GET', `/api/live-search?q=${encodeURIComponent(q)}&limit=12`);
-      st.results = out.results.map((r) => ({ ...r, kind: 'live', id: `${r.sourceId}|${r.externalId}`, run: () => window.open(r.uri, '_blank', 'noopener') }));
+      st.results = out.results.map((r) => ({ ...r, kind: 'live', id: `${r.sourceId}|${r.externalId}`, run: () => window.open(safeUrl(r.uri), '_blank', 'noopener') }));
       const failed = out.searched.filter((x) => x.error);
       render();
       if (failed.length) box.insertAdjacentHTML('beforeend', `<div class="small muted" style="padding:8px 14px">${failed.map((f) => `${esc(f.source)}: ${esc(f.error)}`).join(' · ')}</div>`);

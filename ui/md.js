@@ -82,4 +82,7 @@ export function renderMarkdown(src) {
   }
 }
 
+// A URL from outside (a live-search hit, a calendar event) as an href: only web and mail links, anything else goes nowhere
+export const safeUrl = (u) => { const s = String(u || '').trim(); return /^(https?:|mailto:)/i.test(s) ? s : '#'; };
+
 export { esc };

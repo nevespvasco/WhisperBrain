@@ -1,10 +1,10 @@
 // Shared UI state and building blocks: formatting, toasts, dialogs, popover menus, avatars, cards.
 import { api, ApiError } from './api.js';
-import { t, getLang } from './i18n.js';
-import { esc } from './md.js';
+import { t, tHtml, getLang } from './i18n.js';
+import { esc, safeUrl } from './md.js';
 import { icon } from './icons.js';
 
-export { api, ApiError, t, esc, icon };
+export { api, ApiError, t, tHtml, esc, safeUrl, icon };
 export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 

@@ -5,7 +5,7 @@ import { openImport } from './transfer.js';
 const save = async (patch) => { S.settings = await api('PUT', '/api/settings', patch); return S.settings; };
 const MASK = '********';
 
-// "In the call “Standup” · 3 people", or why not
+// "In the call “Standup” · 3 people", or why not. Plain text: the channel name and the detail come from Discord.
 const RPC_STATE = { off: 'Off', 'not-set-up': 'Not set up', closed: 'The Discord app is not running', connecting: 'Connecting…', 'not-authorised': 'Not authorised yet', connected: 'Connected, not in a voice call', 'in-call': 'In a voice call' };
 const rpcLine = (r) => (r.call ? `${t('In the call')} “${r.call.name || t('voice channel')}” · ${r.call.people} ${t(r.call.people === 1 ? 'person' : 'people')}` : t(RPC_STATE[r.state] || r.state) + (r.state === 'closed' || r.state === 'not-authorised' || !r.detail ? '' : ` · ${r.detail}`));
 const rpcLabel = (r) => (r.call ? rpcLine(r) : t(RPC_STATE[r.state] || r.state));
@@ -18,7 +18,7 @@ export async function render(main) {
   main.innerHTML = `<div class="page">
     <div class="page-head"><div><h1>${t('Integrations')}</h1><div class="sub">${t('Bring meetings in from other tools and send notes out to them. Keys are stored only on this computer.')}</div></div></div>
     <div class="cols-2">
-      ${card('google', '#4285f4', 'calendar', 'Google Calendar', g.connected ? `${t('Connected')} · ${esc(g.email || '')}` : t('See meetings, get reminded, recognise and record them'), g.connected, `
+      ${card('google', '#4285f4', 'calendar', 'Google Calendar', g.connected ? `${t('Connected')} · ${g.email || ''}` : t('See meetings, get reminded, recognise and record them'), g.connected, `
         ${g.connected ? `<div class="stack tight">${(g.calendars || []).length ? `<div class="xsmall muted strong">${t('Calendars to use')}</div><div class="picklist" style="max-height:200px">${g.calendars.map((c) => `<label><input type="checkbox" class="cbx" data-gcal="${esc(c.id)}" ${c.selected ? 'checked' : ''}><span class="dot" style="width:10px;height:10px;border-radius:50%;background:${esc(c.color || '#888')}"></span><span class="grow ellipsis">${esc(c.summary)}</span>${c.primary ? `<span class="badge">${t('primary')}</span>` : ''}</label>`).join('')}</div>` : ''}
           <div class="field"><label for="g-detail">${t('What WhisperBrain sees of each event')}</label><select id="g-detail"><option value="full" ${(S.settings.google.calendarDetail || 'full') === 'full' ? 'selected' : ''}>${t('Everything: title, people, notes and join links')}</option><option value="busy" ${S.settings.google.calendarDetail === 'busy' ? 'selected' : ''}>${t('Only when I am busy')}</option></select><div class="hint">${t('“Only when I am busy” hides titles, people and links. Meetings can then no longer be recognised by their invitation.')}</div></div>
           <div class="row"><button class="btn sm" data-act="g-refresh">${icon('refresh', 'sm')} ${t('Refresh list')}</button><button class="btn sm danger-outline" data-act="g-disconnect">${t('Disconnect')}</button></div></div>` : `
@@ -38,20 +38,20 @@ export async function render(main) {
           <div class="row"><button class="btn primary" data-act="cal-add">${t('Add calendar')}</button><span class="small" id="cal-result"></span></div></div>`}
         ${s.calendar.sources.length ? `<div class="divider"></div><div class="xsmall muted strong">${t('iCal feeds')}</div>${s.calendar.sources.map((c) => `<div class="row"><span class="srcicon">${icon('calendar')}</span><span class="grow ellipsis small">${esc(c.name)}</span><button class="btn ghost xs" data-cal-del="${c.id}">${t('Remove')}</button></div>`).join('')}` : ''}`)}
 
-      ${card('notion', '#111', 'doc', 'Notion', ints.notion.configured ? (ints.notion.parentTitle ? `${t('Exports into')} “${esc(ints.notion.parentTitle)}”` : t('Connected — choose where notes go')) : t('Export meeting notes as pages; import pages as meetings'), ints.notion.configured, `
+      ${card('notion', '#111', 'doc', 'Notion', ints.notion.configured ? (ints.notion.parentTitle ? `${t('Exports into')} “${ints.notion.parentTitle}”` : t('Connected — choose where notes go')) : t('Export meeting notes as pages; import pages as meetings'), ints.notion.configured, `
         <ol class="steps"><li>${t('Create an internal integration at')} <a href="https://www.notion.so/my-integrations" target="_blank" rel="noopener noreferrer">notion.so/my-integrations</a>.</li><li>${t('In Notion, open the page or database for meeting notes → ••• → Connections → add your integration.')}</li><li>${t('Paste the secret, then pick that page below.')}</li></ol>
         ${field('n-token', t('Integration secret'), `<input id="n-token" type="password" value="${ints.notion.configured ? MASK : ''}" placeholder="ntn_… / secret_…" autocomplete="off">`)}
         ${ints.notion.configured ? `<div class="field"><span class="lbl">${t('Export into')}</span><div class="row"><span class="grow small ellipsis">${ints.notion.parentTitle ? `${icon(ints.notion.parentKind === 'database' ? 'layers' : 'doc', 'sm')} ${esc(ints.notion.parentTitle)}` : `<span class="muted">${t('Not chosen yet')}</span>`}</span><button class="btn sm" data-act="n-pick">${t('Choose…')}</button></div></div>
           <label class="row between"><span class="small">${t('Export automatically after enhancing a meeting')}</span>${switchEl('n-auto', ints.notion.autoExport)}</label>` : ''}
         <div class="row"><button class="btn primary" data-act="n-save">${t('Save & test')}</button>${ints.notion.configured ? `<button class="btn" data-act="import-notion">${icon('download', 'sm')} ${t('Import pages')}</button><button class="btn ghost sm" data-act="n-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="n-status"></span></div>`)}
 
-      ${card('linear', '#5e6ad2', 'checksq', 'Linear', ints.linear.configured ? (ints.linear.teamName ? `${t('Team')} ${esc(ints.linear.teamName)}` : t('Connected — choose a team')) : t('Turn action items into issues; link and import issues'), ints.linear.configured, `
+      ${card('linear', '#5e6ad2', 'checksq', 'Linear', ints.linear.configured ? (ints.linear.teamName ? `${t('Team')} ${ints.linear.teamName}` : t('Connected — choose a team')) : t('Turn action items into issues; link and import issues'), ints.linear.configured, `
         <ol class="steps"><li>${t('Linear → Settings → Security & access → Personal API keys → New key.')}</li><li>${t('Paste it here and choose the team new issues go to.')}</li></ol>
         ${field('l-key', t('Personal API key'), `<input id="l-key" type="password" value="${ints.linear.configured ? MASK : ''}" placeholder="lin_api_…" autocomplete="off">`)}
         ${ints.linear.configured ? field('l-team', t('Team for new issues'), `<select id="l-team"><option value="">${t('Loading…')}</option></select>`) : ''}
         <div class="row"><button class="btn primary" data-act="l-save">${t('Save & test')}</button>${ints.linear.configured ? `<button class="btn" data-act="import-linear">${icon('download', 'sm')} ${t('Import issues')}</button><button class="btn ghost sm" data-act="l-remove">${t('Disconnect')}</button>` : ''}<span class="small" id="l-status"></span></div>`)}
 
-      ${card('obsidian', '#7c3aed', 'book', 'Obsidian', ints.obsidian.configured ? esc(ints.obsidian.vaultPath) : t('Write meetings into your vault with [[links]] to people and topics'), ints.obsidian.configured, `
+      ${card('obsidian', '#7c3aed', 'book', 'Obsidian', ints.obsidian.configured ? ints.obsidian.vaultPath : t('Write meetings into your vault with [[links]] to people and topics'), ints.obsidian.configured, `
         ${field('o-path', t('Vault folder'), `<input id="o-path" value="${esc(s.obsidian.vaultPath)}" placeholder="/home/you/Documents/MyVault">`, t('The folder that contains your vault’s .obsidian directory.'))}
         ${field('o-folder', t('Folder inside the vault'), `<input id="o-folder" value="${esc(s.obsidian.folder)}" placeholder="Meetings">`)}
         <label class="row between"><span class="small">${t('Include the transcript')}</span>${switchEl('o-tr', s.obsidian.transcript)}</label>
@@ -113,8 +113,9 @@ function transcriptCard(x, s) {
     <div class="xsmall muted">${t('Experimental: not yet tried against the real platform. It reads the transcript of a meeting only when you ask for it.')}</div>`);
 }
 
+// title and sub are plain text (sub can carry a Discord channel name or a Notion page title: anybody's words)
 function card(key, color, ic, title, sub, connected, body) {
-  return `<section class="panel int-card" data-int="${key}"><div class="head"><span class="int-logo" style="background:${color}">${icon(ic)}</span><div class="grow"><h3 style="font-size:16px">${esc(title)}</h3><div class="small muted">${sub}</div></div>${connected ? `<span class="badge ok">${icon('check', 'sm')} ${t('On')}</span>` : ''}</div>${body}</section>`;
+  return `<section class="panel int-card" data-int="${key}"><div class="head"><span class="int-logo" style="background:${color}">${icon(ic)}</span><div class="grow"><h3 style="font-size:16px">${esc(title)}</h3><div class="small muted">${esc(sub)}</div></div>${connected ? `<span class="badge ok">${icon('check', 'sm')} ${t('On')}</span>` : ''}</div>${body}</section>`;
 }
 
 async function loadTeams(ints) {

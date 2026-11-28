@@ -1,7 +1,7 @@
 // Chat with one meeting, or across everything in the app (answers link back to the meetings, documents and records they cite).
 // The answers sit in a fixed-height box with its own scrollbar (ui/follow.js): a new answer is followed as it is written, scrolling
 // up to re-read stops that and shows a floating arrow back to the newest message. The page around it never moves.
-import { S, $, api, t, esc, icon, fail, toast, confirmDialog } from '../lib.js';
+import { S, $, api, t, esc, safeUrl, icon, fail, toast, confirmDialog } from '../lib.js';
 import { stream } from '../api.js';
 import { renderMarkdown } from '../md.js';
 import { follow } from '../follow.js';
@@ -9,7 +9,7 @@ import { follow } from '../follow.js';
 // where a source opens: a meeting at the line that was cited, a document, or the page of whatever else was cited
 const atLine = (id, seg) => `#/note/${id}${seg ? `?tab=transcript&seg=${seg}` : ''}`;
 const hrefOf = (s) => ({
-  live: () => s.uri || '#',
+  live: () => safeUrl(s.uri),
   item: () => `#/documents/${s.id}`,
   action: () => (s.noteId ? `#/note/${s.noteId}` : '#/actions'),
   decision: () => (s.noteId ? atLine(s.noteId, s.segmentId) : '#/promises'),
@@ -27,7 +27,7 @@ const chip = (s) => `<a class="chip" href="${esc(hrefOf(s))}" ${s.kind === 'live
 const sourcesHtml = (sources) => (sources?.length ? `<div class="sources">${sources.map(chip).join('')}</div>` : '');
 const searchedHtml = (searched) => (searched?.length ? `<div class="xsmall muted" style="margin-top:6px">${icon('search', 'sm')} ${searched.map((x) => t('Searched {name} for: {q}', { name: esc(x.source), q: `“${esc(x.query)}”` })).join(' · ')}</div>` : '');
 // [1] in an answer becomes a link to what it cites; a number with nothing behind it stays plain text
-const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${hrefOf(s)}" title="${esc(chipTitle(s))}">${n}</a>` : m; });
+const withCites = (html, sources) => html.replace(/\[(\d{1,3})\]/g, (m, n) => { const s = (sources || []).find((x) => x.n === Number(n)); return s ? `<a class="cite" href="${esc(hrefOf(s))}" title="${esc(chipTitle(s))}">${n}</a>` : m; });
 const bubble = (m) => `<div class="bubble ${m.role}">${m.role === 'user' ? esc(m.content) : withCites(renderMarkdown(m.content), m.sources) + sourcesHtml(m.sources)}</div>`;
 const emptyHtml = (suggestions) => `<div class="chat-empty"><span class="ic-wrap">${icon('sparkles')}</span><div class="muted small">${t('Ask a question, or start from one of these:')}</div>
   <div class="chips">${suggestions.map((q) => `<button class="chip" data-q="${esc(q)}">${icon('sparkles', 'sm')}${esc(q)}</button>`).join('')}</div></div>`;
