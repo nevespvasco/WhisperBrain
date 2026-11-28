@@ -379,6 +379,52 @@ test('docx built in-test: headings, tabs, breaks, core properties, transcript he
   assert.equal(one(docx([para('Just one line of text')], {}), 'x.docx').body, 'Just one line of text');
 });
 
+test('docx: hostile XML is read in linear time (unclosed <w:p>, <w:t, <w:pPr, <w:style, <dc:title) and document.xml is capped at 20 MB', () => {
+  const time = (buf) => { const t = process.hrtime.bigint(); try { parseFile(buf, 'x.docx'); } catch { /* an empty document is refused; only the time matters */ } return Number(process.hrtime.bigint() - t) / 1e6; };
+  const xml = (body) => `<w:document ${W}><w:body>${body}</w:body></w:document>`;
+  const cases = {
+    unclosedP: makeZip({ 'word/document.xml': xml('<w:p>'.repeat(200000)) }),              // 40k took 0.9 s, quadratic
+    unclosedT: makeZip({ 'word/document.xml': xml(`<w:p>${'<w:t a'.repeat(150000)}</w:p>`) }),
+    unclosedPPr: makeZip({ 'word/document.xml': xml(`<w:p>${'<w:pPr>'.repeat(150000)}<w:r><w:t>x</w:t></w:r></w:p>`) }),
+    styles: makeZip({ 'word/document.xml': xml(para('hi')), 'word/styles.xml': `<w:styles>${'<w:style w:styleId="a">'.repeat(150000)}</w:styles>` }),
+    core: makeZip({ 'word/document.xml': xml(para('hi')), 'docProps/core.xml': `<cp:coreProperties>${'<dc:title><dcterms:created a'.repeat(100000)}</cp:coreProperties>` }),
+  };
+  for (const [name, buf] of Object.entries(cases)) { const t = time(buf); assert.ok(t < 300, `${name}: ${t.toFixed(0)} ms`); }
+  assert.equal(one(makeZip({ 'word/document.xml': xml(`${para('kept')}<w:p><w:r><w:t>never closed`) }), 'x.docx').body, 'kept');
+  assert.throws(() => parseFile(makeZip({ 'word/document.xml': '<w:p/>' }, { lie: { 'word/document.xml': 25 * 1048576 } }), 'huge.docx'), /too large to import/);
+});
+
+test('zip lazy budget: big entries that are never read do not refuse the archive; what is read still has every cap', () => {
+  const files = { 'activity/analytics/events-2026.json': 'x'.repeat(1000), 'messages/c1/messages.json': '[]' };
+  const lying = makeZip(files, { lie: { 'activity/analytics/events-2026.json': 150 * 1048576 } });
+  assert.throws(() => readZip(lying), /too large when uncompressed/, 'the default still adds up every declared size');
+  const z = readZip(lying, { lazy: true });
+  assert.equal(z.read('messages/c1/messages.json').toString(), '[]');
+  assert.throws(() => z.read('activity/analytics/events-2026.json'), /too large when uncompressed/, 'reading the big one is refused before inflating');
+  const two = readZip(makeZip({ 'a.bin': Buffer.alloc(600_000), 'b.bin': Buffer.alloc(600_000) }), { lazy: true, maxTotal: 1_000_000 });
+  assert.equal(two.read('a.bin').length, 600_000);
+  assert.throws(() => two.read('b.bin'), /too large/, 'the budget counts what was really read');
+  const bomb = makeZip({ 'messages/c1/messages.json': Buffer.alloc(5 * 1048576, 0x20) }, { lie: { 'messages/c1/messages.json': 1000 } });
+  assert.throws(() => readZip(bomb, { lazy: true }).read('messages/c1/messages.json'), /zip bomb/);
+});
+
+test('Discord data package: the analytics files (often over 100 MB) are never read, only messages/*', () => {
+  const { importPackage } = require('../src/connectors/discord-export');
+  const { open } = require('../src/core/db');
+  const { ItemStore } = require('../src/items/store');
+  const store = new ItemStore(open(':memory:'));
+  const src = store.addSource({ kind: 'discord', name: 'Discord data package', mode: 'copy', config: { export: true } });
+  const pkg = makeZip({
+    'activity/analytics/events-2026-00000-of-00001.json': 'x'.repeat(2000),
+    'account/user.json': '{}',
+    'messages/index.json': JSON.stringify({ 111: 'general' }),
+    'messages/c111/channel.json': '{}',
+    'messages/c111/messages.json': JSON.stringify([{ ID: '9', Timestamp: '2026-11-25T10:00:00+00:00', Contents: 'hello', Attachments: '' }]),
+  }, { lie: { 'activity/analytics/events-2026-00000-of-00001.json': 400 * 1048576 } });
+  const r = importPackage(pkg, { items: store, source: src });
+  assert.deepEqual([r.channels, r.created], [1, 1]);
+});
+
 test('docx errors: not a zip, missing document.xml, zip bomb caps', () => {
   assert.throws(() => parseFile(Buffer.from('this is not a zip at all'), 'fake.docx'), /not supported|can't be opened/);
   assert.throws(() => parseFile(makeZip({ 'hello.txt': 'hi' }), 'odd.docx'), /word\/document\.xml is missing/);

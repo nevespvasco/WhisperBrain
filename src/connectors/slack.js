@@ -44,6 +44,7 @@ const clean = (text, names) => String(text || '')
   .replace(/<#[A-Z0-9]+\|([^>]+)>/g, '#$1').replace(/<(https?:[^|>]+)\|([^>]+)>/g, '$2 ($1)').replace(/<(https?:[^>]+)>/g, '$1').replace(/<!(here|channel|everyone)[^>]*>/g, '@$1')
   .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
 
+// -> the items of up to MAX_PAGES pages; `out.more` is true when it stopped at that cap with pages left
 async function paginate(method, params, ctx, key) {
   const out = [];
   let cursor;
@@ -53,14 +54,19 @@ async function paginate(method, params, ctx, key) {
     cursor = j.response_metadata?.next_cursor;
     if (!cursor) break;
   }
+  out.more = !!cursor;
   return out;
 }
 
 // The messages of one channel from `oldest` (and up to `latest` when given), thread replies included unless withReplies is false.
-// -> the raw Slack messages, joins and topic changes left out
+// -> the raw Slack messages, joins and topic changes left out. History comes newest first: when the page cap stopped it, `more` is
+// true and `lowest` (ms) is the oldest message read; everything between `oldest` and that is still unread.
 async function readMessages({ channelId, oldest, latest, ctx, withReplies = true }) {
   const msgs = await paginate('conversations.history', { channel: channelId, oldest: String(oldest / 1000), latest: latest ? String(latest / 1000) : undefined, limit: 200 }, ctx, 'messages');
   const all = [];
+  all.more = msgs.more;
+  all.lowest = msgs.reduce((a, m) => Math.min(a, Number(m.ts) * 1000), Infinity);
+  all.highest = msgs.reduce((a, m) => Math.max(a, Number(m.ts) * 1000), -Infinity);   // of the history itself, not of thread replies
   for (const m of msgs) {
     if (m.subtype && !['bot_message', 'thread_broadcast'].includes(m.subtype)) continue;      // joins, topic changes...
     all.push(m);
@@ -109,10 +115,33 @@ async function sync({ source, items, settings, fetchImpl, bases = {}, sleep, now
       const channel = { id: ch.id, name: `#${ch.name}` };
       if (channelBlocked(never, channel)) { out.removed += forgetChannel(items, source, ch.id); continue; }   // on the never-read list: not even looked at
       const since = cursors[ch.id] ? startOfDay(Number(cursors[ch.id]) * 1000) : startOfDay(now() - FIRST_DAYS * DAY);
-      const all = await readMessages({ channelId: ch.id, oldest: since, ctx, withReplies: !metadataOnly });
-      const messages = filterNever(never, channel, toMessages(all, people));
-      add(out, saveDays({ items, source, channel, messages, uriOf: slackUri, metadataOnly }));
-      if (all.length) cursors[ch.id] = all.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), '0');
+      // ranges an earlier run left unread, newest first: [{ oldest, latest }] (ms)
+      const bkey = `backlog:${ch.id}`, backlog = [].concat(cursors[bkey] || []).filter((r) => r && r.latest > r.oldest);
+      // Read [oldest, latest) and store the days it holds whole. At the page cap only the newest messages came back: the oldest
+      // day read may be partial, so it is left out and [oldest, end of that day) is kept as the backlog for the next run (the
+      // cursor used to jump to the newest message and the older ones were never read). A single day over the cap can't be
+      // whole: its newest part is kept and the backlog goes on from the start of that day.
+      const readRange = async (oldest, latest) => {
+        const all = await readMessages({ channelId: ch.id, oldest, latest, ctx, withReplies: !metadataOnly });
+        let from = oldest, rest = null;
+        if (all.more && Number.isFinite(all.lowest)) {
+          const cut = startOfDay(all.lowest) + DAY;
+          if (all.highest >= cut) {   // something was read past the partial day: the days from `cut` on are whole
+            from = cut; rest = { oldest, latest: cut }; } else { from = startOfDay(all.lowest); rest = { oldest, latest: from }; }
+        }
+        const messages = filterNever(never, channel, toMessages(all, people)).filter((m) => m.at >= from && (latest == null || m.at < latest));
+        add(out, saveDays({ items, source, channel, messages, uriOf: slackUri, metadataOnly }));
+        return { all, rest: rest && rest.latest > rest.oldest ? rest : null };
+      };
+      const fresh = await readRange(since, null);
+      if (fresh.all.length) cursors[ch.id] = fresh.all.reduce((a, m) => (Number(m.ts) > Number(a) ? m.ts : a), cursors[ch.id] || '0');
+      if (backlog.length) {                               // one more chunk of the newest range an earlier run left unread
+        const old = await readRange(backlog[0].oldest, backlog[0].latest);
+        backlog.splice(0, 1, ...(old.rest ? [old.rest] : []));
+      }
+      if (fresh.rest) backlog.unshift(fresh.rest);
+      while (backlog.length > 5) { const last = backlog.pop(); backlog[backlog.length - 1].oldest = Math.min(backlog[backlog.length - 1].oldest, last.oldest); }
+      if (backlog.length) cursors[bkey] = backlog; else delete cursors[bkey];
     }
   } finally {
     items.updateSource(source.id, { config: cursorPatch(cursors, level) });      // what was read stays read, even when a rate limit stopped the run

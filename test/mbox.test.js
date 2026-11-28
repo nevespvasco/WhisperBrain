@@ -172,3 +172,15 @@ test('it needs the store and a source, and a file or a stream', async () => {
   const s = setup();
   await assert.rejects(s.run({}), /file or a stream/);
 });
+
+test('memory: each message keeps only the 12,000 characters an item uses, from the moment it is read (not after the whole file)', async (t) => {
+  const M = require('../src/connectors/mail-common');
+  const real = M.buildThreadItem, lengths = [];
+  M.buildThreadItem = (args) => { lengths.push(...args.msgs.map((m) => m.text.length)); return real(args); };
+  t.after(() => { M.buildThreadItem = real; });
+  const s = setup();
+  const long = `${'word '.repeat(200)}\n`.repeat(200);       // ≈ 200 KB of text in one message
+  await s.run({ stream: stream(mbox(msg({ id: 'l@x', subject: 'Long', body: long }), msg({ id: 'r@x', refs: ['l@x'], subject: 'Re: Long', body: 'short' }))) });
+  assert.deepEqual(lengths.sort((a, b) => a - b), [5, 12_000]);
+  assert.ok(s.store.list({ sourceId: s.src.id })[0].preview.includes('word word'));
+});

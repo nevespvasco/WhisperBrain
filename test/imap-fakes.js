@@ -132,6 +132,10 @@ async function fakeImap({ caps = ['IMAP4rev1', 'UIDPLUS', 'MOVE', 'CONDSTORE', '
       const t = tokenize(cmd.parts);
       const tag = t[0]; let name = String(t[1]).toUpperCase(); let args = t.slice(2);
       g.log.push(cmd.parts.map((p) => (Buffer.isBuffer(p) ? `<${p.length} bytes>` : p)).join('').replace(/^A\d+ /, '').slice(0, 300));
+      // g.refuse(line) lets a test make the server answer one command with NO (true) or hang up ('close')
+      const refusal = g.refuse?.(g.log[g.log.length - 1]);
+      if (refusal === 'close') return socket.destroy();
+      if (refusal) return w(`${tag} NO [SERVERBUG] refused by the test${CRLF}`);
       if (name === 'UID') { name = `UID ${String(args[0]).toUpperCase()}`; args = args.slice(1); }
       if (name === 'LOGIN') {
         if (String(args[0]) === g.user && String(args[1]) === g.pass) { st.authed = true; return ok(tag, 'Logged in'); }

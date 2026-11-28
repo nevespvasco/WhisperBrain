@@ -39,7 +39,8 @@ function readChannel(zip, dir) {
 
 // buffer: the ZIP. Returns { channels, created, updated, unchanged }.
 function importPackage(buffer, { items, source }) {
-  const zip = readZip(buffer);
+  // lazy: only messages/* is ever read, so the budget counts what is read, not the analytics files' declared sizes
+  const zip = readZip(buffer, { lazy: true });
   const names = new Map();
   try { const idx = JSON.parse(zip.read('messages/index.json').toString('utf8')); for (const [id, name] of Object.entries(idx)) names.set(id, name); } catch { /* names are optional */ }
   const dirs = [...new Set(zip.entries.map((e) => /^(messages\/c?\d+\/)/.exec(e.name)?.[1]).filter(Boolean))];
