@@ -3,10 +3,11 @@
 // so a slow decode never blocks the main process. The app runs up to three of these (live, batch, dictation; see
 // engine.js). Protocol (all messages are plain objects, Buffers allowed):
 //   parent -> worker  init {recognizer, beamRecognizer, vadPath, speakerModel, embedThreads, embed, vad}   config {embed}
-//                     audio {ch, pcm}   flush {ch}   reset {ch}   hotwords {phrases, keep?}
+//                     audio {ch, pcm}   flush {ch, id}   reset {ch}   hotwords {phrases, keep?}
 //                     transcribe {id, pcm}   resample {id, pcm, rate}   import {id, pcm, concurrency}
 //                     draft {id, config}   (config {recognizer, language, channels} loads the streaming model for live drafts; null drops it)
-//   worker -> parent  ready   segment {ch, startMs, endMs, text, embedding?, words?, logProbMean?, logProbMin?}   flushed {ch}
+//   worker -> parent  ready   segment {ch, startMs, endMs, text, embedding?, words?, logProbMean?, logProbMin?}   flushed {ch, id}
+//                     ack {n} (n more samples of audio were processed: the parent's measure of the backlog)
 //                     result {id, text}   resampled {id, pcm}   progress {id, p}   imported {id, segments}   hotwords-set {phrases}
 //                     partial {ch, text, startMs}   (draft words of the utterance in progress; text '' = no draft any more)
 //                     draft-set {id, enabled, ms?, error?}   draft-off {reason}   error {message, id?}
@@ -40,6 +41,13 @@ const DRAFT_MAX_LOAD = 0.9;
 const DRAFT_MAX_STRIKES = 3;              // that many give-ups in a row switch drafts off for the rest of the recording
 
 function send(m) { process.send(m); }
+
+// Samples processed, reported in batches (about one message a second of audio) so the parent knows how far behind it is.
+let unacked = 0;
+function ack(n, now = false) {
+  unacked += n;
+  if (unacked && (now || unacked >= RATE)) { send({ t: 'ack', n: unacked }); unacked = 0; }
+}
 
 function toFloat(buf) {
   const n = buf.byteLength >> 1;
@@ -267,16 +275,24 @@ async function handle(m) {
       send({ t: 'hotwords-set', phrases: !!phrases });
       break;
     }
-    case 'audio': feed(m.ch, toFloat(alignedCopy(Buffer.from(m.pcm)))); break;
-    case 'flush': {
-      const c = channels.get(m.ch);
-      if (c) {
-        if (c.buf.length) { const pad = new Float32Array(WINDOW); pad.set(c.buf); c.vad.acceptWaveform(pad); c.buf = new Float32Array(0); }
-        c.vad.flush();
-        drain(m.ch, c);
-        endDraft(m.ch, c);
+    case 'audio': { // acknowledged even when it fails: the parent counts its backlog from these
+      const n = m.pcm.length >> 1;
+      try { feed(m.ch, toFloat(alignedCopy(Buffer.from(m.pcm)))); } finally { ack(n); }
+      break;
+    }
+    case 'flush': { // always answered, even when the decode fails (the failure follows as an error): Stop must never wait for nothing
+      try {
+        const c = channels.get(m.ch);
+        if (c) {
+          if (c.buf.length) { const pad = new Float32Array(WINDOW); pad.set(c.buf); c.vad.acceptWaveform(pad); c.buf = new Float32Array(0); }
+          c.vad.flush();
+          drain(m.ch, c);
+          endDraft(m.ch, c);
+        }
+      } finally {
+        ack(0, true);
+        send({ t: 'flushed', ch: m.ch, id: m.id });
       }
-      send({ t: 'flushed', ch: m.ch });
       break;
     }
     case 'reset': { const c = channels.get(m.ch); if (c) endDraft(m.ch, c); channels.delete(m.ch); break; }
