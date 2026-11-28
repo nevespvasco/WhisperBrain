@@ -715,8 +715,11 @@ function open(file, { allowExtension = false } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file, allowExtension ? { allowExtension: true } : {});
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
-  if (file !== ':memory:') backupBeforeMigrating(db, file);
-  migrate(db);
+  try {
+    refuseNewer(db);
+    if (file !== ':memory:') backupBeforeMigrating(db, file);
+    migrate(db);
+  } catch (e) { try { db.close(); } catch { /* already closed */ } throw e; }
   if (file !== ':memory:') { try { fs.chmodSync(file, 0o600); } catch { /* not supported on this fs */ } }
   return db;
 }
@@ -734,19 +737,43 @@ function backupBeforeMigrating(db, file) {
   return copy;
 }
 
-function migrate(db) {
+// A database a newer WhisperBrain moved to a schema this one does not know: opening it would read columns wrongly and write
+// rows the newer version does not expect. It is refused (and left as it was) rather than opened.
+function refuseNewer(db, migrations = MIGRATIONS) {
   const { user_version: current } = db.prepare('PRAGMA user_version').get();
-  for (let v = current; v < MIGRATIONS.length; v++) {
-    db.exec('BEGIN');
-    try {
-      db.exec(MIGRATIONS[v]);
-      db.exec(`PRAGMA user_version = ${v + 1}`);
-      db.exec('COMMIT');
-    } catch (e) {
-      db.exec('ROLLBACK');
-      throw e;
+  if (current <= migrations.length) return;
+  throw Object.assign(new Error(`This data was made by a newer WhisperBrain (schema ${current}; this version knows up to ${migrations.length}). Install the newer version to open it; nothing was changed.`), { code: 'SCHEMA_TOO_NEW' });
+}
+
+// Foreign keys are switched off while migrations run, BEFORE the transaction (inside one the pragma is a no-op): the
+// create / copy / DROP / RENAME pattern SQLite needs to change a CHECK would otherwise cascade the DROP into every child row
+// (segments, reminders, item links...). What a migration leaves dangling that was not dangling before is checked before COMMIT,
+// so a migration that loses a parent row is undone instead of committed. Old dangling rows (if any) never block an update.
+function migrate(db, migrations = MIGRATIONS) {
+  refuseNewer(db, migrations);
+  const { user_version: current } = db.prepare('PRAGMA user_version').get();
+  if (current >= migrations.length) return;
+  const key = (r) => `${r.table}:${r.rowid}:${r.parent}:${r.fkid}`;
+  db.exec('PRAGMA foreign_keys = OFF');
+  try {
+    for (let v = current; v < migrations.length; v++) {
+      db.exec('BEGIN');
+      try {
+        const before = new Set(db.prepare('PRAGMA foreign_key_check').all().map(key));
+        db.exec(migrations[v]);
+        const broken = db.prepare('PRAGMA foreign_key_check').all().filter((r) => !before.has(key(r)));
+        if (broken.length) {
+          const where = [...new Set(broken.map((r) => `${r.table} -> ${r.parent}`))].join(', ');
+          throw new Error(`migration ${v + 1} would leave ${broken.length} foreign key reference(s) dangling (${where}); not applied`);
+        }
+        db.exec(`PRAGMA user_version = ${v + 1}`);
+        db.exec('COMMIT');
+      } catch (e) {
+        db.exec('ROLLBACK');
+        throw e;
+      }
     }
-  }
+  } finally { db.exec('PRAGMA foreign_keys = ON'); }
 }
 
 function tx(db, fn) {
@@ -761,4 +788,4 @@ function tx(db, fn) {
   }
 }
 
-module.exports = { open, tx, MIGRATIONS };
+module.exports = { open, tx, migrate, MIGRATIONS };
