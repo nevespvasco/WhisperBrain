@@ -45,14 +45,14 @@ test('with concurrency 2, two jobs run at once and the third waits for a free sl
   const jobs = gates.map((g, i) => s.run('summary', async () => { started.push(i); await g.promise; return i; }));
   await tick();
   assert.deepEqual(started, [0, 1]);
-  assert.deepEqual(s.stats(), { running: 2, queued: { assistant: 0, chat: 0, summary: 1, translation: 0, background: 0 } });
+  assert.deepEqual(s.stats(), { running: 2, held: false, queued: { assistant: 0, chat: 0, summary: 1, translation: 0, background: 0 } });
   gates[1].open();
   await tick(); await tick();
   assert.deepEqual(started, [0, 1, 2]);
   assert.equal(s.stats().running, 2);
   gates[0].open(); gates[2].open();
   assert.deepEqual(await Promise.all(jobs), [0, 1, 2]);
-  assert.deepEqual(s.stats(), { running: 0, queued: { assistant: 0, chat: 0, summary: 0, translation: 0, background: 0 } });
+  assert.deepEqual(s.stats(), { running: 0, held: false, queued: { assistant: 0, chat: 0, summary: 0, translation: 0, background: 0 } });
 });
 
 test('concurrency may be a function, read each time a slot is considered', async () => {
@@ -161,7 +161,7 @@ test('no starvation of running jobs: a key never pre-empts the running job with 
   const second = s.run('assistant', async () => 'second done', { key: 'k' });
   await tick();
   assert.equal(seen.aborted, false);
-  assert.deepEqual(s.stats(), { running: 1, queued: { assistant: 1, chat: 0, summary: 0, translation: 0, background: 0 } });
+  assert.deepEqual(s.stats(), { running: 1, held: false, queued: { assistant: 1, chat: 0, summary: 0, translation: 0, background: 0 } });
   g.open();
   assert.equal(await running, 'first done');
   assert.equal(await second, 'second done');
@@ -268,4 +268,153 @@ test('aborting a running client request aborts its fetch, and the next queued re
   ac2.abort();
   await assert.rejects(second, { name: 'AbortError' });
   assert.equal(s.stats().running, 0);
+});
+
+// ---- pre-emption and hold: the live assistant first, even while background work holds the only slot ----
+
+// An LlmClient stand-in. Each call streams opts.pieces (default ['done']): a string is yielded at once, null waits for that call's
+// gate (call.go.open()). The stream ends with an AbortError as soon as its signal aborts.
+function gatedLlm() {
+  const calls = [];
+  return {
+    calls,
+    getConfig: () => ({ baseUrl: 'http://127.0.0.1:1/v1', model: 'm' }),
+    async *stream(messages, opts) {
+      const call = { name: messages[0]?.content, opts, go: gate(), aborted: false };
+      calls.push(call);
+      const aborted = new Promise((_, reject) => opts.signal.addEventListener('abort', () => { call.aborted = true; reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); }, { once: true }));
+      aborted.catch(() => {});
+      for (const piece of opts.pieces ?? [null, 'done']) {
+        if (piece === null) await Promise.race([call.go.promise, aborted]);
+        else { await Promise.race([tick(), aborted]); yield piece; }
+      }
+    },
+  };
+}
+const ask = (name) => [{ role: 'user', content: name }];
+const callsNamed = (llm, name) => llm.calls.filter((c) => c.name === name);
+
+test('an assistant request pre-empts a running background request, which is asked again afterwards and still resolves', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const bg = s.client('background').complete(ask('bg'));
+  await tick(); await tick();
+  assert.equal(llm.calls.length, 1);
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['answer'] });
+  await tick(); await tick(); await tick();
+  assert.equal(llm.calls[0].aborted, true, 'the background fetch was aborted');
+  assert.equal(await as, 'answer');
+  await tick(); await tick();
+  const again = callsNamed(llm, 'bg');
+  assert.equal(again.length, 2, 'asked again once the assistant was done');
+  again[1].go.open();
+  assert.equal(await bg, 'done');
+  assert.equal(s.stats().running, 0);
+});
+
+test('a summary complete() that already had partial text is pre-empted too, and returns the whole text only once', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const sum = s.client('summary').complete(ask('sum'), { pieces: ['part ', null, 'rest'] });
+  await tick(); await tick(); await tick();
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['ok'] });
+  assert.equal(await as, 'ok');
+  await tick(); await tick();
+  callsNamed(llm, 'sum')[1].go.open();
+  assert.equal(await sum, 'part rest');
+});
+
+test("a chat answer is never pre-empted: the user is reading it as it streams", async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const chat = s.client('chat').complete(ask('chat'));
+  await tick(); await tick();
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['ok'] });
+  await tick(); await tick();
+  assert.equal(llm.calls[0].aborted, false);
+  assert.equal(s.stats().queued.assistant, 1);
+  llm.calls[0].go.open();
+  assert.equal(await chat, 'done');
+  assert.equal(await as, 'ok');
+});
+
+test('a background stream is pre-emptible only until its first words reach the consumer; before that it restarts unseen', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  // not started talking yet: pre-empted and restarted, the consumer sees the text once
+  const got = [];
+  const reading = (async () => { for await (const d of s.client('background').stream(ask('quiet'), { pieces: [null, 'hello'] })) got.push(d); })();
+  await tick(); await tick();
+  await s.client('assistant').complete(ask('as'), { pieces: ['ok'] });
+  await tick(); await tick();
+  callsNamed(llm, 'quiet')[1].go.open();
+  await reading;
+  assert.deepEqual(got, ['hello']);
+  // already talking: kept, the assistant waits
+  const it = s.client('background').stream(ask('talking'), { pieces: ['a', null, 'b'] });
+  assert.equal((await it.next()).value, 'a');
+  const as = s.client('assistant').complete(ask('as2'), { pieces: ['ok'] });
+  await tick(); await tick();
+  assert.equal(callsNamed(llm, 'talking')[0].aborted, false);
+  callsNamed(llm, 'talking')[0].go.open();
+  assert.equal((await it.next()).value, 'b');
+  assert.equal((await it.next()).done, true);
+  assert.equal(await as, 'ok');
+});
+
+test('preemptible: false keeps a background request; run() is pre-emptible only when asked and then runs fn again', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const kept = s.client('background').complete(ask('kept'), { preemptible: false });
+  await tick(); await tick();
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['ok'] });
+  await tick(); await tick();
+  assert.equal(llm.calls[0].aborted, false);
+  llm.calls[0].go.open();
+  await kept; await as;
+  let runs = 0;
+  const g = gate();
+  const job = s.run('background', (signal) => { runs++; return runs === 1 ? new Promise((_, rej) => signal.addEventListener('abort', () => rej(signal.reason), { once: true })) : g.promise.then(() => 'second'); }, { preemptible: true });
+  await tick();
+  assert.equal(await s.run('assistant', async () => 'assistant ran'), 'assistant ran');
+  await tick();
+  g.open();
+  assert.equal(await job, 'second');
+  assert.equal(runs, 2);
+});
+
+test('while held, summary and background requests do not start (unless marked live); chat and translation still do', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const release = s.hold();
+  assert.equal(s.stats().held, true);
+  const bg = s.client('background').complete(ask('bg'), { pieces: ['bg'] });
+  const sum = s.client('summary').complete(ask('sum'), { pieces: ['sum'] });
+  await tick(); await tick();
+  assert.equal(llm.calls.length, 0, 'nothing held back started');
+  assert.equal(await s.client('summary').complete(ask('live'), { pieces: ['live'], live: true }), 'live');
+  assert.equal(await s.client('translation').complete(ask('tr'), { pieces: ['tr'] }), 'tr');
+  assert.equal(await s.client('chat').complete(ask('chat'), { pieces: ['chat'] }), 'chat');
+  assert.deepEqual(s.stats().queued, { assistant: 0, chat: 0, summary: 1, translation: 0, background: 1 });
+  release();
+  release();   // idempotent
+  assert.equal(await sum, 'sum');
+  assert.equal(await bg, 'bg');
+  assert.equal(s.stats().held, false);
+});
+
+test('onStart is called when the slot is granted, not when the request is queued', async () => {
+  const llm = gatedLlm();
+  const s = new LlmScheduler(llm, { concurrency: 1 });
+  const chat = s.client('chat').complete(ask('chat'));
+  await tick();
+  let started = 0;
+  const as = s.client('assistant').complete(ask('as'), { pieces: ['ok'], onStart: () => { started++; } });
+  await tick(); await tick();
+  assert.equal(started, 0);
+  llm.calls[0].go.open();
+  await chat;
+  assert.equal(await as, 'ok');
+  assert.equal(started, 1);
+  assert.equal(llm.calls[1].opts.onStart, undefined, 'not handed on to the client as well');
 });
