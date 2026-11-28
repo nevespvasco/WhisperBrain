@@ -825,7 +825,19 @@ function backupBeforeMigrating(db, file) {
   if (fs.existsSync(copy)) return copy;
   db.exec(`VACUUM INTO '${copy.replaceAll("'", "''")}'`);
   try { fs.chmodSync(copy, 0o600); } catch { /* not supported on this fs */ }
+  pruneCopies(file);
   return copy;
+}
+
+// Each copy is a whole database: one per schema change piled up for ever. The newest KEEP_COPIES are the way back; older ones go.
+const KEEP_COPIES = 2;
+function pruneCopies(file, keep = KEEP_COPIES) {
+  const dir = path.dirname(file), base = path.basename(file);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const copies = names.map((f) => ({ f, v: f.startsWith(`${base}.before-v`) && /^\d+$/.test(f.slice(base.length + 9)) ? Number(f.slice(base.length + 9)) : null }))
+    .filter((c) => c.v != null).sort((a, b) => b.v - a.v);
+  for (const c of copies.slice(keep)) { try { fs.rmSync(path.join(dir, c.f), { force: true }); } catch { /* in use: next time */ } }
 }
 
 // A database a newer WhisperBrain moved to a schema this one does not know: opening it would read columns wrongly and write

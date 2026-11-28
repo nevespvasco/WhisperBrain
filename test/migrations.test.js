@@ -73,3 +73,19 @@ test('a database made by a newer WhisperBrain is refused, and left as it was', (
   assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('before-v')), [], 'no copy is written either');
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('the copies written before schema updates are pruned to the newest two (in a temp dir only)', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'whisperbrain.sqlite');
+  for (const v of [3, 12, 20]) fs.writeFileSync(`${file}.before-v${v}`, `old ${v}`);
+  fs.writeFileSync(path.join(dir, 'other.sqlite.before-v1'), 'not ours');
+  fs.writeFileSync(`${file}.before-vX`, 'not a copy name');
+  const old = new DatabaseSync(file);
+  for (const m of MIGRATIONS.slice(0, -1)) old.exec(m);
+  old.exec(`PRAGMA user_version = ${MIGRATIONS.length - 1}`);
+  old.close();
+  open(file).close();
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes('.before-v')).sort(),
+    ['other.sqlite.before-v1', `whisperbrain.sqlite.before-v${MIGRATIONS.length}`, 'whisperbrain.sqlite.before-v20', 'whisperbrain.sqlite.before-vX'].sort());
+  fs.rmSync(dir, { recursive: true, force: true });
+});
