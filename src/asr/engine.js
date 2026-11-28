@@ -140,6 +140,7 @@ class AsrWorker extends EventEmitter {
       this.waiters.clear();
       this.emit('exit', err);
     };
+    this.lose = (c, why) => { if (c === child) gone(why); }; // a child given up on (flush deadline): dead from now on, not when it exits
     child.on('message', (m) => this.onMessage(m));
     child.on('exit', (code, sig) => gone(sig || code));
     child.on('error', (e) => { if (!child.connected) { try { child.kill('SIGKILL'); } catch { /* gone */ } gone(e.message); } });
@@ -195,7 +196,7 @@ class AsrWorker extends EventEmitter {
         if (!this.waiters.has(key)) return;
         this.waiters.delete(key);
         reject(new Error(`the speech engine did not finish the ${ch} audio within ${Math.round(timeoutMs / 1000)} s, so it was restarted`));
-        if (this.child === child) { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+        if (this.child === child) { try { child.kill('SIGKILL'); } catch { /* gone */ } this.lose(child, 'did not answer a flush'); }
       }, timeoutMs);
       timer.unref?.();
     });

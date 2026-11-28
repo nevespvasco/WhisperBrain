@@ -435,3 +435,18 @@ test('real engine: a worker killed mid-meeting is restarted, and the words spoke
   assert.ok(events.some((e) => e.type === 'recording.warning' && /restart/i.test(e.data.message)));
   assert.deepEqual(fs.readdirSync(spoolDir), []);
 });
+
+test('a flush at Stop that never comes back: the worker is given up on, and what it held is transcribed from the spool', async (t) => {
+  const r = spoolRig(t);
+  const n = r.notes.create({});
+  await r.mgr.start(n.id, { system: false });
+  r.mgr.pushPcm(n.id, 'mic', sec(2));
+  r.engine.emit('segment', { ch: 'mic', startMs: 0, endMs: 1000, text: 'first line' });
+  r.engine.flush = async () => { r.engine.emit('exit', new Error('ASR worker exited (did not answer a flush)')); throw new Error('the speech engine did not finish the mic audio within 30 s, so it was restarted'); };
+  r.engine.recover = () => [{ startMs: 0, endMs: 800, text: 'what it held' }];
+  const out = await r.mgr.stop();
+  assert.deepEqual(r.engine.recovered, [16000]);
+  assert.ok(r.notes.segments(n.id).some((x) => x.text === 'what it held'));
+  assert.equal(out.note.status, 'done');
+  assert.equal(out.deferred, undefined);
+});

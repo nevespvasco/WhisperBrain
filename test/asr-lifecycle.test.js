@@ -51,9 +51,10 @@ test('flush: a worker that never answers is killed after a deadline, and its dea
   w.on('exit', (e) => exits.push(e.message));
   await assert.rejects(w.flush('mic', { timeoutMs: 20 }), /did not finish/);
   assert.equal(child.killed, 'SIGKILL');
-  child.emit('exit', null, 'SIGKILL');
+  assert.equal(w.running, false, 'counted as gone at once: nobody may reuse the dying process');
   assert.equal(exits.length, 1);
-  assert.equal(w.running, false);
+  child.emit('exit', null, 'SIGKILL');
+  assert.equal(exits.length, 1, 'the real exit is not reported twice');
 });
 
 test('flush: the deadline grows with the audio still waiting to be decoded', () => {
