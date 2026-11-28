@@ -144,7 +144,7 @@ async function nameFromTranscript({ notes, speakers, evidence, llm, userName = '
   if (!built.eligible.size) return none;
   const skip = (evidence?.forNote(noteId, { kind: 'refuted' }) || []).map((r) => ({ speakerId: r.meta?.speakerId, name: r.name }));
   let reply;
-  try { reply = await llm.complete(speakerNamesMessages(built), { temperature: 0.1, maxTokens: 400, signal, reasoning: 'off' }); } catch (e) { return { ...none, error: e.message }; }
+  try { reply = await llm.complete(speakerNamesMessages(built), { temperature: 0.1, maxTokens: 400, signal, reasoning: 'off', live: true }); } catch (e) { return { ...none, error: e.message }; }   // live: not held while the assistant helps a call (LiveNames names that call)
   const { found, refuted } = parseNames(reply, built, { skip });
   const named = [];
   for (const f of found) {

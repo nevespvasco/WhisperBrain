@@ -44,3 +44,13 @@ test('reading the meeting window asks for no thinking, and is live work for the 
   assert.equal(llm.calls[0].reasoning, 'off');
   assert.equal(llm.calls[0].live, true, 'runs while the assistant holds background work');
 });
+
+test('naming voices from the conversation asks for no thinking and runs while background work is held (it names the call in progress)', async () => {
+  const { nameFromTranscript } = require('../src/speakers/transcript-names');
+  const llm = stub(() => '{"speakers": []}');
+  const segs = [{ id: 1, speaker: 'them', speakerId: 's1', text: 'Hi, I am Ana from sales.', startMs: 0 }, { id: 2, speaker: 'me', text: 'Hello Ana.', startMs: 1000 }];
+  await nameFromTranscript({ notes: { segments: () => segs }, speakers: { forNote: () => [{ speakerId: 's1', name: '' }] }, evidence: null, llm }, 'n');
+  assert.equal(llm.calls.length, 1);
+  assert.equal(llm.calls[0].reasoning, 'off');
+  assert.equal(llm.calls[0].live, true);
+});
