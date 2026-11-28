@@ -494,4 +494,8 @@ test('webhook: rejects bad URLs, non-2xx and timeouts', async (t) => {
   assert.deepEqual(await postWebhook({ url: 'https://hooks.example.com/x', payload: { event: 'e' }, fetchImpl }), { ok: true, status: 200 });
   assert.equal(seen.url, 'https://hooks.example.com/x');
   assert.equal(seen.init.headers['X-WhisperBrain-Event'], 'e');
+  // a redirect is never followed (a 307 would re-POST the signed payload to wherever it points): it is a failure that says so
+  assert.equal(seen.init.redirect, 'manual');
+  const redirecting = async () => new Response('', { status: 307, headers: { Location: 'https://elsewhere.example.net/steal' } });
+  await assert.rejects(postWebhook({ url: 'https://hooks.example.com/x', payload: {}, secret: 's', fetchImpl: redirecting }), (e) => e.code === 'redirect' && e.status === 307 && /redirect/i.test(e.message) && /elsewhere\.example\.net/.test(e.message));
 });

@@ -21,11 +21,21 @@ async function postWebhook({ url, secret, payload, fetchImpl = globalThis.fetch,
   if (secret) headers['X-WhisperBrain-Signature'] = sign(body, secret);
   let res;
   try {
-    res = await fetchImpl(u.href, { method: 'POST', headers, body, signal: AbortSignal.timeout(timeoutMs) });
+    // redirects are not followed: a 307/308 would re-POST the signed payload to wherever the receiver (or someone who took over
+    // its address) points it
+    res = await fetchImpl(u.href, { method: 'POST', headers, body, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
   } catch (e) {
     const timeout = e.name === 'TimeoutError' || e.name === 'AbortError';
     const err = new Error(timeout ? `The webhook did not answer within ${Math.round(timeoutMs / 1000)}s` : `Cannot reach the webhook at ${u.host} (${e.cause?.code || e.message})`);
     err.code = timeout ? 'timeout' : 'unreachable';
+    throw err;
+  }
+  if ((res.status >= 300 && res.status < 400) || res.type === 'opaqueredirect') {
+    let to = '';
+    try { to = new URL(res.headers?.get?.('location') || '', u).host; } catch { /* no usable Location */ }
+    const err = new Error(`The webhook answered with a redirect (HTTP ${res.status}${to ? ` to ${to}` : ''}); redirects are not followed: use the final address`);
+    err.status = res.status;
+    err.code = 'redirect';
     throw err;
   }
   if (!res.ok) {

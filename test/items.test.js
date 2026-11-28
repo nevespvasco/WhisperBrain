@@ -261,6 +261,10 @@ test('a scanned PDF is read by OCR where the tools exist; without them it is kep
   };
   assert.equal(await ocrPdf(Buffer.from('%PDF-fake'), { exec, lang: 'por+eng' }), 'text of p-1.png in por+eng\n\ntext of p-2.png in por+eng');
   assert.deepEqual(calls, ['pdftoppm', 'tesseract', 'tesseract']);
+  // a page of any declared size is rendered into a bounded box (a 200-inch page at 150 dpi was a 900-megapixel image)
+  let ppm;
+  await ocrPdf(Buffer.from('%PDF-fake'), { exec: async (cmd, args) => { if (cmd === 'pdftoppm') ppm = args; return { stdout: '' }; } });
+  assert.ok(ppm.includes('-scale-to') && Number(ppm[ppm.indexOf('-scale-to') + 1]) <= 3000 && !ppm.includes('-r'), ppm.join(' '));
   assert.deepEqual(await available(async () => ({ stdout: '' })), { available: true, reason: '' });
   const missing = await available(async (cmd) => { if (cmd === 'tesseract') throw Object.assign(new Error('x'), { code: 'ENOENT' }); return { stdout: '' }; });
   assert.deepEqual(missing, { available: false, reason: 'tesseract is not installed' });

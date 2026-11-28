@@ -8,6 +8,9 @@ const path = require('node:path');
 const { execFile } = require('node:child_process');
 
 const MAX_PAGES = 20;
+// Pages are rendered into this many pixels on the longest side, whatever size the PDF declares: with -r 150 a crafted 200-inch page
+// became a 900-megapixel image (gigabytes of memory and disk). 2200 px is about 200 dpi for an A4/Letter page, plenty for OCR.
+const MAX_SIDE_PX = 2200;
 const run = (cmd, args, { timeout = 120_000 } = {}) => new Promise((resolve, reject) => execFile(cmd, args, { timeout, maxBuffer: 32 * 1024 * 1024 }, (e, stdout) => (e ? reject(e) : resolve({ stdout }))));
 
 // -> { available, reason } (the commands answer --version / -v)
@@ -24,7 +27,7 @@ async function ocrPdf(buf, { lang = 'por+eng', exec = run, pages = MAX_PAGES } =
   try {
     const pdf = path.join(dir, 'in.pdf');
     fs.writeFileSync(pdf, buf);
-    await exec('pdftoppm', ['-r', '150', '-png', '-f', '1', '-l', String(pages), pdf, path.join(dir, 'p')]);
+    await exec('pdftoppm', ['-scale-to', String(MAX_SIDE_PX), '-png', '-f', '1', '-l', String(pages), pdf, path.join(dir, 'p')]);
     const pngs = fs.readdirSync(dir).filter((f) => /^p-.*\.png$/.test(f)).sort();
     const out = [];
     for (const f of pngs) {
