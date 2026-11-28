@@ -504,3 +504,16 @@ test('the brief narration and rule parsing stop their AI request when the page t
     await until(() => seen.closed > before.closed);
   }
 });
+
+test('AI lanes: the notes and the title go on the summary lane, the meeting analysis on background, Ask on chat; the ledger says so', async (t) => {
+  const app = await boot(t);
+  await withLlm(t, app, (m) => (/JSON/.test(m[0].content) ? '{"overview":"Pricing.","keyPoints":[],"decisions":[],"actionItems":[],"nextSteps":[],"topics":[],"glossary":[]}' : 'Pricing notes'));
+  const n = meeting(app, '', LINES);
+  await app.ai.summarize(n.id);
+  const lanes = () => app.aiRuns.list().map((r) => r.lane).reverse();
+  assert.deepEqual(lanes(), ['summary', 'summary'], 'the notes, then the title');
+  await app.ai.insights(n.id);
+  assert.equal(lanes().at(-1), 'background');
+  await app.ai.chat(n.id, 'What was decided?');
+  assert.equal(lanes().at(-1), 'chat');
+});

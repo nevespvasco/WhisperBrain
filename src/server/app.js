@@ -100,7 +100,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const scheduler = new LlmScheduler(llm, { onRun: (r) => aiRuns.record(r) });   // every AI call is noted (never its text): the egress log
   const knowledge = new Knowledge({ db: conn, notes, settings, bus });
   const briefings = new Briefings({ db: conn, bus });
-  const ai = new AiService({ notes, templates, settings, llm: scheduler.client('chat'), bus, knowledge });
+  const ai = new AiService({ notes, templates, settings, llm: scheduler, bus, knowledge });   // its own lanes: summary, background, chat
   const translator = new Translator({ notes, settings, llm: scheduler.client('translation'), bus });
   translator.attach();   // live translation while recording, and the catch-up after Stop
   const discord = new DiscordVoice({ getConfig: () => settings.get('discord'), libs: discordLibs });

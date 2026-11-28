@@ -61,7 +61,14 @@ function restoring(red, onDelta) {
 }
 
 class AiService {
-  constructor({ notes, templates, settings, llm, bus, knowledge }) { Object.assign(this, { notes, templates, settings, llm, bus, knowledge }); }
+  // llm: an LlmScheduler (the notes and titles on its 'summary' lane, the meeting analysis on 'background', Ask, topic briefs, reply
+  // drafts and the reranking of Ask's excerpts on 'chat': somebody is waiting for those), or one plain client for everything.
+  constructor({ notes, templates, settings, llm, bus, knowledge }) {
+    Object.assign(this, { notes, templates, settings, bus, knowledge });
+    const lane = (p) => (typeof llm?.client === 'function' ? llm.client(p) : llm);
+    this.llm = lane('chat');
+    this.lanes = { summary: lane('summary'), background: lane('background') };
+  }
 
   configured() { return !!this.settings.get('llm').baseUrl; }
 
@@ -89,7 +96,7 @@ class AiService {
           transcript = retrieve.pick(note.title + ' ' + note.body + ' ' + note.summary, lines, Math.floor(budget * 0.7)).map((w) => w.text).join('\n…\n');
         }
         const messages = ins.insightsMessages({ note, transcript, existingTopics: k.topics({ limit: 120 }).map((t) => t.name), existingTerms: k.glossary().map((g) => g.term), userName: this.settings.get('userName') });
-        data = ins.parseInsights(await this.llm.complete(messages, { signal, temperature: 0.1, reasoning: 'off' }));
+        data = ins.parseInsights(await this.lanes.background.complete(messages, { signal, temperature: 0.1, reasoning: 'off' }));
         if (data) mode = 'llm';
         else error = 'The model did not return valid JSON; used offline extraction instead.';
       } catch (e) {
@@ -143,6 +150,7 @@ class AiService {
     const segments = this.notes.segments(noteId);
     if (!note.body.trim() && !segments.length) throw new Error('Nothing to summarize yet: add notes or record a transcript first.');
     const budget = this.budget();
+    const live = !!onDelta;   // somebody is watching it being written: it runs even while the live assistant holds background work
     let transcript = prompts.formatTranscript(segments);
     if (transcript.length > budget) {
       const chunks = prompts.chunkText(transcript, Math.floor(budget * 0.8));
@@ -150,7 +158,7 @@ class AiService {
       for (let i = 0; i < chunks.length; i++) {
         onStage?.({ stage: 'reduce', index: i + 1, total: chunks.length });
         // Capped: a small local model can fall into a repetition loop and, with context shifting on, never stop by itself
-        const part = await this.llm.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1, maxTokens: PARTIAL_MAX_TOKENS, frequencyPenalty: 0.3 });
+        const part = await this.lanes.summary.complete(prompts.partialMessages({ chunk: chunks[i], index: i, total: chunks.length }), { signal, temperature: 0.1, maxTokens: PARTIAL_MAX_TOKENS, frequencyPenalty: 0.3, live });
         partials.push(dropRepeatedLines(part));
       }
       transcript = `(The transcript was long; these are condensed notes of each part, in order.)\n\n${partials.map((p, i) => `--- Part ${i + 1} ---\n${p}`).join('\n\n')}`;
@@ -160,17 +168,17 @@ class AiService {
     const wanted = language ?? (tr.enabled ? tr.notesLanguage : '');
     const messages = prompts.summaryMessages({ note, transcript, template, userName: this.settings.get('userName'), language: isLanguage(wanted) ? wanted : '' });
     let summary = '';
-    for await (const d of this.llm.stream(messages, { signal, maxTokens: SUMMARY_MAX_TOKENS })) { summary += d; onDelta?.(d); }
+    for await (const d of this.lanes.summary.stream(messages, { signal, maxTokens: SUMMARY_MAX_TOKENS, live })) { summary += d; onDelta?.(d); }
     summary = summary.trim();
     if (!summary) throw new Error('The model returned an empty summary.');
     this.notes.update(noteId, { summary, templateId: template.id });
-    if (!note.title.trim()) await this.autoTitle(noteId, { summary, transcript, signal }).catch(() => {});
+    if (!note.title.trim()) await this.autoTitle(noteId, { summary, transcript, signal, live }).catch(() => {});
     return this.notes.get(noteId);
   }
 
   // A title from the summary, else the user's notes, else the transcript. Throws (status 422/502) rather than returning
   // the note untouched, so "Generate a title" can say why nothing changed.
-  async autoTitle(noteId, { summary, transcript, signal } = {}) {
+  async autoTitle(noteId, { summary, transcript, signal, live = true } = {}) {
     const note = this.notes.get(noteId);
     if (!note) return null;
     this.assertShareable(noteId);
@@ -178,7 +186,7 @@ class AiService {
     if (!(summary ?? note.summary ?? '').trim() && !(note.body || '').trim() && !transcript.trim()) {
       throw Object.assign(new Error('Nothing to make a title from yet: this meeting has no summary, notes or transcript.'), { status: 422 });
     }
-    let title = await this.llm.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript }), { signal, temperature: 0.2, maxTokens: 40, reasoning: 'off' });
+    let title = await this.lanes.summary.complete(prompts.titleMessages({ note, summary: summary ?? note.summary, transcript }), { signal, temperature: 0.2, maxTokens: 40, reasoning: 'off', live });
     title = title.split('\n')[0].replace(/^["'#*\s]+|["'.\s]+$/g, '')
       .replace(/^(?:meeting\s+)?title\s*:\s*|^(?:t[íi]tulo(?:\s+da\s+reuni[ãa]o)?)\s*:\s*/i, '').replace(/^["'*\s]+|["'*\s]+$/g, '').slice(0, 100);   // "Meeting Title: …"
     if (!title) throw Object.assign(new Error('The AI did not return a title. Try again, or pick another model in Settings → AI.'), { status: 502 });
