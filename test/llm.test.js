@@ -209,3 +209,22 @@ test('retrieval ranks windows by query terms and keeps chronological order', () 
   assert.deepEqual(wins.map((w) => w.idx), [...wins.map((w) => w.idx)].sort((a, b) => a - b));
   assert.deepEqual(prompts.chunkText('a\nb\nc', 3), ['a\nb', 'c']);
 });
+
+// ---- audit 2026-11-28 (P3): what was said with an AI server on this computer does not follow the chat to a server elsewhere ----
+test('chat history: turns from a server on this computer are not sent once the server is elsewhere; turns made there still are', async (t) => {
+  const srv = await startFakeLlm((messages) => `answer ${messages.length}`);
+  t.after(srv.close);
+  const { ai, notes, settings } = setup({ baseUrl: srv.url, model: 'm' });
+  const n = notes.create({ title: 'Roadmap', body: 'The PostgreSQL migration happens in March.' });
+  await ai.chat(n.id, 'LOCALQUESTION when is the migration?');
+  settings.update({ llm: { baseUrl: srv.url.replace('127.0.0.1', '[::ffff:127.0.0.1]') } });   // the same fake server, as a server elsewhere
+  await ai.chat(n.id, 'REMOTEQUESTION and who owns it?');
+  const sent = JSON.stringify(srv.requests[1].messages);
+  assert.ok(!sent.includes('LOCALQUESTION'), 'the turn made on this computer stayed here');
+  await ai.chat(n.id, 'third question');
+  assert.ok(JSON.stringify(srv.requests[2].messages).includes('REMOTEQUESTION'), 'a turn made with the server elsewhere is kept as context');
+  assert.equal(notes.chatHistory(n.id).length, 6, 'everything is still shown to the person');
+  settings.update({ llm: { baseUrl: srv.url } });
+  await ai.chat(n.id, 'back home');
+  assert.ok(JSON.stringify(srv.requests[3].messages).includes('LOCALQUESTION'), 'on this computer again: the whole history');
+});

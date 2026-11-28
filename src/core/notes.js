@@ -263,12 +263,13 @@ class Notes {
   // ---- chat ----
   chatHistory(noteId) {
     const rows = noteId
-      ? this.db.prepare('SELECT id, role, content, sources, created_at AS createdAt FROM chat_messages WHERE note_id = ? ORDER BY id').all(noteId)
-      : this.db.prepare('SELECT id, role, content, sources, created_at AS createdAt FROM chat_messages WHERE note_id IS NULL ORDER BY id').all();
-    return rows.map(({ sources, ...r }) => { let s = null; try { s = sources ? JSON.parse(sources) : null; } catch { /* kept as none */ } return s?.length ? { ...r, sources: s } : r; });
+      ? this.db.prepare('SELECT id, role, content, sources, remote, created_at AS createdAt FROM chat_messages WHERE note_id = ? ORDER BY id').all(noteId)
+      : this.db.prepare('SELECT id, role, content, sources, remote, created_at AS createdAt FROM chat_messages WHERE note_id IS NULL ORDER BY id').all();
+    return rows.map(({ sources, remote, ...r }) => { let s = null; try { s = sources ? JSON.parse(sources) : null; } catch { /* kept as none */ } return { ...r, ...(s?.length ? { sources: s } : {}), ...(remote ? { remote: true } : {}) }; });
   }
-  addChat(noteId, role, content, sources = null) {
-    const r = this.db.prepare('INSERT INTO chat_messages(note_id, role, content, sources, created_at) VALUES(?, ?, ?, ?, ?) RETURNING id').get(noteId || null, role, content, sources?.length ? JSON.stringify(sources) : null, Date.now());
+  // remote: the turn was answered by an AI server that is not on this computer (see chat in src/llm/service.js)
+  addChat(noteId, role, content, sources = null, { remote = false } = {}) {
+    const r = this.db.prepare('INSERT INTO chat_messages(note_id, role, content, sources, remote, created_at) VALUES(?, ?, ?, ?, ?, ?) RETURNING id').get(noteId || null, role, content, sources?.length ? JSON.stringify(sources) : null, remote ? 1 : 0, Date.now());
     return { id: r.id, role, content };
   }
   clearChat(noteId) {
