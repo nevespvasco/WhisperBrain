@@ -4,6 +4,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
+// Rules for new migrations: append at the end, never edit one that shipped (users already ran it). They run with foreign keys off
+// (see migrate()), so a table can be rebuilt with create / copy / DROP / RENAME. GUARD: items_fts (and the contentless chunks_fts by
+// chunks.id) are keyed on rowids. items has a TEXT primary key, so its rowid is hidden: a rebuild of items MUST copy rowid explicitly
+// (INSERT INTO items_v2 (rowid, ...) SELECT rowid, ... FROM items), or every word-search hit points at another item, across sources
+// and grants (test/data-layer.test.js checks the mapping survives VACUUM). Likewise a rebuilt search table must keep its rowids (search_rowid, v32).
 const MIGRATIONS = [
   // v1
   `

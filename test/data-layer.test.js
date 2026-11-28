@@ -303,3 +303,17 @@ test('"Delete everything" leaves no forgotten addresses, bookkeeping or queue be
   const wal = `${require('node:path').join(dataDir, 'whisperbrain.sqlite')}-wal`;
   assert.ok(!fs.existsSync(wal) || fs.statSync(wal).size === 0, 'the old pages do not linger in the WAL file');
 });
+
+test('item search hits still point at the right items after VACUUM (items_fts is keyed on the hidden rowid of items)', () => {
+  const dir = tmpDir();
+  const db = open(path.join(dir, 'whisperbrain.sqlite'));
+  const items = new ItemStore(db);
+  const src = items.addSource({ kind: 'folder', name: 'docs' });
+  for (let i = 0; i < 30; i++) items.upsert(src.id, { externalId: `d${i}`, title: `Doc ${i}`, text: `w${i}z body` });
+  for (let i = 0; i < 30; i += 3) items.purgeItem(items.byExternal(src.id, `d${i}`).id);   // gaps in the rowids
+  db.exec('VACUUM');
+  for (const i of [1, 2, 4, 29]) assert.deepEqual(items.list({ q: `w${i}z` }).map((x) => x.externalId), [`d${i}`], `w${i}z`);
+  assert.deepEqual(items.list({ q: 'w3z' }), [], 'a purged item stays gone');
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
