@@ -77,10 +77,10 @@ class Account {
       this.db.prepare('DELETE FROM note_speakers').run();
       this.db.prepare('DELETE FROM evidence').run();
       this.db.prepare('DELETE FROM semantic_chunks').run();   // the text copy kept for search by meaning
+      this.db.prepare("UPDATE search SET transcript = '' WHERE transcript <> ''").run();   // the whole-note search's copy, in one statement (not a re-index per note)
       return count;
     });
     this.semantic?.prune();     // and the vectors made from it (when the extension is loaded; otherwise at the next start)
-    for (const { id } of this.db.prepare('SELECT id FROM notes').all()) this.notes.reindex(id);
     this.bus?.publish('account.changed', { what: 'transcripts' });
     return n;
   }

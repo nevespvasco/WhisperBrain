@@ -93,10 +93,7 @@ class Notes {
   }
 
   remove(id) {
-    const changes = tx(this.db, () => {
-      this.db.prepare('DELETE FROM search WHERE note_id = ?').run(id);
-      return this.db.prepare('DELETE FROM notes WHERE id = ?').run(id).changes;
-    });
+    const changes = this.db.prepare('DELETE FROM notes WHERE id = ?').run(id).changes;   // its search row goes with it (trigger, migration 32)
     if (changes) this.bus?.publish('note.deleted', { id });
     return changes > 0;
   }
@@ -171,13 +168,19 @@ class Notes {
     });
   }
 
+  // The note's row in the whole-note search, replaced by its rowid (search_rowid): note_id is not indexed there, so a delete by it
+  // would scan every note.
   reindex(id) {
     const n = this.get(id);
-    this.db.prepare('DELETE FROM search WHERE note_id = ?').run(id);
-    if (!n) return;
-    const transcript = this.transcriptText(id);
-    this.db.prepare('INSERT INTO search(note_id, title, body, summary, transcript) VALUES(?, ?, ?, ?, ?)')
-      .run(id, n.title, n.body, n.summary, transcript);
+    const transcript = n ? this.transcriptText(id) : '';
+    const run = () => {
+      const had = this.db.prepare('SELECT fts_rowid AS r FROM search_rowid WHERE note_id = ?').get(id);
+      if (had) this.db.prepare('DELETE FROM search WHERE rowid = ?').run(had.r);
+      if (!n) { this.db.prepare('DELETE FROM search_rowid WHERE note_id = ?').run(id); return; }
+      const r = this.db.prepare('INSERT INTO search(note_id, title, body, summary, transcript) VALUES(?, ?, ?, ?, ?)').run(id, n.title, n.body, n.summary, transcript);
+      this.db.prepare('INSERT INTO search_rowid (note_id, fts_rowid) VALUES (?, ?) ON CONFLICT (note_id) DO UPDATE SET fts_rowid = excluded.fts_rowid').run(id, Number(r.lastInsertRowid));
+    };
+    if (this.db.isTransaction) run(); else tx(this.db, run);
   }
 
   // ---- transcript ----

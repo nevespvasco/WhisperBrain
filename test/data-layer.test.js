@@ -228,3 +228,61 @@ test('merged people and promise reminders are looked up by index', () => {
   const idx = new Set(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((r) => r.name));
   for (const name of ['items_kind_updated', 'entities_merged', 'reminders_assertion']) assert.ok(idx.has(name), name);
 });
+
+// ---------- the legacy whole-note search table ----------
+const searchRows = (db) => db.prepare('SELECT COUNT(*) AS n FROM search').get().n;
+
+test('the whole-note search keeps one row per note, found by its rowid: re-indexing and deleting never scan the table', () => {
+  const db = open(':memory:');
+  const notes = new Notes(db, null);
+  const a = notes.create({ title: 'Alpha budget' }), b = notes.create({ title: 'Beta hiring' });
+  notes.update(a.id, { body: 'more words' });
+  notes.reindex(a.id); notes.reindex(a.id);
+  assert.equal(searchRows(db), 2, 'one row per note');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM search_rowid').get().n, 2);
+  assert.deepEqual(notes.search('budget').map((r) => r.note.id), [a.id]);
+  notes.remove(a.id);
+  assert.equal(searchRows(db), 1);
+  assert.deepEqual(notes.search('budget'), []);
+  db.prepare('DELETE FROM notes WHERE id = ?').run(b.id);   // any delete, not only Notes.remove
+  assert.equal(searchRows(db), 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM search_rowid').get().n, 0);
+});
+
+test('deleting every transcript empties the transcript column in one statement; retention removes the search rows', () => {
+  const { Account } = require('../src/core/account');
+  const db = open(':memory:');
+  const notes = new Notes(db, null);
+  const ids = [];
+  for (let i = 0; i < 5; i++) {
+    const n = notes.create({ title: `Meeting ${i}`, createdAt: 1000 + i });
+    notes.addSegments(n.id, [{ speaker: 'them', startMs: 0, endMs: 900, text: `zebra${i} said this` }]);
+    notes.reindex(n.id);
+    ids.push(n.id);
+  }
+  const account = new Account({ db, notes, bus: null });
+  assert.equal(notes.search('zebra3').length, 1);
+  account.deleteTranscripts();
+  assert.equal(notes.search('zebra3').length, 0, 'the transcript words are gone');
+  assert.equal(notes.search('Meeting').length, 5, 'titles stay');
+  assert.equal(account.applyRetention({ days: 1, now: Date.now() + 2 * 86400000 }), 5);
+  assert.equal(searchRows(db), 0);
+});
+
+test('an existing search table gets its rowid map on upgrade: duplicates and rows of deleted notes go', () => {
+  const dir = tmpDir();
+  const file = path.join(dir, 'whisperbrain.sqlite');
+  const v = MIGRATIONS.findIndex((m) => m.includes('CREATE TABLE search_rowid'));
+  assert.ok(v > 0);
+  const old = new DatabaseSync(file);
+  for (const m of MIGRATIONS.slice(0, v)) old.exec(m);
+  old.exec(`PRAGMA user_version = ${v}`);
+  old.exec(`INSERT INTO notes (id, title, created_at, updated_at) VALUES ('n1', 'Kept', 1, 1);
+    INSERT INTO search (note_id, title, body, summary, transcript) VALUES ('n1', 'Old title', '', '', ''), ('n1', 'Kept', '', '', ''), ('gone', 'Ghost', '', '', '');`);
+  old.close();
+  const db = open(file);
+  assert.deepEqual(db.prepare('SELECT note_id, title FROM search').all().map((r) => ({ ...r })), [{ note_id: 'n1', title: 'Kept' }]);
+  assert.equal(db.prepare("SELECT fts_rowid FROM search_rowid WHERE note_id = 'n1'").get().fts_rowid, db.prepare('SELECT rowid FROM search').get().rowid);
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

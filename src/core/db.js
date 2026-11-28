@@ -779,6 +779,21 @@ const MIGRATIONS = [
   CREATE INDEX entities_merged ON entities(merged_into) WHERE merged_into IS NOT NULL;
   CREATE INDEX reminders_assertion ON reminders(assertion_id) WHERE assertion_id IS NOT NULL;
   `,
+  // v32: the whole-note search table (v1 'search', src/core/notes.js) found a note's row by note_id, an UNINDEXED column: every delete
+  // or re-index scanned the table, so retention and "delete transcripts" were quadratic. search_rowid maps a note to its row; a note's
+  // row goes with the note whatever deletes it. Duplicate rows (the newest is kept) and rows of deleted notes are dropped once here.
+  `
+  CREATE TABLE search_rowid (
+    note_id TEXT PRIMARY KEY,
+    fts_rowid INTEGER NOT NULL UNIQUE
+  );
+  DELETE FROM search WHERE note_id NOT IN (SELECT id FROM notes) OR rowid NOT IN (SELECT MAX(rowid) FROM search GROUP BY note_id);
+  INSERT INTO search_rowid (note_id, fts_rowid) SELECT note_id, rowid FROM search;
+  CREATE TRIGGER search_note_del AFTER DELETE ON notes BEGIN
+    DELETE FROM search WHERE rowid = (SELECT fts_rowid FROM search_rowid WHERE note_id = OLD.id);
+    DELETE FROM search_rowid WHERE note_id = OLD.id;
+  END;
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after
