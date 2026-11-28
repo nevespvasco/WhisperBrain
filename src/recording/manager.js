@@ -116,7 +116,7 @@ class RecordingManager {
     const prior = this.notes.segments(noteId).reduce((m, x) => Math.max(m, x.endMs), 0);
     // claim the slot synchronously so concurrent start() calls cannot both pass the check above
     const a = this.active = {
-      noteId, chosenApps: apps?.length ? apps : null, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
+      noteId, chosenApps: apps?.length ? apps : null, reopen: {}, shown: '', micMuted: false, channels: {}, paused: false, finalizing: false, accMs: prior ? prior + 1000 : 0, resumedAt: Date.now(), epoch: { mic: 0, system: 0 },
       fed: { mic: 0, system: 0 }, spool: {}, base: { mic: 0, system: 0 }, refs: [], rendererChannels: [], trackers: this.makeTrackers(noteId, this.sameVoiceThreshold()), last: {}, lastLevel: 0, level: { mic: 0, system: 0 }, warnings: [],
       env: { mic: new EnergyEnvelope(), system: new EnergyEnvelope() }, aec: null, echoDropped: { text: 0, energy: 0 },
       stretches: { mic: [], system: [] }, // per channel: where each stretch of audio (start, resume) begins in the spool and on the timeline
@@ -129,27 +129,44 @@ class RecordingManager {
       discord: null,                       // { info, onAudio } while the bot is in the call
       meet: null,                          // what the meeting window shows while recording: highlights, roster, captions (src/meet/collector.js)
     };
+    a.starting = true;
+    let started;
+    a.started = new Promise((r) => { started = r; });
     this.bus.live?.set(noteId, []); // while it runs, who spoke is shown cautiously, and numbers do not move (speakers/display.js)
     if (this.meet && s.meet.enabled) a.meet = new MeetingCollector({ hub: this.meet, elapsed: () => this.elapsed(a), paused: () => a.paused, originMs: a.accMs, useCaptions: s.meet.captions, selfNames: () => [this.settings.get('userName')] });
+    // Stop can come during any of the waits below (the tray, the detector's auto-stop, a quit): it sets a.cancelled and waits for
+    // a.started. Each wait is followed by this check, and whatever was opened so far (capture, echo cancellation, the bot in the
+    // call) is closed by teardown below. The note only becomes 'recording' after the last check.
+    const going = () => { if (a.cancelled || this.active !== a) throw new RecordingError('cancelled', 'The recording was stopped before it had started.'); };
+    const cap = this.platform.capture;
+    let micOpening = null; // the native microphone, opened while the vocabulary loads and the bot joins (echo cancellation takes seconds to settle)
     try {
       await this.ensureEngine();
+      going();
+      if (want.mic && cap.mic === 'native') micOpening = this.openMic(s).then((src) => ({ src }), (e) => ({ e }));
       await this.applyVocabulary(noteId);
+      going();
       this.applyDraft(a); // loads in the worker's queue ahead of the first audio; the recording does not wait for it
       a.resumedAt = Date.now();
       const joined = await this.joinDiscord(a, s, want.mic);
+      going();
       if (speakerTest) {
         if (!joined) throw new RecordingError('no-discord', 'A speaker test needs the Discord bot in your voice channel: set it up in Settings → Integrations → Discord, join a voice channel, then try again.');
         if (!this.spoolDir) throw new RecordingError('no-disk', 'A speaker test needs somewhere to keep the audio.');
         want.system = true; // the mixed sound is the thing under test; it goes to disk, not to the transcript (onPcm)
         a.test = new SpeakerTestRecorder(nodePath.join(nodePath.dirname(this.spoolDir), 'speaker-tests', `${new Date().toISOString().replace(/[:.]/g, '-')}-${noteId.slice(0, 8)}`), { selfUserId: s.discord?.userId });
       } else if (joined) want.system = false; // the bot hears everyone separately: the mixed system audio would only repeat it
-      const cap = this.platform.capture;
       for (const ch of ['mic', 'system']) {
         if (!want[ch]) continue;
         try {
           let src;
           if (cap[ch] === 'native') {
-            src = ch === 'mic' ? await this.openMic(s) : await this.platform.createSystemSource(a.chosenApps ? { apps: a.chosenApps } : wholeOutput ? { wholeOutput: true } : { app: await this.resolveSystemApp(s, app) });
+            // how this channel's capture is opened, kept to open it again if the capture process dies (attach: 'end')
+            if (ch === 'mic') { a.reopen.mic = () => this.openMic(s); const r = await micOpening; micOpening = null; if (r.e) throw r.e; src = r.src; } else {
+              const o = a.chosenApps ? { apps: a.chosenApps } : wholeOutput ? { wholeOutput: true } : { app: await this.resolveSystemApp(s, app) };
+              a.reopen.system = () => this.platform.createSystemSource(o);
+              src = await a.reopen.system();
+            }
           } else {
             src = new PushSource();
             a.rendererChannels.push(ch);
@@ -163,8 +180,10 @@ class RecordingManager {
             this.bus.publish('recording.warning', { message: `${ch}: ${e.message}` });
           } else throw e;
         }
+        going();
       }
       if (!Object.keys(a.channels).length && !a.discord) throw new RecordingError('no-source', 'No audio source could be started.');
+      going();
       this.notes.update(noteId, { status: 'recording', startedAt: note.startedAt || Date.now() });
       for (const src of Object.values(a.channels)) src.start();
       this.bus.publish('recording.started', { noteId, channels: Object.keys(a.channels), needsRenderer: a.rendererChannels, echoCancellation: a.aec, systemCapture: a.channels.system?.capture || null });
@@ -172,9 +191,13 @@ class RecordingManager {
       return this.status();
     } catch (e) {
       this.teardown(a);
-      this.active = null;
+      micOpening?.then((r) => { try { r.src?.stop(); } catch { /* gone */ } }); // opened in parallel and never attached
+      if (this.active === a) this.active = null;
       this.bus.live?.delete(noteId);
       throw e;
+    } finally {
+      a.starting = false;
+      started();
     }
   }
 
@@ -576,13 +599,19 @@ class RecordingManager {
     return 'ok';
   }
 
-  async settle(a) {
-    await Promise.all([...a.remote.values()].map((r) => r.chain)).catch(() => {}); // audio from Discord that is still queued goes in first
-    await Promise.all([...Object.keys(a.channels), ...a.remote.keys()].map(async (ch) => {
-      await this.engine.flush(ch);
-      this.engine.reset(ch);
-      a.fed[ch] = 0;
-    }));
+  // Decode what each channel still holds and close it, so the next audio starts a new stretch. Resume and Stop wait for a
+  // settle in progress (a.settling): audio fed into a channel that is about to be reset would be lost, and its times wrong.
+  settle(a) {
+    if (a.settling) return a.settling;
+    a.settling = (async () => {
+      await Promise.all([...a.remote.values()].map((r) => r.chain)).catch(() => {}); // audio from Discord that is still queued goes in first
+      await Promise.all([...Object.keys(a.channels), ...a.remote.keys()].map(async (ch) => {
+        try { await this.engine.flush(ch); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
+        this.engine.reset(ch);
+        a.fed[ch] = 0;
+      }));
+    })().finally(() => { a.settling = null; });
+    return a.settling;
   }
 
   // Stop recording what the user says, and start again, without stopping the meeting: the microphone's audio is replaced by silence
@@ -600,7 +629,7 @@ class RecordingManager {
 
   async pause() {
     const a = this.active;
-    if (!a || a.paused || a.finalizing) return this.status();
+    if (!a || a.paused || a.finalizing || a.starting) return this.status();
     a.accMs += Date.now() - a.resumedAt;
     a.paused = true;
     await this.settle(a);
@@ -608,9 +637,14 @@ class RecordingManager {
     return this.status();
   }
 
-  resume() {
+  // Synchronous unless a pause is still flushing: then it waits for that first (see settle).
+  async resume() {
     const a = this.active;
     if (!a || !a.paused) return this.status();
+    if (a.settling) {
+      await a.settling;
+      if (this.active !== a || !a.paused || a.finalizing) return this.status();
+    }
     a.paused = false;
     a.resumedAt = Date.now();
     this.bus.publish('recording.resumed', { noteId: a.noteId });
@@ -620,6 +654,11 @@ class RecordingManager {
   async stop() {
     const a = this.active;
     if (!a) throw new RecordingError('idle', 'No recording in progress.');
+    if (a.starting) { // still starting: cancel it (start() closes what it opened) and wait until it has
+      a.cancelled = true;
+      await a.started;
+      if (this.active !== a) return { noteId: a.noteId, durationMs: 0, cancelled: true, note: this.notes.get(a.noteId) };
+    }
     if (a.finalizing) return this.status();
     if (!a.paused) a.accMs += Date.now() - a.resumedAt;
     a.finalizing = true;
@@ -630,7 +669,7 @@ class RecordingManager {
     this.leaveDiscord(a);
     if (a.test) { try { const t = a.test.close(); this.bus.publish('recording.speaker-test', { noteId: a.noteId, ...t }); } catch (e) { this.bus.publish('recording.warning', { message: `speaker test: ${e.message}` }); } }
     a.meet?.detach(); // nothing the meeting window shows after Stop belongs to this recording
-    try { await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
+    try { await a.settling; await this.settle(a); } catch (e) { this.bus.publish('recording.warning', { message: e.message }); }
     if (this.speakers) {
       const s = this.settings.all();
       const threshold = this.sameVoiceThreshold();
