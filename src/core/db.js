@@ -799,6 +799,11 @@ const MIGRATIONS = [
     DELETE FROM search_rowid WHERE note_id = OLD.id;
   END;
   `,
+  // v33: where each chat turn was answered. remote = 1: by an AI server not on this computer; 0 or NULL (older turns): on this computer.
+  // A server elsewhere is given only the turns that were already sent to one (src/llm/service.js chat).
+  `
+  ALTER TABLE chat_messages ADD COLUMN remote INTEGER;
+  `,
 ];
 
 // allowExtension: lets the program load an extension (sqlite-vec) once, on purpose; it is switched off again right after

@@ -59,7 +59,18 @@ function checkValue(pathStr, value) {
   validateSetting(a, b === undefined ? value : { ...DEFAULTS[a], [b]: value });
 }
 
-// this computer or the local network: loopback, private addresses, and names ending .local / .lan
+// This computer only: localhost, 127.0.0.0/8 and ::1 (no server set: nothing leaves). What the "only on this computer" grant,
+// redaction, the egress ledger and every automatic send to the AI decide on: a GPU box on the office network is another computer,
+// reached over the network (often plain HTTP), so it is treated like any other remote server. ui/locality.js mirrors this.
+function isThisComputer(url) {
+  if (!String(url || '').trim()) return true;
+  let host;
+  try { host = new URL(url).hostname.toLowerCase().replace(/^\[|\]$/g, ''); } catch { return false; }
+  return host === 'localhost' || host === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
+}
+
+// This computer or the local network: loopback, private addresses, and names ending .local / .lan. Only for an organisation's
+// requireLocalLlm (where it may run its own server on its network); privacy decisions use isThisComputer.
 function isLocalUrl(url) {
   if (!String(url || '').trim()) return true;           // no server set: nothing leaves
   let host;
@@ -71,4 +82,4 @@ function isLocalUrl(url) {
   return a === 127 || a === 10 || (a === 192 && b === 168) || (a === 172 && b >= 16 && b <= 31);   // not 169.254.x.x: that is where cloud metadata services live
 }
 
-module.exports = { loadPolicy, policyFiles, isLocalUrl };
+module.exports = { loadPolicy, policyFiles, isLocalUrl, isThisComputer };

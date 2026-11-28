@@ -6,6 +6,7 @@ import { openExport } from './transfer.js';
 import * as meetPanel from './meet-panel.js';
 import { openSetup } from './setup.js';
 import { SETTINGS_SECTIONS } from '../nav.js';
+import { isThisComputer } from '../locality.js';
 
 const SECTIONS = SETTINGS_SECTIONS;   // shared with the Setup door's panel (ui/nav.js)
 let modelListener = null; // the Audio section's download listener (see bind)
@@ -236,6 +237,10 @@ const SECTION = {
       ${field('llm-key', t('API key'), `<input type="password" id="llm-key" value="${esc(l.apiKey)}" autocomplete="off">`)}
       ${field('llm-model', t('Model'), `<div class="row"><input id="llm-model" list="llm-models" value="${esc(l.model)}"><datalist id="llm-models"></datalist><button class="btn" data-act="llm-list">${icon('refresh', 'sm')}</button></div>`)}
       <div class="row"><button class="btn primary" data-act="llm-save">${t('Save')}</button><button class="btn" data-act="llm-test">${t('Test connection')}</button><span id="llm-result" class="small"></span></div></div></section>
+      <section class="panel"><div class="panel-head"><h3>${t('After a meeting, by itself')}</h3></div>
+        ${l.baseUrl && !isThisComputer(l.baseUrl) && !S.settings.autoRemote ? `<div class="banner small">${icon('alert')}<div class="grow">${t('Your AI server is not on this computer, so nothing is sent to it by itself after a meeting. Enhance a meeting yourself, or allow it below.')}</div></div>` : ''}
+        ${tog('set-assertions', S.settings.autoAssertions, t('Look for decisions and commitments'), t('After each meeting the AI reads the whole transcript and suggests the decisions and promises in it, each with its quote. Nothing is accepted by itself.'))}
+        ${tog('set-autoremote', S.settings.autoRemote, t('Also send to an AI server that is not on this computer'), t('Off: what runs by itself after a meeting (enhanced notes, topics and action items, decisions and commitments) only uses an AI server on this computer. On: the whole transcript of every meeting is sent to your server by itself. What you start yourself is always sent.'))}</section>
       <section class="panel"><div class="panel-head"><h3>${t('Search by meaning')}</h3><span class="badge" id="ix-state"></span></div>
         <p class="hint" style="margin-top:0">${t('Name an embedding model and search finds notes by what they mean, not only by the words in them. For Ollama: pull one (for example embeddinggemma or qwen3-embedding) and type its name. Leave it empty to search by words only. Your notes are sent to this server to be turned into numbers, so private folders are only used when the server is on this computer.')}</p>
         ${field('llm-embed', t('Embedding model'), `<input id="llm-embed" value="${esc(S.settings.embeddingModel || '')}" placeholder="embeddinggemma" autocomplete="off" spellcheck="false">`)}
@@ -247,7 +252,7 @@ const SECTION = {
   async translation() {
     S.languages ||= await api('GET', '/api/languages');
     const tr = S.settings.translation, langs = S.languages, by = new Map(langs.map((l) => [l.code, l]));
-    const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
+    const local = isThisComputer(S.settings.llm?.baseUrl);
     const option = (l, sel) => `<option value="${l.code}" ${l.code === sel ? 'selected' : ''}>${esc(l.name)}${l.native !== l.name ? ` · ${esc(l.native)}` : ''}</option>`;
     const chosen = tr.targets.map((c, i) => `<span class="chip">${esc(by.get(c)?.name || c)}${i === 0 ? ` <span class="xsmall muted">${t('live')}</span>` : `<button class="btn xs ghost icon" data-tr-first="${esc(c)}" title="${esc(t('Use this one for live translation'))}" aria-label="${esc(t('Use this one for live translation'))}">${icon('chevleft', 'sm')}</button>`}<button class="btn xs ghost icon" data-tr-del="${esc(c)}" title="${esc(t('Remove'))}" aria-label="${esc(t('Remove'))}">${icon('x', 'sm')}</button></span>`).join('');
     return `<section class="panel"><div class="panel-head"><h3>${t('Translation')}</h3></div>
@@ -265,7 +270,7 @@ const SECTION = {
   async assistant() {
     const a = S.settings.assistant;
     S.languages ||= await api('GET', '/api/languages');
-    const local = /^https?:\/\/(localhost|127(\.\d{1,3}){3}|\[::1\])([:/]|$)/i.test(S.settings.llm?.baseUrl || '');
+    const local = isThisComputer(S.settings.llm?.baseUrl);
     const sel = (id, value, opts) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${v}" ${String(v) === String(value) ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select>`;
     const tp = S.settings.teleprompter;
     const withValue = (list, v) => (list.includes(v) ? list : [...list, v].sort((x, y) => x - y)); // a value set with the mouse wheel over the teleprompter
@@ -327,7 +332,7 @@ function bind(main, sec, body) {
     'set-lang': (v) => ({ language: v }), 'set-detect': (v) => ({ detectMeetings: v }), 'set-updates': (v) => ({ checkUpdates: v }), 'set-autorec': (v) => ({ autoRecord: v }), 'set-ptx': (v) => ({ platformTranscript: v }), 'set-autostop': (v) => ({ autoStop: v }), 'set-perapp': (v) => ({ perAppCapture: v }), 'set-capture': (v) => ({ captureCalendar: v }), 'set-consent': (v) => ({ consentPreset: v }),
     'set-notify': (v) => ({ notifyUpcoming: v }), 'set-autosum': (v) => ({ autoSummarize: v }), 'set-insights': (v) => ({ autoInsights: v }), 'def-tpl': (v) => ({ defaultTemplate: v }),
     'set-mic': (v) => ({ micEnabled: v }), 'set-sys': (v) => ({ systemAudioEnabled: v }), 'set-echo': (v) => ({ echoDedupe: v }), 'set-speakers': (v) => ({ speakerDetection: v }), 'set-refine': (v) => ({ speakerRefine: v }), 'set-counthint': (v) => ({ speakerCountHint: v }), 'set-diarize': (v) => ({ speakerDiarize: v }), 'set-pipeline': (v) => ({ speakerPipeline: v ? 'owned' : 'sherpa' }), 'set-float': (v) => ({ floatingRecorder: v }), 'set-names-text': (v) => ({ speakerNamesFromTranscript: v }), 'set-device': (v) => ({ micDevice: v }), 'set-asr': (v) => ({ asrModel: v }), 'set-aec': (v) => ({ echoCancel: v }), 'set-ns': (v) => ({ micNoiseSuppression: v }), 'set-agc': (v) => ({ micAutoGain: v }), 'set-hotwords': (v) => ({ asrHotwords: v }), 'set-livedraft': (v) => ({ liveDraft: v }),
-    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }), 'set-rerank': (v) => ({ rerank: v }),
+    'set-collapsed': (v) => ({ sidebarCollapsed: v }), 'set-start': (v) => ({ startPage: v }), 'llm-embed': (v) => ({ embeddingModel: String(v).trim() }), 'bk-dir': (v) => ({ backupDir: String(v).trim() }), 'set-rerank': (v) => ({ rerank: v }), 'set-assertions': (v) => ({ autoAssertions: v }), 'set-autoremote': (v) => ({ autoRemote: v }),
     'tr-enabled': (v) => ({ translation: { enabled: v } }), 'tr-live': (v) => ({ translation: { live: v } }), 'tr-view': (v) => ({ translation: { view: v } }), 'tr-notes': (v) => ({ translation: { notesLanguage: v } }),
     'tr-add': (v) => (v ? { translation: { targets: [...S.settings.translation.targets, v] } } : null),
     'as-enabled': (v) => ({ assistant: { enabled: v } }), 'as-mode': (v) => ({ assistant: { mode: v } }), 'as-trigger': (v) => ({ assistant: { trigger: v } }), 'as-reveal': (v) => ({ assistant: { revealMs: Number(v) } }),

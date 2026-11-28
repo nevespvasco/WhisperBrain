@@ -318,3 +318,13 @@ test('parseNames: a name a voice says to somebody ("Nimu, is this ok?") is not t
   // the one spoken to, answering right after, may still get the name (somebody calls them by name right before they speak)
   assert.deepEqual(parseNames(reply([{ speaker: 'S8', name: 'Nimu', evidence: 'L2' }]), b).found.map((f) => f.name), ['Nimu']);
 });
+
+test('LiveNames asks whether this meeting may be read (its source may keep it on this computer) before each pass', () => {
+  const asked = [];
+  const live = new LiveNames({ notes: {}, speakers: {}, llm: {}, bus: { subscribe() {} }, allowed: (id) => { asked.push(id); return false; } });
+  live.start('n1');
+  live.run.fresh = LIVE_EVERY_LINES; live.run.last = -LIVE_MIN_GAP_MS;
+  assert.equal(live.hear('n1', { text: 'hello there' }), null);
+  assert.deepEqual(asked, ['n1']);
+  live.stop();
+});

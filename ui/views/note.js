@@ -852,7 +852,12 @@ async function mergeSpeakers() {
 async function guessNames(btn) {
   btn.disabled = true;
   try {
-    const r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`);
+    let r;
+    try { r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`); } catch (e) {
+      if (e.code !== 'confirm-remote') throw e;   // a server elsewhere: the transcript goes there only with a yes for this meeting
+      if (!(await confirmDialog(t('Your AI server is not on this computer: guessing names sends this meeting\'s transcript to it. Go ahead?')))) { btn.disabled = false; return; }
+      r = await api('POST', `/api/notes/${N.id}/speakers/guess-names`, { confirm: true });
+    }
     toast(r.named.length ? t('Names found: {n}', { n: r.named.length }) : t('Nobody could be named: the conversation does not say who they are.'));
     await reloadTranscript();
   } catch (e) { fail(e); btn.disabled = false; }

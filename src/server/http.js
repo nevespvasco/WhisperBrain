@@ -12,7 +12,7 @@ const { LANGUAGES, isLanguage } = require('../llm/languages');
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon', '.json': 'application/json' };
 const COOKIE = 'wb_token';
-const { mayPass } = require('../core/lock');
+const { mayPass, isUse } = require('../core/lock');
 const MAX_JSON = 2 * 1024 * 1024;
 const MAX_AUDIO = 1024 * 1024 * 1024;
 
@@ -249,9 +249,12 @@ function createRoutes(app) {
     });
   });
   // ask the AI who the unnamed voices are, from what people say; a name stands only with the line that shows it
-  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params }) => {
+  add('POST', '/api/notes/:id/speakers/guess-names', async ({ params, body }) => {
     noteOr404(params.id);
     if (!app.ai.configured()) throw new HttpError(409, 'No AI server is set up. Add one in Settings → AI.');
+    app.ai.assertShareable(params.id);   // a meeting its source keeps on this computer is not read by a server elsewhere (409 local-only)
+    // a server elsewhere gets the transcript from a click only with a yes for it, unless names are set to "always"
+    if (app.settings.get('speakerNamesFromTranscript') !== 'on' && !require('../core/policy').isThisComputer(app.settings.get('llm').baseUrl) && body?.confirm !== true) throw new HttpError(409, 'Your AI server is not on this computer: guessing names sends this transcript to it.', 'confirm-remote');
     const r = await nameFromTranscript({ notes: app.notes, speakers: app.speakers, evidence: app.evidence, llm: app.scheduler.client('background'), userName: app.settings.get('userName') }, params.id);
     if (r.error) throw new HttpError(502, `The AI server did not answer: ${r.error}`);
     if (r.named.length) app.notes.reindex(params.id);
@@ -409,7 +412,7 @@ function createRoutes(app) {
   // events (SSE)
   add('GET', '/api/events', async ({ req, res }) => {
     const sse = startSse(req, res);
-    const off = app.bus.subscribe((e) => sse.send(e.type, e.data));
+    const off = app.bus.subscribe((e) => { sse.send(e.type, e.data); if (e.type === 'lock.changed' && e.data?.locked) sse.end(); });   // locked: the page is told, and nothing more flows
     const ping = setInterval(() => res.write(': ping\n\n'), 25000);
     res.on('close', () => { off(); clearInterval(ping); });
     return { handled: true };
@@ -458,7 +461,7 @@ function createServer(app, { uiDir, token = crypto.randomBytes(24).toString('hex
     // the app lock: while locked, nothing but the lock itself (and the audio of a recording already running) is answered
     if (app.lock) {
       if (app.lock.locked() && !mayPass(req.method, url.pathname)) throw new HttpError(423, 'The app is locked.', 'locked');
-      if (!/^\/api\/(events|lock)/.test(url.pathname)) app.lock.touch();
+      if (isUse(url.pathname)) app.lock.touch();   // audio chunks of a recording are not somebody at the computer
     }
     for (const rt of routes) {
       if (rt.method !== req.method) continue;

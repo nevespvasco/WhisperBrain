@@ -12,6 +12,7 @@ const { neutralizeTags, speakerNamesMessages } = require('../llm/prompts');
 const { fmtClock } = require('../core/notes');
 const { nameKey } = require('../meet/protocol');
 const { extractJson } = require('../llm/insights');
+const { isThisComputer } = require('../core/policy');
 
 const MAX_LINES = 400;     // the newest lines sent to the AI
 const REACH = 2;           // how far from the evidence line the named voice may speak: "Okay, Amos, thank you" comes right after Amos
@@ -159,13 +160,9 @@ async function nameFromTranscript({ notes, speakers, evidence, llm, userName = '
   return { named, refuted };
 }
 
-// Does the AI server run on this computer? (a transcript sent to it does not leave the machine)
-function isLocalServer(url) {
-  try {
-    const host = new URL(String(url || '')).hostname.toLowerCase();
-    return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
-  } catch { return false; }
-}
+// Does the AI server run on this computer? (a transcript sent to it does not leave the machine). The one rule of policy.js; no
+// server at all is not a server on this computer here.
+function isLocalServer(url) { return !!String(url || '').trim() && isThisComputer(url); }
 
 // While the meeting is still going: the same question, asked again every so often about the voices that have no name yet, so
 // "I'm Maria" at minute two puts a name on the screen at minute three. A pass costs one AI request, so it waits until there are
@@ -180,7 +177,7 @@ const LIVE_TIMEOUT_MS = 60000;
 const LIVE_MAX_FAILURES = 3;    // then this recording is left alone until Stop
 
 class LiveNames {
-  // deps: { notes, speakers, evidence, llm, bus, allowed (() -> whether the settings and the AI server permit it), userName (() -> the user's name), now }
+  // deps: { notes, speakers, evidence, llm, bus, allowed ((noteId) -> whether the settings, the AI server and the meeting's source permit it), userName (() -> the user's name), now }
   constructor({ notes, speakers, evidence = null, llm, bus, allowed = () => true, userName = () => '', now = Date.now }) {
     Object.assign(this, { notes, speakers, evidence, llm, bus, allowed, userName, now });
     this.run = null;   // the recording being followed: { noteId, fresh, last, busy, failures, abort }
@@ -208,7 +205,7 @@ class LiveNames {
     if (!r || r.noteId !== noteId || !segment?.text) return null;
     r.fresh++;
     if (r.busy || r.failures >= LIVE_MAX_FAILURES || r.fresh < LIVE_EVERY_LINES || this.now() - r.last < LIVE_MIN_GAP_MS) return null;
-    if (!this.allowed()) return null;
+    if (!this.allowed(noteId)) return null;
     return this.pass(r);
   }
 

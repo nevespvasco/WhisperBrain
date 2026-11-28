@@ -34,6 +34,7 @@ const { DiscordRpcSource } = require('../discord/rpc-source');
 const { MeetService } = require('../meet/service');
 const { Evidence } = require('../meet/evidence');
 const { nameFromTranscript, isLocalServer, LiveNames } = require('../speakers/transcript-names');
+const { isThisComputer } = require('../core/policy');
 const { Translator } = require('../llm/translate');
 const { LlmScheduler } = require('../llm/scheduler');
 const { Briefings } = require('../knowledge/briefings');
@@ -118,10 +119,12 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   const dictation = new Dictation({ platform: plat, engine, models, settings, bus });
   const account = new Account({ db: conn, notes, settings, speakers, models, dataDir, bus, knowledge, semantic });
 
-  // May the AI read a transcript to name voices? (the setting, and for 'auto' an AI server on this computer)
-  const namesFromTranscriptAllowed = () => ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl)));
+  // May the AI read a transcript to name voices? (the setting, for 'auto' an AI server on this computer, and what the meeting's source allows)
+  const namesFromTranscriptAllowed = (noteId) => ai.configured() && (settings.get('speakerNamesFromTranscript') === 'on' || (settings.get('speakerNamesFromTranscript') === 'auto' && isLocalServer(settings.get('llm').baseUrl))) && mayShare('note', noteId);
   // ...and the same while the meeting is still going, for the voices that have no name yet
-  new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: () => settings.get('speakerDetection') && namesFromTranscriptAllowed(), userName: () => settings.get('userName') }).attach();
+  new LiveNames({ notes, speakers, evidence, llm: scheduler.client('background'), bus, allowed: (noteId) => settings.get('speakerDetection') && namesFromTranscriptAllowed(noteId), userName: () => settings.get('userName') }).attach();
+  // May work nobody clicked send a transcript to the AI server? Always to one on this computer; elsewhere only with autoRemote (Settings → AI)
+  const autoSendAllowed = () => isThisComputer(settings.get('llm').baseUrl) || settings.get('autoRemote');
 
   // Background work lives in the jobs table (src/jobs), so quitting midway loses nothing: what was running is run again at the
   // next start. When a recording ends: names from the conversation → the summary (if auto-enhance is on) → topics, glossary
@@ -135,7 +138,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   runner.register('note.names', async ({ noteId }, { enqueue }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
     // first, so the notes already say who is who: names from what people said (never replaces one somebody typed)
-    if (namesFromTranscriptAllowed()) {
+    if (namesFromTranscriptAllowed(noteId)) {
       try { const r = await nameFromTranscript({ notes, speakers, evidence, llm: scheduler.client('background'), userName: settings.get('userName'), signal: AbortSignal.timeout(NAMES_TIMEOUT_MS) }, noteId); if (r.named.length) notes.reindex(noteId); } catch (err) { bus.publish('recording.warning', { message: `names from the conversation: ${err.message}` }); }
     }
     chain('note.names', noteId, {}, enqueue);
@@ -143,7 +146,9 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   });
   runner.register('note.summarize', async ({ noteId }, { enqueue }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
-    if (settings.get('autoSummarize')) {
+    const auto = settings.get('autoSummarize') && autoSendAllowed();
+    if (settings.get('autoSummarize') && !auto && ai.configured()) bus.publish('recording.warning', { message: 'Notes were not enhanced automatically: your AI server is not on this computer. Use Enhance on the meeting, or allow automatic sending in Settings → AI.' });
+    if (auto) {
       try {
         bus.publish('note.summarizing', { id: noteId });
         await ai.summarize(noteId);
@@ -151,13 +156,13 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
         bus.publish('note.summarize-failed', { id: noteId, message: err.message });
       }
     }
-    chain('note.summarize', noteId, { local: !settings.get('autoSummarize') || !ai.configured() }, enqueue);
+    chain('note.summarize', noteId, { local: !auto || !ai.configured() }, enqueue);
     return null;
   });
   runner.register('note.insights', async ({ noteId, local }, { enqueue }) => {
     if (!notes.get(noteId)) return { skipped: 'deleted' };
-    await analyze(noteId, { local: !!local });
-    if (settings.get('autoAssertions') && ai.configured()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
+    await analyze(noteId, { local: !!local || !autoSendAllowed() });
+    if (settings.get('autoAssertions') && ai.configured() && autoSendAllowed()) enqueue('note.assertions', { noteId }, { key: noteId, maxAttempts: 2 });
     return null;
   });
   bus.subscribe((e) => {
@@ -246,9 +251,10 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
   try { SERVICE_HANDLERS = require('../brain/actions-services').HANDLERS; } catch (e) { if (e.code !== 'MODULE_NOT_FOUND') throw e; }
   const ALL_HANDLERS = { ...ACTION_HANDLERS, ...require('../brain/actions-gmail').HANDLERS, ...SERVICE_HANDLERS };
   // may this source's grant do this? An action made for one source (args.sourceId) needs that source to allow it; one for a service with no
-  // source row (a token set up in Integrations, approved each time) keeps working as before.
+  // source row (a token set up in Integrations, approved each time; webhooks) keeps working as before. The service is the handler's
+  // provider, or the first part of its kind (slack.post -> slack), so every kind is checked, not only Gmail's.
   const actionAllowed = (kind, args) => {
-    const provider = ALL_HANDLERS[kind]?.provider;
+    const provider = ALL_HANDLERS[kind]?.provider || String(kind).split('.')[0];
     if (!provider) return true;
     if (args?.sourceId) { const s = items.source(args.sourceId); return !!s && can(s, `action.${kind}`); }
     const own = items.sources().filter((s) => s.kind === provider);

@@ -108,6 +108,8 @@ test('privacy gates: a remote AI server needs allowRemote, a meeting where someo
   await wait(300);
   assert.equal(remote.fake.requests.length, 0);
   assert.equal(remote.svc.state(remote.note.id).blocked, 'remote');
+  const lan = await rig(t, { llmUrl: 'http://192.168.1.20:11434/v1' });
+  assert.equal(lan.svc.state(lan.note.id).blocked, 'remote', 'a server on the local network is another computer: it needs allowRemote too');
 
   const declined = await rig(t, { consent: 'declined' });
   declined.say('them', 'When can the next release go out?');

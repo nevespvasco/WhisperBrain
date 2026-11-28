@@ -10,6 +10,9 @@ const { createIntake } = require('./intake');
 const { A11ySource, helperSpec, loadPlatformSelectors } = require('./a11y-source');
 const launcher = require('./launcher');
 const { VisionSource } = require('./vision');
+const { isThisComputer } = require('../core/policy');
+
+const VISION_REMOTE = 'The AI server is not on this computer, so no picture of the call is sent to it (allow it under Look at the meeting window).';
 
 class MeetService {
   // platformId: 'linux' | 'darwin' | 'win32'. roots: where the accessibility helper may be (see a11y-source.js).
@@ -23,7 +26,9 @@ class MeetService {
     this.a11y = new A11ySource({ hub, spec: this.spec, platforms, dataDir, spawn });
     this.launcher = launcher; // replaceable: a test must not write to the real home folder
     // last resort: look at the meeting window (needs a way to capture it, which only the desktop app has, and a vision model)
-    this.vision = new VisionSource({ hub, llm, capture: captureWindow, userName: () => this.settings.get('userName') });
+    // Each picture is checked on its way out, so changing the AI server or the setting during a call stops the next one.
+    const gated = llm && { complete: (...a) => { if (!this.visionAllowed()) throw new Error(VISION_REMOTE); return llm.complete(...a); }, stream: (...a) => { if (!this.visionAllowed()) throw new Error(VISION_REMOTE); return llm.stream(...a); } };
+    this.vision = new VisionSource({ hub, llm: gated, capture: captureWindow, userName: () => this.settings.get('userName') });
     this.intake = createIntake({ hub, getToken: () => this.settings.get('meet').token, info: () => ({ version: this.version, recording: isRecording() }), onAudio: onTabAudio });
     this.listening = false;
     this.error = '';
@@ -56,10 +61,14 @@ class MeetService {
       if (e.type === 'recording.started') {
         const m = this.settings.get('meet');
         if (m.enabled && m.a11y) this.a11y.start();
-        if (m.enabled && m.vision) this.vision.start();
+        if (m.enabled && m.vision && this.visionAllowed()) this.vision.start();
+        else if (m.enabled && m.vision) this.hub.report('vision', { kind: 'vision', state: 'off', detail: VISION_REMOTE });
       } else if (e.type === 'recording.finalizing' || e.type === 'recording.stopped') { this.a11y.stop(); this.vision.stop(); }
     });
   }
+
+  // Pictures of the call go to an AI server on this computer, or elsewhere only when the person allowed it (meet.visionRemote)
+  visionAllowed() { return isThisComputer(this.settings.get('llm')?.baseUrl) || !!this.settings.get('meet').visionRemote; }
 
   // Linux browsers that need to be started with accessibility on, and whether WhisperBrain has done that for them
   browsers() { return this.platformId === 'linux' ? this.launcher.browsers() : []; }
