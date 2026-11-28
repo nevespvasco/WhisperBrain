@@ -7,6 +7,7 @@ const { electronSecretBox } = require('../src/core/secret-box');
 const { SIZE, shouldShow, placeWithin, defaultBounds, expandedSize } = require('./float');
 const { planHotkeys } = require('../src/assistant/hotkeys');
 const { shouldShowPrompter, defaultPrompterBounds, restorePrompterBounds, MIN: PROMPTER_MIN } = require('./prompter');
+const { sameOrigin } = require('./origin');
 
 const ROOT = path.join(__dirname, '..');
 const SMOKE = process.env.WB_SMOKE === '1';
@@ -60,6 +61,7 @@ let registeredHotkey = null;
 let assistantKeys = [];      // accelerators registered for the meeting assistant
 let assistantKeysFailed = ''; // what was last reported as unavailable (settings change often: say it once)
 let origin = '';
+const ours = (u) => sameOrigin(u, origin); // scheme, host and port of our own UI (electron/origin.js)
 let updates = null;          // automatic updates (Windows installer, Linux AppImage); null where they do not apply
 
 // The OS clipboard as the platform adapters expect it (sync read/write of text).
@@ -147,10 +149,10 @@ function setupSession() {
   // clipboard stays refused: the page never needs it.
   const ALLOWED = ['media', 'display-capture', 'clipboard-sanitized-write'];
   ses.setPermissionRequestHandler((wc, permission, cb, details) => {
-    const ok = ALLOWED.includes(permission) && String(details?.requestingUrl || wc.getURL()).startsWith(origin);
+    const ok = ALLOWED.includes(permission) && ours(details?.requestingUrl || wc.getURL());
     cb(ok);
   });
-  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => ALLOWED.includes(permission) && String(requestingOrigin).startsWith(origin));
+  ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => ALLOWED.includes(permission) && ours(requestingOrigin));
   // System audio on macOS/Windows: answer getDisplayMedia() with the OS loopback (ScreenCaptureKit / WASAPI).
   ses.setDisplayMediaRequestHandler(async (_req, cb) => {
     try {
@@ -170,7 +172,7 @@ function createWindow(url) {
   win.loadURL(url);
   // Never navigate away from our UI; open web links in the real browser.
   win.webContents.setWindowOpenHandler(({ url: u }) => { if (/^(https?|mailto|obsidian|notion|linear):/i.test(u)) shell.openExternal(u); return { action: 'deny' }; });
-  win.webContents.on('will-navigate', (e, u) => { if (!u.startsWith(origin)) { e.preventDefault(); if (/^(https?|obsidian|notion|linear):/i.test(u)) shell.openExternal(u); } });
+  win.webContents.on('will-navigate', (e, u) => { if (!ours(u)) { e.preventDefault(); if (/^(https?|obsidian|notion|linear):/i.test(u)) shell.openExternal(u); } });
   win.on('close', (e) => {
     if (quitting) return;
     if (core?.recording.status().active) { e.preventDefault(); win.hide(); notify('WhisperBrain', 'Still recording in the background. Use the tray icon to reopen or stop.'); }
@@ -411,7 +413,7 @@ function showFloat() {
   float.setAlwaysOnTop(true, 'floating');
   float.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
   float.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  float.webContents.on('will-navigate', (e, u) => { if (!u.startsWith(origin)) e.preventDefault(); });
+  float.webContents.on('will-navigate', (e, u) => { if (!ours(u)) e.preventDefault(); });
   float.once('ready-to-show', () => { if (float && !float.isDestroyed()) float.showInactive(); });
   float.on('closed', () => { float = null; });
   float.loadURL(`${origin}/widget.html?token=${server.token}`);
@@ -511,7 +513,7 @@ function showPrompter() {
   prompter.setAlwaysOnTop(true, 'floating');
   prompter.setVisibleOnAllWorkspaces?.(true, { visibleOnFullScreen: true });
   prompter.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  prompter.webContents.on('will-navigate', (e, u) => { if (!u.startsWith(origin)) e.preventDefault(); });
+  prompter.webContents.on('will-navigate', (e, u) => { if (!ours(u)) e.preventDefault(); });
   prompter.once('ready-to-show', () => { if (prompterAlive()) prompter.showInactive(); });
   prompter.on('moved', rememberPrompter);
   prompter.on('resized', rememberPrompter);
