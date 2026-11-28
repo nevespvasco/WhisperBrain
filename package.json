@@ -40,7 +40,7 @@
     "unpdf": "2.1.0"
   },
   "devDependencies": {
-    "electron": "45.2.3",
+    "electron": "45.5.0",
     "electron-builder": "26.18.0"
   },
   "homepage": "https://github.com/nevespvasco/WhisperBrain",
