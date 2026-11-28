@@ -268,7 +268,7 @@ function createApp({ connectorOptions = {}, dataDir, platform, modelsDir, clipbo
     let total = 0;
     for (;;) { const r = chunkIndex.syncBatch(40); total += r.done; if (!r.done || !r.left) break; await tick(); }
     let embedded = 0;
-    for (let i = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (!r.embedded || r.left <= 0) break; await tick(); }
+    for (let i = 0, after = 0; i < 500; i++) { const r = await chunkIndex.embedPending({ batch: 16, after, mayEmbed: (k, id) => mayShare(k, id) && !oldMail(k, id) }); embedded += r.embedded; if (r.next == null || r.left < 0) break; after = r.next; await tick(); }
     return { indexed: total, embedded };
   }, { lane: 'sources' });
   // Housekeeping, once a day while the app runs: old finished jobs and AI-call records go, people who may be the same are looked for, the

@@ -175,3 +175,30 @@ test('narrowing a grant hides the dropped bodies from search at once, and the in
   assert.equal((await app.chunkIndex.search('SECRETBODY4471')).length, 0);
   assert.equal((await app.chunkIndex.search('budget figures')).length, 1, 'who/when/subject stay');
 });
+
+test('embedding pages past chunks that may not be embedded instead of stopping behind the first 64, asking once per owner', async () => {
+  const db = open(':memory:', { allowExtension: true });
+  const notes = new Notes(db, null);
+  const items = new ItemStore(db);
+  const sent = [];
+  const embedder = { configured: () => true, model: () => 'm', embed: async (texts) => { sent.push(...texts); return texts.map(() => [1, 0, 0]); } };
+  const index = new ChunkIndex({ db, notes, items, embedder });
+  const src = items.addSource({ kind: 'folder', name: 'docs' });
+  const blocked = new Set();
+  for (let i = 0; i < 70; i++) blocked.add(items.upsert(src.id, { externalId: `old${i}`, title: `Old ${i}`, text: `old mail ${i}` }).item.id);
+  const ok = items.upsert(src.id, { externalId: 'new', title: 'New', text: 'allowed text' }).item.id;
+  drain(index);
+  const asked = new Map();
+  const mayEmbed = (k, id) => { asked.set(id, (asked.get(id) || 0) + 1); return !blocked.has(id); };
+  let embedded = 0, after = 0;
+  for (let i = 0; i < 20; i++) {
+    const r = await index.embedPending({ batch: 16, mayEmbed, after });
+    embedded += r.embedded;
+    if (r.next == null || r.left < 0) break;
+    after = r.next;
+  }
+  assert.equal(embedded, 1, 'the allowed chunk behind 70 disallowed ones is embedded');
+  assert.deepEqual(sent, ['# New\n\nallowed text']);
+  assert.equal(db.prepare("SELECT embedded FROM chunks WHERE owner_id = ?").get(ok).embedded, 1);
+  assert.ok([...asked.values()].every((n) => n === 1), 'each owner is asked once per pass');
+});

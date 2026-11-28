@@ -201,22 +201,30 @@ class ChunkIndex {
   }
 
   // Embed chunks that have no vector yet. mayEmbed(ownerKind, ownerId) -> false for what must not reach the embedding server (a private
-  // source and a server that is not on this computer). Never throws: it is an extra; the reason is kept for the Activity page.
-  async embedPending({ batch = 16, mayEmbed = () => true } = {}) {
+  // source and a server that is not on this computer); it is asked once per owner per call. Never throws: it is an extra; the reason is
+  // kept for the Activity page. Pages by chunk id: `after` is where the previous call stopped and `next` where the next one starts
+  // (null when the scan reached the end), so chunks that may not be embedded (old mail, a private source) never hide the ones behind them.
+  async embedPending({ batch = 16, mayEmbed = () => true, after = 0 } = {}) {
     const model = this.checkModel();
-    if (!model || !this.embedder?.configured?.()) return { embedded: 0, left: 0, reason: this.vec.reason };
-    const rows = this.db.prepare('SELECT id, owner_kind AS k, owner_id AS o, text FROM chunks WHERE embedded = 0 ORDER BY id LIMIT ?').all(batch * 4).filter((r) => mayEmbed(r.k, r.o)).slice(0, batch);
-    if (!rows.length) return { embedded: 0, left: 0, reason: this.vec.reason };
+    if (!model || !this.embedder?.configured?.()) return { embedded: 0, left: 0, reason: this.vec.reason, next: null };
+    const asked = new Map();
+    const may = (k, o) => { const key = `${k}:${o}`; if (!asked.has(key)) asked.set(key, !!mayEmbed(k, o)); return asked.get(key); };
+    const scanned = this.db.prepare('SELECT id, owner_kind AS k, owner_id AS o, text FROM chunks WHERE embedded = 0 AND id > ? ORDER BY id LIMIT ?').all(after, batch * 4);
+    const rows = [];
+    let next = null;
+    for (const r of scanned) { if (rows.length >= batch) break; next = r.id; if (may(r.k, r.o)) rows.push(r); }
+    if (scanned.length < batch * 4 && next === scanned[scanned.length - 1]?.id) next = null;   // the end of the table was reached
+    if (!rows.length) return { embedded: 0, left: 0, reason: this.vec.reason, next };
     let vectors;
-    try { vectors = await this.embedder.embed(rows.map((r) => r.text)); } catch (e) { this.vec = { ...this.vec, ready: this.vec.ready, reason: e.message }; return { embedded: 0, left: -1, reason: e.message }; }
-    if (!vectors.length || !this.ensureVec(vectors[0].length)) return { embedded: 0, left: -1, reason: this.vec.reason };
+    try { vectors = await this.embedder.embed(rows.map((r) => r.text)); } catch (e) { this.vec = { ...this.vec, ready: this.vec.ready, reason: e.message }; return { embedded: 0, left: -1, reason: e.message, next: null }; }
+    if (!vectors.length || !this.ensureVec(vectors[0].length)) return { embedded: 0, left: -1, reason: this.vec.reason, next: null };
     this.db.exec('BEGIN');
     try {
       const ins = this.db.prepare('INSERT INTO chunk_vec (rowid, embedding) VALUES (?, ?)');
       rows.forEach((r, i) => { if (this.db.prepare('SELECT 1 FROM chunks WHERE id = ?').get(r.id)) { this.db.prepare('DELETE FROM chunk_vec WHERE rowid = ?').run(BigInt(r.id)); ins.run(BigInt(r.id), blob(vectors[i])); this.db.prepare('UPDATE chunks SET embedded = 1 WHERE id = ?').run(r.id); } });
       this.db.exec('COMMIT');
-    } catch (e) { this.db.exec('ROLLBACK'); return { embedded: 0, left: -1, reason: e.message }; }
-    return { embedded: rows.length, left: this.db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE embedded = 0').get().n, reason: '' };
+    } catch (e) { this.db.exec('ROLLBACK'); return { embedded: 0, left: -1, reason: e.message, next: null }; }
+    return { embedded: rows.length, left: this.db.prepare('SELECT COUNT(*) AS n FROM chunks WHERE embedded = 0').get().n, reason: '', next };
   }
 
   stats() {
