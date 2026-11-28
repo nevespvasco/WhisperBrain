@@ -13,6 +13,7 @@
     "start": "node scripts/start.js",
     "serve": "node src/server/cli.js",
     "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "lint": "npx --yes eslint@9.39.5 src electron ui eslint.config.js",
     "build:x11": "bash scripts/build-x11.sh",
     "models": "node scripts/fetch-models.js",
     "dist": "electron-builder --publish never",
