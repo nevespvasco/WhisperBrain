@@ -115,7 +115,7 @@ test('engine: stopping a worker that has pending requests warns', () => {
   engine.stop();
   assert.equal(child.killed, true);
   assert.equal(warnings.length, 1);
-  assert.match(warnings[0], /2 pending request\(s\) \(flush:mic, tx:\d+\)/);
+  assert.match(warnings[0], /2 pending request\(s\) \(flush:mic:\d+, tx:\d+\)/);
   const idle = new AsrEngine();
   running(idle);
   idle.on('warning', (w) => warnings.push(w.message));

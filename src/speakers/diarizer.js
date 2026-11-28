@@ -4,10 +4,11 @@
 const { fork } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
+const { diarizeTimeout, secondsOf } = require('./owned');
 
 // opts: { file } or { pcm }, plus { segmentation, embedding, threads, threshold, windowShift, numSpeakers }.
 // -> Promise<{ turns: [{ start, end, speaker }], voices: [{ speaker, centroid, pitch, ms }]}>
-function diarize(opts, { timeoutMs = 60 * 60 * 1000 } = {}) {
+function diarize(opts, { timeoutMs = diarizeTimeout(secondsOf(opts)) } = {}) {
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     if (process.versions.electron) env.ELECTRON_RUN_AS_NODE = '1';
@@ -23,7 +24,8 @@ function diarize(opts, { timeoutMs = 60 * 60 * 1000 } = {}) {
       else if (m.t === 'error') finish(reject, new Error(m.message));
     });
     child.on('exit', (code, sig) => finish(reject, new Error(`speaker diarization worker exited (${sig || code})`)));
-    child.send({ t: 'diarize', ...opts });
+    child.on('error', (e) => { if (!child.connected) finish(reject, new Error(`speaker diarization worker: ${e.message}`)); }); // never an uncaught exception
+    try { child.send({ t: 'diarize', ...opts }); } catch (e) { finish(reject, e); }
   });
 }
 
