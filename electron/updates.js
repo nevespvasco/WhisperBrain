@@ -18,6 +18,14 @@ function supported({ platform, packaged, env = {} }) {
   return false;
 }
 
+// How to start the new version after an update (app.relaunch options), or null where the installer does it (Windows).
+// Linux: the AppImage file itself. No --no-sandbox here: its launcher (electron-builder's AppRun) adds the switch only when
+// user namespaces do not work on this system, so the sandbox stays on wherever it can run (docs/packaging.md §3).
+function relaunchOptions({ platform, env = {} }) {
+  if (platform !== 'linux' || !env.APPIMAGE) return null;
+  return { execPath: env.APPIMAGE, args: [] };
+}
+
 // updater: electron-updater's autoUpdater. enabled(): the person's setting. busy(): a recording is running.
 // ask(version): resolves true to restart now. restart(): shut the app down cleanly, then install and relaunch.
 function createUpdates({ updater, enabled, busy, ask, notify, restart, log = () => {}, firstCheckMs = 30000, everyMs = 6 * HOUR, setTimer = setTimeout, clearTimer = clearTimeout }) {
@@ -87,4 +95,4 @@ function createUpdates({ updater, enabled, busy, ask, notify, restart, log = () 
   };
 }
 
-module.exports = { supported, createUpdates, HOUR };
+module.exports = { supported, createUpdates, relaunchOptions, HOUR };

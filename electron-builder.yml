@@ -42,13 +42,18 @@ linux:
   icon: build/icon.png
   synopsis: Local-first AI notepad for meetings
   maintainer: WhisperBrain contributors <noreply@whisperbrain.invalid>
-  # The AppImage cannot ship a setuid chrome-sandbox; the app only ever loads its own local UI.
-  executableArgs: ["--no-sandbox"]
+  # No executableArgs here: under linux: they reach every target, and the .deb must keep the OS sandbox (its installer makes
+  # chrome-sandbox setuid or installs an AppArmor profile where user namespaces are restricted). See appImage below.
   extraResources:
     - from: build/x11/whisperbrain-x11
       to: bin/whisperbrain-x11
     - from: build/atspi/whisperbrain-atspi
       to: bin/whisperbrain-atspi
+# The AppImage cannot ship a setuid chrome-sandbox. Its launcher (AppRun) adds --no-sandbox by itself only when unprivileged user
+# namespaces do not work (unshare -Ur true fails, e.g. Ubuntu 24.04's AppArmor restriction); the empty list stops electron-builder
+# from forcing the flag in the AppImage's desktop entry. docs/packaging.md §3.
+appImage:
+  executableArgs: []
 deb:
   depends: [libpipewire-0.3-0, pipewire-bin, xclip, libx11-6, libxtst6, libxi6, libatspi2.0-0]
   recommends: [wl-clipboard, wtype]

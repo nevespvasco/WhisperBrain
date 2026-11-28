@@ -2,7 +2,7 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { app, BrowserWindow, Menu, Tray, Notification, globalShortcut, session, desktopCapturer, shell, clipboard, nativeImage, systemPreferences, ipcMain, screen, safeStorage, dialog } = require('electron');
-const { supported: updatesSupported, createUpdates } = require('./updates');
+const { supported: updatesSupported, createUpdates, relaunchOptions } = require('./updates');
 const { electronSecretBox } = require('../src/core/secret-box');
 const { SIZE, shouldShow, placeWithin, defaultBounds, expandedSize } = require('./float');
 const { planHotkeys } = require('../src/assistant/hotkeys');
@@ -133,7 +133,8 @@ function setupUpdates() {
         shuttingDown = true; // shutdown() runs here, once; the before-quit handler then lets the quit through
         await shutdown();
         // Windows: the installer waits for this process to end and starts the new version. Linux: replace the AppImage, then relaunch it ourselves.
-        if (process.platform === 'linux') app.relaunch({ execPath: process.env.APPIMAGE, args: ['--no-sandbox'] });
+        const again = relaunchOptions({ platform: process.platform, env: process.env });
+        if (again) app.relaunch(again);
         autoUpdater.quitAndInstall(false, process.platform === 'win32');
       },
       log: (level, m) => console[level === 'info' ? 'log' : level](`updates: ${m}`),
