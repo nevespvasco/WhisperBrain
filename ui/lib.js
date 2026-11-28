@@ -162,6 +162,15 @@ export function promptDialog(title, value = '', { ok = t('Save'), placeholder = 
 
 // ---------- popover menu ----------
 let openMenu = null, openAnchor = null;
+// Where a popover goes: a showModal() dialog sits in the top layer and makes the rest of the page inert, so a list opened from
+// a field inside it must live inside it too or it can be seen but not clicked. position: fixed still places it on the viewport.
+const layerOf = (anchor) => anchor?.closest?.('dialog[open]') || document.body;
+// A popover removed from under us (its dialog closed, a page redraw) settles its promise: watch its layer and, for a dialog, the body
+function settleWhenGone(m, host, finish) {
+  const obs = new MutationObserver(() => { if (!m.isConnected) { obs.disconnect(); finish(undefined); } });
+  obs.observe(host, { childList: true });
+  if (host !== document.body) obs.observe(document.body, { childList: true });
+}
 export function closeMenu() { openMenu?.remove(); openAnchor?.removeAttribute('aria-expanded'); openMenu = null; openAnchor = null; }
 export const menuIsOpen = () => !!openMenu;
 // items: [{ label, icon, run, danger, disabled, selected, href } | 'sep' | { header }]
@@ -178,7 +187,7 @@ export function menu(anchor, items, { align = 'start' } = {}) {
     if (it.href) return `<a role="menuitem" class="${cls}" href="${esc(it.href)}" ${it.download ? 'download' : ''} ${it.external ? 'target="_blank" rel="noopener noreferrer"' : ''} data-i="${i}">${it.icon ? icon(it.icon) : ''}<span class="grow ellipsis">${esc(it.label)}</span></a>`;
     return `<button role="menuitem" class="${cls}" data-i="${i}" ${it.disabled ? 'disabled' : ''}>${it.icon ? icon(it.icon) : ''}<span class="grow ellipsis">${esc(it.label)}</span>${it.hint ? `<span class="xsmall faint">${esc(it.hint)}</span>` : ''}</button>`;
   }).join('');
-  document.body.append(m);
+  layerOf(anchor).append(m);
   const r = anchor.getBoundingClientRect();
   const mw = m.offsetWidth, mh = m.offsetHeight;
   let left = align === 'end' ? r.right - mw : r.left;
@@ -244,7 +253,8 @@ export function pickFrom(anchor, items, { current, placeholder, custom, search =
         || `<div class="pk-none xsmall faint">${t('No matches')}</div>`;
     };
     draw();
-    document.body.append(m);
+    const host = layerOf(anchor);
+    host.append(m);
     const place = () => {
       const mw = m.offsetWidth, mh = m.offsetHeight;
       const left = Math.max(8, Math.min(r.left, innerWidth - mw - 8));
@@ -265,8 +275,7 @@ export function pickFrom(anchor, items, { current, placeholder, custom, search =
       else if (e.key === 'Tab') finish(undefined);
     });
     openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
-    const obs = new MutationObserver(() => { if (!m.isConnected) { obs.disconnect(); finish(undefined); } });
-    obs.observe(document.body, { childList: true });
+    settleWhenGone(m, host, finish);
     setTimeout(() => (input || list.querySelector('.sel') || opts()[0])?.focus(), 0);
     list.querySelector('.sel')?.scrollIntoView({ block: 'nearest' });
   });
@@ -308,7 +317,8 @@ export function pickDate(anchor, { current = '', min = '', clearable = true } = 
       if (focusDay) (m.querySelector('.dp-day.sel:not(:disabled)') || m.querySelector('.dp-day.today:not(:disabled)') || m.querySelector('.dp-day:not(:disabled)'))?.focus();
     };
     draw();
-    document.body.append(m);
+    const host = layerOf(anchor);
+    host.append(m);
     const r = anchor.getBoundingClientRect();
     const place = () => {
       const mw = m.offsetWidth, mh = m.offsetHeight;
@@ -337,8 +347,7 @@ export function pickDate(anchor, { current = '', min = '', clearable = true } = 
       else if (e.key === 'Tab' && !m.contains(document.activeElement)) finish(undefined);
     });
     openMenu = m; openAnchor = anchor; anchor.setAttribute('aria-expanded', 'true');
-    const obs = new MutationObserver(() => { if (!m.isConnected) { obs.disconnect(); finish(undefined); } });
-    obs.observe(document.body, { childList: true });
+    settleWhenGone(m, host, finish);
     setTimeout(() => draw(true), 0);
   });
 }
@@ -355,7 +364,8 @@ async function openDate(inp, anchor = inp) {
   inp.dispatchEvent(new Event('change', { bubbles: true }));
 }
 const ownDate = (el) => el?.tagName === 'INPUT' && el.type === 'date' && !el.disabled && !el.readOnly && !el.closest('[data-native]');
-document.addEventListener('mousedown', (e) => { if (e.button === 0 && ownDate(e.target) && e.target.offsetParent) { e.preventDefault(); e.target.focus(); if (openAnchor === e.target) closeMenu(); else openDate(e.target); } }, true);
+// stopPropagation: the menu's own outside-press handler below would otherwise close the calendar on the press that opened it
+document.addEventListener('mousedown', (e) => { if (e.button === 0 && ownDate(e.target) && e.target.offsetParent) { e.preventDefault(); e.stopPropagation(); e.target.focus(); if (openAnchor === e.target) closeMenu(); else openDate(e.target); } }, true);
 document.addEventListener('keydown', (e) => { if (ownDate(e.target) && (e.key === ' ' || e.key === 'Enter' || (e.altKey && e.key === 'ArrowDown'))) { e.preventDefault(); openDate(e.target); } }, true);
 export { openDate };
 
